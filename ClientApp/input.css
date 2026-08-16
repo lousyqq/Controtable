@@ -1,0 +1,143 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+  html, body {
+    margin: 0;
+    overflow-x: hidden;
+  }
+  body {
+    font-family: 'Inter', 'Noto Sans TC', sans-serif;
+    transition: background 0.3s, color 0.3s;
+    background: var(--bg-body);
+    color: var(--text-secondary);
+  }
+
+  :root {
+    --bg-body:#f1f5f9; --bg-header:#ffffff; --bg-header-border:#e2e8f0;
+    --bg-card:#ffffff; --bg-card-hover-border:rgba(99,102,241,0.25); --bg-card-shadow:rgba(0,0,0,0.04);
+    --bg-input:#f8fafc; --bg-input-border:#e2e8f0;
+    --bg-table-hover:rgba(99,102,241,0.04); --bg-table-expanded:#f8fafc;
+    --bg-detail-card:#f1f5f9; --bg-detail-border:#e2e8f0; --bg-bar-track:#e2e8f0;
+    --bg-pill-active:#4f46e5; --bg-pill-hover:#f1f5f9;
+    --text-primary:#0f172a; --text-secondary:#334155; --text-tertiary:#64748b; --text-muted:#94a3b8; --text-on-pill:#ffffff;
+    --border-table:#f1f5f9; --border-card:#e2e8f0;
+    --thead-group: #e2e8f0; --thead-col: #f1f5f9; --thead-schedule: rgba(59,130,246,0.06);
+    --col-ems-bg: rgba(99,102,241,0.04); --col-msd-bg: rgba(16,185,129,0.04); --col-schedule-text: #1e40af;
+    /* 表頭凍結用：sticky 儲存格必須是實心底色，半透明會讓資料列透出來。
+       以下是上面那些 tint 疊在 --thead-group / --thead-col 之上的等效實心色 */
+    --thead-group-schedule: #d8e2f0;
+    --thead-col-ems: #ebeff9; --thead-col-msd: #e8f3f4; --thead-col-schedule: #e6eef9;
+    /* 已結案的資料列：用淡底色取代 opacity，避免文字對比度不足 */
+    --bg-row-done: #f8fafc;
+  }
+  .dark {
+    --bg-body:#0f172a; --bg-header:rgba(15,23,42,0.85); --bg-header-border:#1e293b;
+    --bg-card:#1e293b; --bg-card-hover-border:rgba(99,102,241,0.3); --bg-card-shadow:rgba(0,0,0,0.2);
+    --bg-input:#0f172a; --bg-input-border:#334155;
+    --bg-table-hover:rgba(255,255,255,0.03); --bg-table-expanded:rgba(30,41,59,0.5);
+    --bg-detail-card:rgba(15,23,42,0.5); --bg-detail-border:rgba(51,65,85,0.3); --bg-bar-track:rgba(51,65,85,0.5);
+    --bg-pill-active:#4f46e5; --bg-pill-hover:#1e293b;
+    --text-primary:#f1f5f9; --text-secondary:#cbd5e1; --text-tertiary:#94a3b8; --text-muted:#475569; --text-on-pill:#ffffff;
+    --border-table:rgba(30,41,59,0.5); --border-card:rgba(255,255,255,0.06);
+    --thead-group: #1a2744; --thead-col: #162032; --thead-schedule: rgba(59,130,246,0.08);
+    --col-ems-bg: rgba(99,102,241,0.05); --col-msd-bg: rgba(16,185,129,0.05); --col-schedule-text: #93c5fd;
+    --thead-group-schedule: #1d2e52;
+    --thead-col-ems: #1a243c; --thead-col-msd: #162836; --thead-col-schedule: #192842;
+    --bg-row-done: rgba(30,41,59,0.45);
+  }
+}
+
+@layer components {
+  .t-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-card);
+    border-radius: 16px;
+    box-shadow: 0 1px 3px var(--bg-card-shadow);
+    transition: border-color 0.2s, box-shadow 0.2s, background 0.3s;
+  }
+  .t-card-hover:hover {
+    border-color: var(--bg-card-hover-border);
+    box-shadow: 0 4px 16px var(--bg-card-shadow);
+  }
+
+  /* 明細表用的卡片：16px 圓角在整片資料表上看起來過於圓潤，
+     角落還會把表頭底色切掉。改成接近直角的 6px。 */
+  .t-table-card {
+    border-radius: 6px;
+  }
+
+  /* 14 欄的表格靠內容最小寬度就要 1100px 出頭，在 1152px 的視窗會擠出水平捲軸。
+     統一把水平內距從 8px 收到 6px（14 欄共省約 56px），讓一般筆電寬度都塞得下。
+     選擇器特異性 (0,1,1) 高於 Tailwind 的 .px-2 (0,1,0)，不需要 !important。 */
+  .sticky-table th,
+  .sticky-table td {
+    padding-left: 6px;
+    padding-right: 6px;
+  }
+
+  /* ── 表格表頭凍結 ──
+     15 欄的表格往下捲時仍要看得到欄位名稱。
+     表格外層是 overflow:auto 的捲動容器，sticky 是相對該容器定位。
+     第一層（維度歸類）貼齊頂端，第二層（欄位名稱）疊在它下面 34px 處。
+     篩選列不做 sticky，讓它正常捲走即可。 */
+  .sticky-table thead th {
+    position: sticky;
+    z-index: 20;
+  }
+  .sticky-table thead:nth-of-type(1) th {
+    top: 0;
+    height: 34px;
+    background: var(--thead-group);
+  }
+  .sticky-table thead:nth-of-type(2) tr:first-child th {
+    top: 34px;
+    background: var(--thead-col);
+  }
+  /* 篩選列會捲到表頭底下，取消它的 sticky */
+  .sticky-table thead:nth-of-type(2) tr:nth-child(2) th {
+    position: static;
+  }
+}
+
+@layer utilities {
+  @keyframes slideUp {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+  
+  .animate-slide-up {
+    animation: slideUp 0.4s ease-out forwards;
+  }
+  .animate-fade {
+    animation: fadeIn 0.3s ease-out forwards;
+  }
+  .pulse-dot {
+    animation: pulse 2s infinite;
+  }
+  
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background: var(--text-muted);
+    border-radius: 4px;
+    opacity: 0.3;
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "controltable",
+      "runtimeExecutable": "dotnet",
+      "runtimeArgs": ["run", "--project", "C:\\Controltable\\Controltable.csproj", "--launch-profile", "http"],
+      "port": 5146
+    }
+  ]
+}
