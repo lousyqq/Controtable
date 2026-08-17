@@ -27,19 +27,20 @@
 |---|---|---|
 | `Id` | INT IDENTITY PK | 系統主鍵 |
 | `NID` | NVARCHAR(50) | 需求流水號。**初期不自動產生，由使用者手動輸入** |
-| `YearMonth` | NVARCHAR(50) | 年月，格式 `YYYY/MM` |
+| `YearMonth` | NVARCHAR(50) | 年月，**一律 `YYYY/MM`**（`06` 腳本已正規化；寫入路徑一律經過 `FormatYearMonth()`） |
 | `MainCat` | NVARCHAR(100) | 主分類 |
 | `SubCat` | NVARCHAR(100) | 次分類 |
-| `Status` | NVARCHAR(50) | **整體狀態**，對應 Excel「Overall Status」欄：`Init` / `Ongoing` / `Pending` / `Done` |
-| `StageCode` | NVARCHAR(10) | **階段代號** `(1)`~`(5)`，對應 Excel 最後一欄「Status」。與上方 `Status` 意義不同，不可混用 |
-| `NotesLink` | NVARCHAR(500) | 需求文件連結 |
+| `Status` | NVARCHAR(50) | **整體狀態**，對應 Excel「OverallStatus」欄：`Init` / `Ongoing` / `Pending` / `Done` |
+| `StageCode` | NVARCHAR(10) | **階段代號**，對應 Excel「StatusID」欄。**純數字 `1`~`5`，不含括號**（`05` 腳本已正規化）。與上方 `Status` 意義不同，不可混用 |
+| `NotesLink` | NVARCHAR(500) | **需求補充（Excel `Remark`）**，針對子分類的描述補充。⚠️ 欄位名是早期誤解留下的舊名，**內容是純文字不是網址**，畫面上不可做成超連結 |
 | `EmsOwner` | NVARCHAR(50) | EMS 窗口 |
 | `MsdOwner` | NVARCHAR(50) | MSD 開發負責人 |
 | `SpecStart` | DATE | ① EMS Spec 提送起日 |
 | `SpecEnd` | DATE | ① EMS Spec 提送迄日 |
 | `SpecHistory` | NVARCHAR(MAX) | ① 階段時程異動軌跡（字串格式，見下方說明） |
 | `MsdConfirm` | DATE | ② MSD 確認 Spec 日期 |
-| `MsdConfirmNote` | NVARCHAR(500) | ② MSD 確認欄的自由文字備註，例如 `Next Check: 8/18 -> 8/20` |
+| `MsdConfirmNote` | NVARCHAR(500) | ② MSD 確認欄的自由文字備註，例如 `Next Check: 8/18 -> 8/20`。**2026-08-17 起編輯視窗不再提供此欄輸入**，既有資料仍會顯示在明細裡（欄位保留不刪） |
+| `MsdConfirmHistory` | NVARCHAR(MAX) | ② MSD 確認日期的異動軌跡（Excel `2_MSDHistory`）。由 `Program.cs` 啟動時的 bootstrap 建立，不在編號腳本內。**與 `MsdHistory` 是兩個獨立階段的軌跡**，不可混用 |
 | `MsdStart` | DATE | ③ 開發起日 |
 | `MsdEnd` | DATE | ③ 開發迄日 |
 | `MsdHistory` | NVARCHAR(MAX) | ③ 階段時程異動軌跡 |
@@ -48,18 +49,32 @@
 | `UatHistory` | NVARCHAR(MAX) | ④ 階段時程異動軌跡 |
 | `CurrentStatus` | NVARCHAR(MAX) | 現況說明（多行文字） |
 | `MpSaving` | NVARCHAR(50) | 人力節省效益。**可為空、可為非數字**（如「3人天」「待評估」），由使用者自行填寫 |
-| `CreatedAt` | DATETIME2(0) NOT NULL | 需求建立時間，`DEFAULT SYSDATETIME()`。供主管追溯 |
+| `CreatedAt` | DATETIME2(0) NOT NULL | 需求建立時間，`DEFAULT SYSDATETIME()`。供主管追溯。**與 `YearMonth` 是同一個日期、只是格式不同**，故資料列上只顯示 `YearMonth`，完整時間放明細 |
 | `UpdatedAt` | DATETIME2(0) NULL | 最後更新時間 |
+| `IsDeleted` | BIT NOT NULL | **軟刪除旗標**，`DEFAULT 0`。所有查詢與匯出一律帶 `WHERE IsDeleted = 0` |
+| `DeletedAt` | DATETIME2(0) NULL | 軟刪除時間 |
 
-### 階段代號 StageCode 對照
+> **軟刪除**：`DELETE /api/requirements/{id}` 不再實體刪除，改成 `UPDATE ... SET IsDeleted = 1`。
+> 已軟刪除的資料**不佔用 NID**（唯一性檢查只比對 `IsDeleted = 0`），該編號可以再被使用。
+
+### 階段代號 StageCode 對照（Excel「StatusID」）
 
 | 代號 | 意義 |
 |---|---|
-| `(1)` | EMS 提供 Spec |
-| `(2)` | MSD 確認 Spec |
-| `(3)` | MSD 開發中 |
-| `(4)` | EMS 驗收中 |
-| `(5)` | 結案 |
+| `1` | 待 EMS Spec |
+| `2` | MSD 評估中 |
+| `3` | MSD Ongoing |
+| `4` | 待 EMS 驗收 |
+| `5` | 已完成 |
+
+> ⚠️ 現有資料中有 **3 筆 `StageCode = '6'`**（Id 1 / 3 / 5，皆為 `Status = Done`），超出 1~5 的定義。
+> `05` 腳本**刻意不自動改**，只列出清單；前端會把這些值標成警示色。待使用者確認是否改為 `5`。
+
+### 索引
+
+| 索引 | 定義 |
+|---|---|
+| `IX_Controltable_Active` | `(NID) WHERE IsDeleted = 0` 篩選索引，服務 NID 唯一性檢查與清單查詢 |
 
 ### History 欄位格式
 
@@ -95,8 +110,10 @@
 | `02_split_msdconfirm.sql` | 2026-08-16 | **已執行** | MsdConfirm 轉 DATE，另拆 MsdConfirmNote 存自由文字 |
 | `03_fix_empty_dates.sql` | 2026-08-16 | **已執行** | 修正 01 的缺陷：空字串被 `TRY_CONVERT` 轉成 `1900-01-01`，還原為 NULL |
 | `04_normalize_status.sql` | 2026-08-16 | **已執行** | 統一 Status 大小寫（`ongoing` → `Ongoing`） |
+| `05_statusid_and_softdelete.sql` | 2026-08-17 | **已執行** | StageCode 去括號正規化為 `1`~`5`；新增 `IsDeleted` / `DeletedAt` 與 `IX_Controltable_Active` |
+| `06_normalize_yearmonth.sql` | 2026-08-17 | **已執行** | YearMonth 正規化為 `YYYY/MM`（27 筆，`26/Dec` / `Jul/26` 等英文月份寫法） |
 
-> ⚠️ **執行順序**：`01` → `02` → `03` → `04`，不可跳號。
+> ⚠️ **執行順序**：`01` → `02` → `03` → `04` → `05` → `06`，不可跳號。`05` / `06` 可重複執行。
 > 執行前已備份為 `dbo.Controltable_bak_20260816`（7 筆，欄位為遷移前的舊結構）。
 > 確認新結構沒問題後可以自行 `DROP TABLE dbo.Controltable_bak_20260816`。
 
@@ -109,6 +126,29 @@ SQL Server 的 `TRY_CONVERT(DATE, '')` **不會回傳 NULL，而是回傳 `1900-
 若日後在全新的資料庫上重跑整套腳本，**`03` 必須跟著跑**，否則空日期會變成 1900-01-01。
 （`Program.cs` 的匯入路徑沒有這個問題——C# 的 `ParseDate` 用 `TryParseExact`，
 空字串不符合任何格式會回傳 `null`。）
+
+### 05_statusid_and_softdelete.sql
+
+1. **StageCode 正規化**：去掉半形／全形括號與空白，只留數字；空字串收成 `NULL`。
+   實際執行時發現既有資料本來就沒有括號（值為 `1` / `4` / `6`），所以格式部分是 no-op。
+2. **超出 1~5 的值不自動處理**，只用 `SELECT` 列出待人工確認（見上方警告）。
+3. 新增 `IsDeleted BIT NOT NULL DEFAULT 0` 與 `DeletedAt DATETIME2(0) NULL`。
+4. 建立篩選索引 `IX_Controltable_Active`。
+
+`Program.cs` 啟動時另有一段 idempotent 的 bootstrap 會補上 `IsDeleted` / `DeletedAt`
+（沿用 `MsdConfirmHistory` 的既有做法），讓還沒跑過腳本的環境也能啟動。
+
+### 06_normalize_yearmonth.sql
+
+把 `YearMonth` 拆成兩段（分隔符 `/` `-` `.` 空白皆可），分別判斷哪段是年、哪段是月，
+月份支援英文縮寫（`Jan`~`Dec`），2 位數年份補成 `20xx`，最後輸出 `YYYY/MM`。
+**兩段順序可互換**——實際資料同時存在 `26/Dec` 與 `Jul/26` 兩種寫法。
+
+已符合 `YYYY/MM` 的值直接跳過，認不出來的**原樣留著並列出清單**，不猜、不清空。
+執行結果：27 筆全部正規化成功，0 筆待確認。
+
+> **根因**：舊版 `FormatYearMonth()` 只用 `int.TryParse` 判斷月份，
+> 遇到 `Dec` 直接 return 原字串，壞值就一路存進 DB。程式端已同步修正。
 
 ### 01_alter_controltable_types.sql
 

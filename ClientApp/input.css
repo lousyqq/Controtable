@@ -34,6 +34,11 @@
     --thead-col-ems: #ebeff9; --thead-col-msd: #e8f3f4; --thead-col-schedule: #e6eef9;
     /* 已結案的資料列：用淡底色取代 opacity，避免文字對比度不足 */
     --bg-row-done: #f8fafc;
+    /* 異常語意色。深淺色各一組 —— 淺色底用深紅/深琥珀，深色底若沿用同一組
+       對比度只有約 2:1，必須換成亮色版本 */
+    --tone-alert: #b91c1c; --tone-alert-bg: rgba(185,28,28,0.08); --tone-alert-border: rgba(185,28,28,0.22);
+    --tone-warn:  #b45309; --tone-warn-bg:  rgba(180,83,9,0.08);  --tone-warn-border:  rgba(180,83,9,0.22);
+    --tone-good:  #0f766e;
   }
   .dark {
     --bg-body:#0f172a; --bg-header:rgba(15,23,42,0.85); --bg-header-border:#1e293b;
@@ -49,16 +54,21 @@
     --thead-group-schedule: #1d2e52;
     --thead-col-ems: #1a243c; --thead-col-msd: #162836; --thead-col-schedule: #192842;
     --bg-row-done: rgba(30,41,59,0.45);
+    --tone-alert: #f87171; --tone-alert-bg: rgba(248,113,113,0.12); --tone-alert-border: rgba(248,113,113,0.3);
+    --tone-warn:  #fbbf24; --tone-warn-bg:  rgba(251,191,36,0.12); --tone-warn-border:  rgba(251,191,36,0.3);
+    --tone-good:  #2dd4bf;
   }
 }
 
 @layer components {
+  /* 給高階主管瀏覽的介面，刻意收斂裝飾性：小圓角、極淡陰影。
+     16px 圓角配上滿版的資料卡片會顯得過於圓潤。 */
   .t-card {
     background: var(--bg-card);
     border: 1px solid var(--border-card);
-    border-radius: 16px;
-    box-shadow: 0 1px 3px var(--bg-card-shadow);
-    transition: border-color 0.2s, box-shadow 0.2s, background 0.3s;
+    border-radius: 6px;
+    box-shadow: 0 1px 2px var(--bg-card-shadow);
+    transition: border-color 0.2s, background 0.3s;
   }
   .t-card-hover:hover {
     border-color: var(--bg-card-hover-border);

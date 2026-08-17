@@ -40,6 +40,39 @@ using (var conn = new SqlConnection(connectionString))
         cmd.ExecuteNonQuery();
     }
 }
+// Add MsdConfirmHistory column if it doesn't exist
+using (var conn = new SqlConnection(connectionString))
+{
+    conn.Open();
+    using (var cmd = new SqlCommand(@"
+        IF NOT EXISTS(SELECT * FROM sys.columns WHERE Name = N'MsdConfirmHistory' AND Object_ID = Object_ID(N'dbo.Controltable'))
+        BEGIN
+            ALTER TABLE dbo.Controltable ADD MsdConfirmHistory NVARCHAR(MAX)
+        END
+        ", conn))
+    {
+        cmd.ExecuteNonQuery();
+    }
+}
+// 軟刪除欄位。正式的變更紀錄在 05_statusid_and_softdelete.sql，
+// 這裡的 bootstrap 只是讓尚未跑過腳本的環境也能啟動（沿用上方 MsdConfirmHistory 的做法）
+using (var conn = new SqlConnection(connectionString))
+{
+    conn.Open();
+    using (var cmd = new SqlCommand(@"
+        IF NOT EXISTS(SELECT * FROM sys.columns WHERE Name = N'IsDeleted' AND Object_ID = Object_ID(N'dbo.Controltable'))
+        BEGIN
+            ALTER TABLE dbo.Controltable ADD IsDeleted BIT NOT NULL CONSTRAINT DF_Controltable_IsDeleted DEFAULT (0)
+        END
+        IF NOT EXISTS(SELECT * FROM sys.columns WHERE Name = N'DeletedAt' AND Object_ID = Object_ID(N'dbo.Controltable'))
+        BEGIN
+            ALTER TABLE dbo.Controltable ADD DeletedAt DATETIME2(0) NULL
+        END
+        ", conn))
+    {
+        cmd.ExecuteNonQuery();
+    }
+}
 
 // ─── 日期處理 ───
 // DB 的時程欄位已為 DATE 型別 (見 01/02 累加腳本)，但 JSON 與前端 <input type="date">
@@ -62,6 +95,52 @@ static DateTime? ParseDate(string? input)
         return dt.Date;
 
     return null;
+}
+
+// ─── 年月 (YearMonth) ───
+// 一律輸出 "YYYY/MM"。來源 Excel 的寫法很雜：2026/12、26/Dec、Y26/1、2026-12、Dec-25
+
+static bool MonthFromName(string name, out int month)
+{
+    month = 0;
+    var n = name.Trim();
+    if (n.Length < 3) return false;
+    string[] abbr = { "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec" };
+    var idx = Array.FindIndex(abbr, a => n.StartsWith(a, StringComparison.OrdinalIgnoreCase));
+    if (idx < 0) return false;
+    month = idx + 1;
+    return true;
+}
+
+// yearPart 必須是數字年（2 碼視為 20xx）；monthPart 可以是數字或英文月份縮寫
+static bool TryYearMonth(string yearPart, string monthPart, out string result)
+{
+    result = "";
+    var yp = yearPart.Trim();
+    if (!int.TryParse(yp, out int y)) return false;
+    if (yp.Length <= 2) y += 2000;              // 26 -> 2026
+    if (y < 1900 || y > 2999) return false;
+
+    if (!int.TryParse(monthPart.Trim(), out int m) && !MonthFromName(monthPart, out m)) return false;
+    if (m < 1 || m > 12) return false;
+
+    result = $"{y:D4}/{m:D2}";
+    return true;
+}
+
+static string FormatYearMonth(string? input)
+{
+    if (string.IsNullOrWhiteSpace(input) || input.Trim() == "-") return "";
+    var s = Regex.Replace(input.Trim(), @"^[Yy](\d{2})", "20$1");
+    s = s.Replace(" ", "/").Replace("-", "/").Replace(".", "/");
+
+    var parts = s.Split('/', StringSplitOptions.RemoveEmptyEntries);
+    if (parts.Length < 2) return s;
+
+    // 兩段分別判斷哪個是年哪個是月 —— 順序可能反過來 (26/Dec 或 Dec/26)
+    if (TryYearMonth(parts[0], parts[1], out var ym)) return ym;
+    if (TryYearMonth(parts[1], parts[0], out ym)) return ym;
+    return s;   // 真的認不出來就原樣留著，不要無聲吃掉
 }
 
 // DATE 欄位 -> "yyyy-MM-dd"，NULL -> ""
@@ -94,10 +173,11 @@ app.MapGet("/api/requirements", async () =>
         using var cmd = new SqlCommand(@"
             SELECT Id, NID, YearMonth, MainCat, SubCat, Status, StageCode, NotesLink, EmsOwner, MsdOwner,
                    SpecStart, SpecEnd, SpecHistory,
-                   MsdConfirm, MsdConfirmNote, MsdStart, MsdEnd, MsdHistory,
+                   MsdConfirm, MsdConfirmNote, MsdConfirmHistory, MsdStart, MsdEnd, MsdHistory,
                    UatStart, UatEnd, UatHistory,
                    CurrentStatus, MpSaving, CreatedAt, UpdatedAt
-            FROM dbo.Controltable", conn);
+            FROM dbo.Controltable
+            WHERE IsDeleted = 0", conn);
         using var reader = await cmd.ExecuteReaderAsync();
 
         var list = new List<Requirement>();
@@ -127,6 +207,7 @@ app.MapGet("/api/requirements", async () =>
                 msd = new MsdPhase {
                     confirm = ReadDate(reader, "MsdConfirm"),
                     confirmNote = ReadString(reader, "MsdConfirmNote"),
+                    confirmHistory = ReadString(reader, "MsdConfirmHistory"),
                     start = ReadDate(reader, "MsdStart"),
                     end = ReadDate(reader, "MsdEnd"),
                     history = ReadString(reader, "MsdHistory")
@@ -200,10 +281,72 @@ app.MapDelete("/api/personnel/{id}", async (int id) =>
     return Results.Ok(new { message = "Deleted" });
 });
 
+// ─── 新增/編輯的共用驗證 ───
+
+// 新增需求的必填欄位 (見 FIELD_SPEC.md「情況一」)。編輯時同樣套用，避免把必填欄位改空。
+static string[] MissingRequiredFields(Requirement req)
+{
+    var missing = new List<string>();
+    void Need(string? v, string label) { if (string.IsNullOrWhiteSpace(v)) missing.Add(label); }
+
+    Need(req.nid, "NID");
+    Need(req.mainCat, "專案名稱 (MainCat)");
+    Need(req.subCat, "子項目分類 (SubCat)");
+    Need(req.emsOwner, "EMS");
+    Need(req.spec?.start, "EMS 提 Spec 開始日");
+    Need(req.spec?.end, "EMS 提 Spec 結束日");
+    return missing.ToArray();
+}
+
+// 每個階段的區間：End 不可早於 Start。② MSD 確認只有單一日期，不在此列。
+static string[] InvalidDateRanges(Requirement req)
+{
+    var bad = new List<string>();
+    void Check(string? start, string? end, string label)
+    {
+        var s = ParseDate(start);
+        var e = ParseDate(end);
+        if (s.HasValue && e.HasValue && e.Value < s.Value) bad.Add(label);
+    }
+
+    Check(req.spec?.start, req.spec?.end, "1. EMS 需求Spec提供");
+    Check(req.msd?.start, req.msd?.end, "3. MSD 開發");
+    Check(req.uat?.start, req.uat?.end, "4. EMS 驗收");
+    return bad.ToArray();
+}
+
+// NID 唯一。已軟刪除的資料不佔用 NID，所以只比對 IsDeleted = 0 的列。
+// excludeId 給編輯用，排除自己這筆。
+static async Task<bool> NidExistsAsync(SqlConnection conn, string? nid, int excludeId = 0)
+{
+    if (string.IsNullOrWhiteSpace(nid)) return false;
+    using var cmd = new SqlCommand(
+        "SELECT COUNT(*) FROM dbo.Controltable WHERE NID = @NID AND IsDeleted = 0 AND Id <> @ExcludeId", conn);
+    cmd.Parameters.AddWithValue("@NID", nid.Trim());
+    cmd.Parameters.AddWithValue("@ExcludeId", excludeId);
+    return Convert.ToInt32(await cmd.ExecuteScalarAsync()) > 0;
+}
+
 app.MapPost("/api/requirements", async (Requirement req) =>
 {
+    var missing = MissingRequiredFields(req);
+    if (missing.Length > 0)
+        return Results.BadRequest(new { message = "以下必填欄位未填寫：" + string.Join("、", missing), fields = missing });
+
+    var badRanges = InvalidDateRanges(req);
+    if (badRanges.Length > 0)
+        return Results.BadRequest(new
+        {
+            message = "以下區塊的 End Date 早於 Start Date：" + string.Join("、", badRanges) + "。End Date 必須等於或晚於 Start Date。",
+            fields = badRanges
+        });
+
     using var conn = new SqlConnection(connectionString);
     await conn.OpenAsync();
+
+    if (await NidExistsAsync(conn, req.nid))
+        return Results.Conflict(new { message = $"NID「{req.nid}」已存在，請改用其他編號。", field = "nid" });
+
     // CreatedAt 交由資料庫的 DEFAULT SYSDATETIME() 產生，不由前端傳入
     using var cmd = new SqlCommand(@"
         INSERT INTO dbo.Controltable (NID, YearMonth, MainCat, SubCat, Status, StageCode, NotesLink, EmsOwner, MsdOwner, CurrentStatus, MpSaving,
@@ -220,69 +363,92 @@ app.MapPost("/api/requirements", async (Requirement req) =>
 
 app.MapPut("/api/requirements/{id}", async (int id, Requirement req) =>
 {
+    var missing = MissingRequiredFields(req);
+    if (missing.Length > 0)
+        return Results.BadRequest(new { message = "以下必填欄位未填寫：" + string.Join("、", missing), fields = missing });
+
+    var badRanges = InvalidDateRanges(req);
+    if (badRanges.Length > 0)
+        return Results.BadRequest(new
+        {
+            message = "以下區塊的 End Date 早於 Start Date：" + string.Join("、", badRanges) + "。End Date 必須等於或晚於 Start Date。",
+            fields = badRanges
+        });
+
     using var conn = new SqlConnection(connectionString);
     await conn.OpenAsync();
+
+    if (await NidExistsAsync(conn, req.nid, excludeId: id))
+        return Results.Conflict(new { message = $"NID「{req.nid}」已被其他需求使用，請改用其他編號。", field = "nid" });
+
     using var cmd = new SqlCommand(@"
         UPDATE dbo.Controltable SET
             NID = @NID, YearMonth = @YearMonth, MainCat = @MainCat, SubCat = @SubCat, Status = @Status, StageCode = @StageCode,
             NotesLink = @NotesLink, EmsOwner = @EmsOwner, MsdOwner = @MsdOwner, CurrentStatus = @CurrentStatus, MpSaving = @MpSaving,
             SpecStart = @SpecStart, SpecEnd = @SpecEnd, SpecHistory = @SpecHistory,
-            MsdConfirm = @MsdConfirm, MsdConfirmNote = @MsdConfirmNote, MsdStart = @MsdStart, MsdEnd = @MsdEnd, MsdHistory = @MsdHistory,
+            MsdConfirm = @MsdConfirm, MsdConfirmNote = @MsdConfirmNote, MsdConfirmHistory = @MsdConfirmHistory,
+            MsdStart = @MsdStart, MsdEnd = @MsdEnd, MsdHistory = @MsdHistory,
             UatStart = @UatStart, UatEnd = @UatEnd, UatHistory = @UatHistory,
             UpdatedAt = SYSDATETIME()
-        WHERE Id = @Id", conn);
+        WHERE Id = @Id AND IsDeleted = 0", conn);
 
     AddSqlParameters(cmd, req, includeHistory: true);
     cmd.Parameters.AddWithValue("@Id", id);
-    await cmd.ExecuteNonQueryAsync();
+    var affected = await cmd.ExecuteNonQueryAsync();
+    if (affected == 0) return Results.NotFound(new { message = "找不到該筆需求（可能已被刪除）。" });
+
     req.Id = id;
     return Results.Ok(req);
 });
 
+// 軟刪除：資料列保留在 DB 供追溯，只是不再出現在查詢與匯出結果中
 app.MapDelete("/api/requirements/{id}", async (int id) =>
 {
     using var conn = new SqlConnection(connectionString);
     await conn.OpenAsync();
-    using var cmd = new SqlCommand("DELETE FROM dbo.Controltable WHERE Id = @Id", conn);
+    using var cmd = new SqlCommand(@"
+        UPDATE dbo.Controltable
+        SET IsDeleted = 1, DeletedAt = SYSDATETIME()
+        WHERE Id = @Id AND IsDeleted = 0", conn);
     cmd.Parameters.AddWithValue("@Id", id);
-    await cmd.ExecuteNonQueryAsync();
+    var affected = await cmd.ExecuteNonQueryAsync();
+    if (affected == 0) return Results.NotFound(new { message = "找不到該筆需求（可能已被刪除）。" });
     return Results.Ok(new { message = "Deleted" });
 });
 
 // 匯出的表頭 = 匯入時的第一順位對應名稱，確保匯出的檔案可以原封不動匯回來
 var exportColumns = new (string Header, string Column)[]
 {
-    ("NotesLink",      "NotesLink"),
-    ("NID",            "NID"),
-    ("Overall Status", "Status"),
-    ("StageCode",      "StageCode"),
-    ("YearMonth",      "YearMonth"),
-    ("MainCat",        "MainCat"),
-    ("SubCat",         "SubCat"),
-    ("EmsOwner",       "EmsOwner"),
-    ("SpecStart",      "SpecStart"),
-    ("SpecEnd",        "SpecEnd"),
-    ("SpecHistory",    "SpecHistory"),
-    ("MsdOwner",       "MsdOwner"),
-    ("MsdConfirm",     "MsdConfirm"),
-    ("MsdConfirmNote", "MsdConfirmNote"),
-    ("MsdStart",       "MsdStart"),
-    ("MsdEnd",         "MsdEnd"),
-    ("MsdHistory",     "MsdHistory"),
-    ("UatStart",       "UatStart"),
-    ("UatEnd",         "UatEnd"),
-    ("UatHistory",     "UatHistory"),
-    ("CurrentStatus",  "CurrentStatus"),
-    ("MpSaving",       "MpSaving"),
-    ("CreatedAt",      "CreatedAt"),
-    ("UpdatedAt",      "UpdatedAt"),
+    ("NID", "NID"),
+    ("OverallStatus", "Status"),
+    ("StatusID", "StageCode"),
+    ("YearMonth", "YearMonth"),
+    ("MainCat", "MainCat"),
+    ("SubCat", "SubCat"),
+    ("Remark", "NotesLink"),
+    ("EMS", "EmsOwner"),
+    ("1_EMSStart", "SpecStart"),
+    ("1_EMSEnd", "SpecEnd"),
+    ("1_EMSHistory", "SpecHistory"),
+    ("MSD", "MsdOwner"),
+    ("2_MSDConfirm", "MsdConfirm"),
+    ("2_MSDHistory", "MsdConfirmHistory"),
+    ("3_MSDStart", "MsdStart"),
+    ("3_MSDEnd", "MsdEnd"),
+    ("3_MSDHistory", "MsdHistory"),
+    ("4_EMSStart", "UatStart"),
+    ("4_EMSEnd", "UatEnd"),
+    ("4_EMSHistory", "UatHistory"),
+    ("StatusDesc", "CurrentStatus"),
+    ("MP Saving", "MpSaving")
 };
 
 app.MapGet("/api/export", async () =>
 {
     using var conn = new SqlConnection(connectionString);
     await conn.OpenAsync();
-    using var cmd = new SqlCommand("SELECT * FROM dbo.Controltable", conn);
+    // 軟刪除的資料不匯出
+    using var cmd = new SqlCommand("SELECT * FROM dbo.Controltable WHERE IsDeleted = 0", conn);
     using var reader = await cmd.ExecuteReaderAsync();
 
     using var workbook = new XLWorkbook();
@@ -363,28 +529,28 @@ app.MapPost("/api/import", async (HttpContext context) =>
     //   Status   找 "Status" 會分不清「Overall Status」與階段代號的「Status」
     var fieldCandidates = new (string Field, string[] Names)[]
     {
-        ("notesLink",      new[] { "NotesLink", "Notes Link" }),
         ("nid",            new[] { "NID", "NID JH only" }),
-        ("status",         new[] { "Overall Status", "OverallStatus" }),
-        ("stageCode",      new[] { "StageCode", "Status", "階段" }),
-        ("yearMonth",      new[] { "YearMonth", "年月" }),
+        ("status",         new[] { "OverallStatus", "Overall Status" }),
+        ("stageCode",      new[] { "StatusID", "Status", "StageCode", "階段" }),
+        ("yearMonth",      new[] { "YearMonth", "YearMth", "年月" }),
         ("mainCat",        new[] { "MainCat", "Main Cat" }),
         ("subCat",         new[] { "SubCat", "Sub Cat" }),
-        ("emsOwner",       new[] { "EmsOwner", "EMS Owner" }),
-        ("specStart",      new[] { "SpecStart", "(1)EMS Spec 提送日期 Start", "EMS Spec 提送日期 Start" }),
-        ("specEnd",        new[] { "SpecEnd", "(1)EMS Spec 提送日期 End", "EMS Spec 提送日期 End" }),
-        ("specHistory",    new[] { "SpecHistory", "(1)EMS Spec 提送日期 History" }),
-        ("msdOwner",       new[] { "MsdOwner", "Owner (MSD 填寫)", "MSD Owner" }),
-        ("msdConfirmNote", new[] { "MsdConfirmNote", "(2)評估日期 (MSD 填寫) Spec Confirm", "Spec Confirm" }),
-        ("msdConfirm",     new[] { "MsdConfirm" }),
-        ("msdStart",       new[] { "MsdStart", "(3)Due day (MSD 填寫) Start", "Due day (MSD 填寫) Start" }),
-        ("msdEnd",         new[] { "MsdEnd", "(3)Due day (MSD 填寫) End", "Due day (MSD 填寫) End" }),
-        ("msdHistory",     new[] { "MsdHistory", "(3)Due day (MSD 填寫) History" }),
-        ("uatStart",       new[] { "UatStart", "(4)驗收 (EMS) Start", "驗收 (EMS) Start" }),
-        ("uatEnd",         new[] { "UatEnd", "(4)驗收 (EMS) End", "驗收 (EMS) End" }),
-        ("uatHistory",     new[] { "UatHistory", "(4)驗收 (EMS) History" }),
-        ("currentStatus",  new[] { "CurrentStatus", "現況說明", "最新狀態", "狀態說明" }),
-        ("mpSaving",       new[] { "MpSaving", "MP saving", "MP Saving" }),
+        ("notesLink",      new[] { "Remark", "NotesLink", "Notes Link" }),
+        ("emsOwner",       new[] { "EMS", "EmsOwner", "EMS Owner" }),
+        ("specStart",      new[] { "1_EMSStart", "SpecStart", "(1)EMS Spec 提送日期 Start" }),
+        ("specEnd",        new[] { "1_EMSEnd", "SpecEnd", "(1)EMS Spec 提送日期 End" }),
+        ("specHistory",    new[] { "1_EMSHistory", "SpecHistory", "(1)EMS Spec 提送日期 History" }),
+        ("msdOwner",       new[] { "MSD", "MsdOwner", "Owner (MSD 填寫)", "MSD Owner" }),
+        ("msdConfirm",     new[] { "2_MSDConfirm", "3_MSDConfirm", "MsdConfirm" }),
+        ("msdConfirmHistory", new[] { "2_MSDHistory" }),
+        ("msdStart",       new[] { "3_MSDStart", "MsdStart", "(3)Due day (MSD 填寫) Start" }),
+        ("msdEnd",         new[] { "3_MSDEnd", "MsdEnd", "(3)Due day (MSD 填寫) End" }),
+        ("msdHistory",     new[] { "3MSD_History", "3_MSDHistory", "MsdHistory", "(3)Due day (MSD 填寫) History" }),
+        ("uatStart",       new[] { "4_EMSStart", "UatStart", "(4)驗收 (EMS) Start" }),
+        ("uatEnd",         new[] { "4_EMSEnd", "UatEnd", "(4)驗收 (EMS) End" }),
+        ("uatHistory",     new[] { "4_EMSHisory", "4_EMSHistory", "UatHistory", "(4)驗收 (EMS) History" }),
+        ("currentStatus",  new[] { "StatusDesc", "CurrentStatus", "現況說明", "最新狀態", "狀態說明" }),
+        ("mpSaving",       new[] { "MP Saving", "MpSaving", "MP saving" })
     };
 
     var colMap = new Dictionary<string, int>();
@@ -435,19 +601,13 @@ app.MapPost("/api/import", async (HttpContext context) =>
         return known.FirstOrDefault(k => string.Equals(k, input.Trim(), StringComparison.OrdinalIgnoreCase)) ?? "Init";
     }
 
-    string FormatYearMonth(string input)
+    // StatusID 一律存純數字 "1"~"5"。來源 Excel 可能寫成 "(1)"、全形「（1）」或帶空白，
+    // 對不到 1~5 的一律存 NULL，避免前端查表落空 (見 05_statusid_and_softdelete.sql)
+    string NormalizeStageCode(string input)
     {
-        if (string.IsNullOrWhiteSpace(input) || input == "-") return "";
-        input = input.Trim();
-        input = Regex.Replace(input, @"^[Yy](\d{2})", "20$1");
-        input = input.Replace(" ", "/").Replace("-", "/");
-
-        var parts = input.Split('/');
-        if (parts.Length >= 2 && int.TryParse(parts[0], out int y) && int.TryParse(parts[1], out int m))
-        {
-            return $"{y:D4}/{m:D2}";
-        }
-        return input;
+        if (string.IsNullOrWhiteSpace(input)) return "";
+        var s = Regex.Replace(input.Trim(), @"[^\d]", "");
+        return s is "1" or "2" or "3" or "4" or "5" ? s : "";
     }
 
     // 自由文字裡萃取日期：整段是日期就直接轉，多行則取最後一行再試
@@ -484,7 +644,7 @@ app.MapPost("/api/import", async (HttpContext context) =>
             mainCat = GetVal(row, "mainCat"),
             subCat = GetVal(row, "subCat"),
             status = NormalizeStatus(GetVal(row, "status")),
-            stageCode = GetVal(row, "stageCode"),
+            stageCode = NormalizeStageCode(GetVal(row, "stageCode")),
             notesLink = GetVal(row, "notesLink"),
             emsOwner = GetVal(row, "emsOwner"),
             msdOwner = GetVal(row, "msdOwner"),
@@ -499,6 +659,9 @@ app.MapPost("/api/import", async (HttpContext context) =>
             msd = new MsdPhase {
                 confirm = confirmDate?.ToString("yyyy-MM-dd") ?? "",
                 confirmNote = confirmNote,
+                // B3: 匯入一律清空 confirmHistory，與 specHistory / msdHistory / uatHistory 保持一致
+                // 避免重新匯入後殘留前次操作的異動軌跡，誤導主管
+                confirmHistory = "",
                 start = ParseDate(GetVal(row, "msdStart"))?.ToString("yyyy-MM-dd") ?? "",
                 end = ParseDate(GetVal(row, "msdEnd"))?.ToString("yyyy-MM-dd") ?? "",
                 history = ""
@@ -516,9 +679,9 @@ app.MapPost("/api/import", async (HttpContext context) =>
 
         using var cmd = new SqlCommand(@"
             INSERT INTO dbo.Controltable (NID, YearMonth, MainCat, SubCat, Status, StageCode, NotesLink, EmsOwner, MsdOwner, CurrentStatus, MpSaving,
-                                          SpecStart, SpecEnd, SpecHistory, MsdConfirm, MsdConfirmNote, MsdStart, MsdEnd, MsdHistory, UatStart, UatEnd, UatHistory)
+                                          SpecStart, SpecEnd, SpecHistory, MsdConfirm, MsdConfirmNote, MsdConfirmHistory, MsdStart, MsdEnd, MsdHistory, UatStart, UatEnd, UatHistory)
             VALUES (@NID, @YearMonth, @MainCat, @SubCat, @Status, @StageCode, @NotesLink, @EmsOwner, @MsdOwner, @CurrentStatus, @MpSaving,
-                    @SpecStart, @SpecEnd, @SpecHistory, @MsdConfirm, @MsdConfirmNote, @MsdStart, @MsdEnd, @MsdHistory, @UatStart, @UatEnd, @UatHistory)", conn);
+                    @SpecStart, @SpecEnd, @SpecHistory, @MsdConfirm, @MsdConfirmNote, @MsdConfirmHistory, @MsdStart, @MsdEnd, @MsdHistory, @UatStart, @UatEnd, @UatHistory)", conn);
         AddSqlParameters(cmd, req, includeHistory: true);
         await cmd.ExecuteNonQueryAsync();
         imported++;
@@ -544,7 +707,8 @@ static void AddDate(SqlCommand cmd, string name, string? value)
 static void AddSqlParameters(SqlCommand cmd, Requirement req, bool includeHistory = false)
 {
     AddText(cmd, "@NID", req.nid);
-    AddText(cmd, "@YearMonth", req.yearMonth);
+    // 年月一律收斂成 "YYYY/MM"，不管前端或匯入送來什麼寫法
+    AddText(cmd, "@YearMonth", FormatYearMonth(req.yearMonth));
     AddText(cmd, "@MainCat", req.mainCat);
     AddText(cmd, "@SubCat", req.subCat);
     AddText(cmd, "@Status", req.status);
@@ -567,13 +731,13 @@ static void AddSqlParameters(SqlCommand cmd, Requirement req, bool includeHistor
     if (includeHistory)
     {
         AddText(cmd, "@SpecHistory", req.spec?.history);
+        AddText(cmd, "@MsdConfirmHistory", req.msd?.confirmHistory);
         AddText(cmd, "@MsdHistory", req.msd?.history);
         AddText(cmd, "@UatHistory", req.uat?.history);
     }
 }
 
 app.Run();
-
 // Models
 public class Personnel
 {
@@ -595,6 +759,8 @@ public class MsdPhase : Phase
     public string? confirm { get; set; }
     // MSD 確認欄的自由文字備註，例如 "Next Check: 8/18 -> 8/20"
     public string? confirmNote { get; set; }
+    // ② MSD 確認 Spec 日期的異動軌跡 (Excel「2_MSDHistory」)，與 ③ 開發的 history 分開
+    public string? confirmHistory { get; set; }
 }
 
 public class Requirement
@@ -604,9 +770,9 @@ public class Requirement
     public string? yearMonth { get; set; }
     public string? mainCat { get; set; }
     public string? subCat { get; set; }
-    // 整體狀態 Init / Ongoing / Pending / Done (Excel「Overall Status」)
+    // 整體狀態 Init / Ongoing / Pending / Done (Excel「OverallStatus」)
     public string? status { get; set; }
-    // 階段代號 (1)~(5) (Excel 最後一欄「Status」)
+    // 階段代號，純數字 "1"~"5" (Excel「StatusID」)。與上方 status 意義不同，不可混用
     public string? stageCode { get; set; }
     public string? notesLink { get; set; }
     public string? emsOwner { get; set; }
