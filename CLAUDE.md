@@ -28,7 +28,8 @@
 - **建置指令**: 
   - `npm run build`: 同時執行 JSX 編譯與 Tailwind CSS 編譯。
   - `npm run watch:js` / `npm run watch:css`: 可用來監聽檔案變更自動編譯。
-  - **重要提醒**: 每次修改 `app.jsx` 或 `input.css` 後，**必須執行 `npm run build`** (或開啟 watch)，否則瀏覽器讀到的 `wwwroot/app.js` 還是舊的。更新後若未生效，請修改 `index.html` 內 `app.js?v=...` 的 query string 版本號強制瀏覽器避開快取。
+  - **重要提醒**: 每次修改 `app.jsx` 或 `input.css` 後，**必須執行 `npm run build`** (或開啟 watch)，否則瀏覽器讀到的 `wwwroot/app.js` 還是舊的。
+  - **版本號一律更新**: build 完**接著就要**把 `wwwroot/index.html` 內 `app.css?v=` 與 `app.js?v=` 的版本號往上帶（格式 `YYYYMMDD` + 三位流水號，例 `20260818014`，兩處必須一致）。不要等到「發現沒生效」才補 —— 瀏覽器拿到舊檔是靜默失敗，看起來會像功能壞掉或只改了一半。
 
 ## 重要業務邏輯 (Key Business Logic)
 1. **三個主要階段的時程 (Spec, MSD, UAT)**

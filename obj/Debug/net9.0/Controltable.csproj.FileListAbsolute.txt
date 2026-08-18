@@ -81,7 +81,13 @@ C:\Controltable\obj\Debug\net9.0\Controltable.pdb
 C:\Controltable\obj\Debug\net9.0\Controltable.genruntimeconfig.cache
 C:\Controltable\obj\Debug\net9.0\ref\Controltable.dll
 C:\Controltable\obj\Debug\net9.0\Controltable.sourcelink.json
-C:\Controltable\obj\Debug\net9.0\compressed\od2m6gwwvn-ag82hal1mm.gz
-c:\Controltable\obj\Debug\net9.0\compressed\4ipn0t0ed0-9nez5k39dj.gz
-c:\Controltable\obj\Debug\net9.0\compressed\5fokwm4ckt-g80z3zxnqm.gz
-C:\Controltable\obj\Debug\net9.0\staticwebassets.upToDateCheck.txt
+C:\Controltable\bin\Debug\net9.0\Microsoft.AspNetCore.Authentication.Negotiate.dll
+C:\Controltable\bin\Debug\net9.0\Microsoft.AspNetCore.Connections.Abstractions.dll
+C:\Controltable\bin\Debug\net9.0\Microsoft.Extensions.Features.dll
+C:\Controltable\bin\Debug\net9.0\System.DirectoryServices.Protocols.dll
+C:\Controltable\bin\Debug\net9.0\runtimes\linux\lib\net9.0\System.DirectoryServices.Protocols.dll
+C:\Controltable\bin\Debug\net9.0\runtimes\osx\lib\net9.0\System.DirectoryServices.Protocols.dll
+C:\Controltable\bin\Debug\net9.0\runtimes\win\lib\net9.0\System.DirectoryServices.Protocols.dll
+C:\Controltable\obj\Debug\net9.0\compressed\4ipn0t0ed0-tg714plzv5.gz
+C:\Controltable\obj\Debug\net9.0\compressed\5fokwm4ckt-vy2e7j68v1.gz
+C:\Controltable\obj\Debug\net9.0\compressed\od2m6gwwvn-d9p9niq7wm.gz

@@ -8,6 +8,9 @@
 
   <ItemGroup>
     <PackageReference Include="ClosedXML" Version="0.105.1" />
+    <!-- Windows 驗證 (Negotiate/NTLM)，供稽核表的「異動人員」自動帶入登入者。
+         版本對齊 C:\Gantt 專案（同一台內網主機、同為 net9.0），⚠ 維持 9.0.x 不跳 10.x。 -->
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.Negotiate" Version="9.0.18" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="7.0.2" />
   </ItemGroup>
 

@@ -3,6 +3,8 @@ const { useState, useMemo, Fragment, useEffect } = React;
         // 以「今天」為基準計算逾期／即將到期，時分秒歸零避免比較誤差
         const TODAY = (() => { const d = new Date(); d.setHours(0,0,0,0); return d; })();
         const formatToday = `${TODAY.getFullYear()}/${String(TODAY.getMonth()+1).padStart(2,'0')}/${String(TODAY.getDate()).padStart(2,'0')}`;
+        // 與 API 傳輸格式一致的今天（"YYYY-MM-DD"）。日期都是這個格式，字串比較即時間比較
+        const TODAY_ISO = formatToday.replace(/\//g, '-');
 
         // ─── 四大狀態定義 (Init / Ongoing / Pending / Done) ───
         const STATUSES = {
@@ -14,12 +16,13 @@ const { useState, useMemo, Fragment, useEffect } = React;
 
         // ─── StatusID (Excel「StatusID」/ DB StageCode)，一律純數字 '1'~'5' ───
         // 舊資料可能寫成 '(1)'，一律用 normStageCode 收斂
+        // 名稱以使用者 2026-08-18 的定義為準：1.EMS規格確認 / 2.MSD確認中 / 3.MSD開發中 / 4.EMS驗收 / 5.結案
         const STAGE_CODES = {
-            '1': { label:'1 待 EMS Spec',  short:'待 EMS Spec',  color:'#f59e0b' },
-            '2': { label:'2 MSD 評估中',   short:'MSD 評估中',   color:'#8b5cf6' },
-            '3': { label:'3 MSD Ongoing', short:'MSD Ongoing', color:'#3b82f6' },
-            '4': { label:'4 待 EMS 驗收',  short:'待 EMS 驗收',  color:'#ec4899' },
-            '5': { label:'5 已完成',       short:'已完成',       color:'#10b981' }
+            '1': { label:'1. EMS規格確認', short:'EMS規格確認', color:'#f59e0b' },
+            '2': { label:'2. MSD確認中',   short:'MSD確認中',   color:'#8b5cf6' },
+            '3': { label:'3. MSD開發中',   short:'MSD開發中',   color:'#3b82f6' },
+            '4': { label:'4. EMS驗收',     short:'EMS驗收',     color:'#ec4899' },
+            '5': { label:'5. 結案',        short:'結案',        color:'#10b981' }
         };
         // 只去掉括號等雜訊，超出 1~5 的值原樣留著 —— 那可能是人工輸入錯誤，
         // 靜靜吃掉會讓錯誤永遠不被發現，改成在畫面上標警示色請人處理
@@ -37,11 +40,23 @@ const { useState, useMemo, Fragment, useEffect } = React;
             return Object.keys(STATUSES).find(x => x.toLowerCase() === k) || 'Init';
         };
 
-        // 軌跡字串裡有幾筆 [YYYY/M/D 修改] 就是幾次異動
-        const countHistoryEntries = s => s ? (String(s).match(/\[\d{4}\/\d{1,2}\/\d{1,2} 修改\]/g) || []).length : 0;
+        // 資料列上實際顯示的 StatusID（見 B4：Done 但 stageCode 為空的舊資料補成 5）。
+        // StatusID 篩選與統計都走這支，否則畫面顯示 5 卻篩不到，看起來像篩選壞掉
+        const effStageCode = item => normStageCode(item?.stageCode)
+            || (normStatus(item?.status) === 'Done' ? '5' : '');
+
+        // 異動次數改為直接數 dbo.Controltable_History 的筆數（排除 init），
+        // 不再 regex 掃字串（第 13 批移除 countHistoryEntries）
 
         // 後端一律回傳 "YYYY-MM-DD" 或空字串 (DB 為 DATE 型別)
         const parseDateStr = s => { if(!s||s==='-')return null; const d=new Date(s+'T00:00:00'); return isNaN(d.getTime())?null:d; };
+        // API 的 "YYYY-MM-DD" -> 畫面上的 "YYYY/MM/DD" (見 FIELD_SPEC.md，註冊日期一律用斜線)
+        const fmtYmd = s => s ? String(s).replace(/-/g, '/') : '';
+
+        // Notes Link 欄能不能做成可點的連結。
+        // 實際資料是 Lotus Notes 協定 (Notes://F12AD33/48258DE0.../...)，不是 http，
+        // 只認 https? 的話工廠最常見的那種連結會全部掉成純文字圖示。
+        const isLinkVal = s => !!s && /^(https?|notes|file|ftp):\/\//i.test(String(s).trim());
         const getDueStatus = ds => { const d=parseDateStr(ds); if(!d)return{isOverdue:false,isDueSoon:false,diffDays:null}; const diff=Math.ceil((d-TODAY)/864e5); return{isOverdue:diff<0,isDueSoon:diff>=0&&diff<=7,diffDays:diff}; };
         const isOverdue = s => getDueStatus(s).isOverdue;
 
@@ -66,15 +81,17 @@ const { useState, useMemo, Fragment, useEffect } = React;
         };
         // 整列的風險等級取三個階段裡最嚴重的那個
         // 資料列上的時程欄：日期 + 逾期／即將到期徽章 + 該階段的異動次數標記 (⚠N)
-        const scheduleCell = ({ val, alert, changes, label, br }) => (
+        // actual = 實際完成日（只有「延期完成」才有值）。原訂 End 刻意保留不動，
+        // 所以這欄一定要同時顯示兩個日期 —— 只顯示原訂的話主管根本看不到延遲
+        const scheduleCell = ({ val, alert, changes, label, br, actual }) => (
             <td className="px-2 py-2.5" style={{borderRight:br}}>
                 {!val && !changes
                     ? <span className="text-xs" style={{color:'var(--text-muted)'}}>-</span>
                     : <div className="flex flex-col gap-0.5 items-start">
                         <div className="flex items-center gap-1">
                             <span className="text-xs whitespace-nowrap"
-                                  style={{color: alert ? alert.color : 'var(--text-secondary)',
-                                          fontWeight: alert ? 700 : 500}}>
+                                  style={{color: actual ? 'var(--text-muted)' : alert ? alert.color : 'var(--text-secondary)',
+                                          fontWeight: (alert && !actual) ? 700 : 500}}>
                                 {val || '-'}
                             </span>
                             {changes > 0 && (
@@ -85,7 +102,14 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                 </span>
                             )}
                         </div>
-                        {alert && (
+                        {actual && (
+                            <span className="text-[10px] font-bold whitespace-nowrap cursor-help"
+                                  style={{color:'var(--tone-alert)'}}
+                                  title={`${label}：原訂 ${val} 完成，實際完成日 ${actual}（延期 ${dayDiff(val, actual)} 天）`}>
+                                → {actual}
+                            </span>
+                        )}
+                        {alert && !actual && (
                             <span className="text-[10px] font-bold px-1 py-0.5 rounded whitespace-nowrap"
                                   style={{color:alert.color, background:alert.bg, border:`1px solid ${alert.border}`}}>
                                 {alert.label}
@@ -104,10 +128,10 @@ const { useState, useMemo, Fragment, useEffect } = React;
         // 反而把真正該關注的項目淹掉 —— 所以先用 StatusID 定位目前階段，只比那一個日期。
         const isDateVal = s => !!s && /^\d{4}-\d{2}-\d{2}$/.test(String(s).trim());
         const DUE_PHASES = [
-            { code:'1', key:'spec',    label:'① EMS 提Spec',   color:'#f59e0b', getDate:i=>i.spec?.end,    owner:i=>i.emsOwner, side:'EMS' },
-            { code:'2', key:'confirm', label:'② MSD 確認Spec', color:'#8b5cf6', getDate:i=>i.msd?.confirm, owner:i=>i.msdOwner, side:'MSD' },
-            { code:'3', key:'msd',     label:'③ MSD 開發',     color:'#3b82f6', getDate:i=>i.msd?.end,     owner:i=>i.msdOwner, side:'MSD' },
-            { code:'4', key:'uat',     label:'④ EMS 驗收',     color:'#ec4899', getDate:i=>i.uat?.end,     owner:i=>i.emsOwner, side:'EMS' }
+            { code:'1', key:'spec',    label:'① EMS規格確認', color:'#f59e0b', getDate:i=>i.spec?.end,    owner:i=>i.emsOwner, side:'EMS' },
+            { code:'2', key:'confirm', label:'② MSD確認中',   color:'#8b5cf6', getDate:i=>i.msd?.confirm, owner:i=>i.msdOwner, side:'MSD' },
+            { code:'3', key:'msd',     label:'③ MSD開發中',   color:'#3b82f6', getDate:i=>i.msd?.end,     owner:i=>i.msdOwner, side:'MSD' },
+            { code:'4', key:'uat',     label:'④ EMS驗收',     color:'#ec4899', getDate:i=>i.uat?.end,     owner:i=>i.emsOwner, side:'EMS' }
         ];
 
         const resolveDuePhase = (item) => {
@@ -148,35 +172,37 @@ const { useState, useMemo, Fragment, useEffect } = React;
             return Math.round((db - da) / 864e5);
         };
 
-        // 從軌跡文字裡拆出各欄位的「原日期」與理由
-        // 來源格式: 原日期: [Confirm: YYYY-MM-DD, ]Start: YYYY-MM-DD, End: YYYY-MM-DD | 理由: xxx
-        const parseHistoryDetail = (raw) => {
-            if (!raw) return { confirm:'', start:'', end:'', reason:'' };
-            const rm = raw.match(/\|\s*理由[:：]\s*([\s\S]*)$/);
-            const reason = rm ? rm[1].trim() : '';
-            const head = rm ? raw.slice(0, rm.index) : raw;
-            const pick = label => {
-                const m = head.match(new RegExp(label + '[:：]\\s*(\\d{4}-\\d{2}-\\d{2})'));
-                return m ? m[1] : '';
-            };
-            return { confirm: pick('Confirm'), start: pick('Start'), end: pick('End'), reason };
-        };
-
+        // parseHistoryDetail / HIST_FIELD_LABEL 已於第 13 批移除 ——
+        // 稽核表直接存了 OldStart/NewStart… 等欄位，不必再從字串裡 regex 拆
         const PHASE_FIELD_LABEL = { confirm:'確認日', start:'開始', end:'結束' };
-        // 寫進軌跡字串時用的欄位名，必須與 parseHistoryDetail 的 pick() 一致
-        const HIST_FIELD_LABEL = { confirm:'Confirm', start:'Start', end:'End' };
 
         // ─── 四個階段的解鎖／軌跡設定 (見 FIELD_SPEC.md「專案執行期間」) ───
         // obj   = 這個階段的日期掛在 item 的哪個物件下
         // fields= 這個階段「自己」負責的日期欄位 (② 與 ③ 都掛在 msd 下，但各管不同欄位)
         // hist  = 異動軌跡要寫進哪個欄位 (② 寫 confirmHistory，對應 Excel 的 2_MSDHistory)
+        // gate  = 前置階段（第 14 批）。該階段的 fields 全部填完，這個階段才開放「從空白開始填寫」
+        // endKey / actualKey / doneStage = Done 推進用（第 15 批）。
+        //   ② 只有單一日期，它的「End」就是 confirm，實際完成日則是另一個欄位 confirmActualEnd
         const PHASES = {
-            spec:    { label:'1. EMS 需求Spec提供', obj:'spec', fields:['start','end'], hist:'history' },
-            confirm: { label:'2. MSD 確認Spec',     obj:'msd',  fields:['confirm'],     hist:'confirmHistory' },
-            msd:     { label:'3. MSD 開發',         obj:'msd',  fields:['start','end'], hist:'history' },
-            uat:     { label:'4. EMS 驗收',         obj:'uat',  fields:['start','end'], hist:'history' }
+            spec:    { label:'1_EMS規格確認', obj:'spec', fields:['start','end'], hist:'history',        color:'#f59e0b', timelineLabel:'① EMS規格確認', gate:null,      endKey:'end',     actualKey:'actualEnd',        doneStage:2 },
+            confirm: { label:'2_MSD確認中',   obj:'msd',  fields:['confirm'],     hist:'confirmHistory', color:'#8b5cf6', timelineLabel:'② MSD確認中',   gate:'spec',    endKey:'confirm', actualKey:'confirmActualEnd', doneStage:3 },
+            msd:     { label:'3_MSD開發中',   obj:'msd',  fields:['start','end'], hist:'history',        color:'#3b82f6', timelineLabel:'③ MSD開發中',   gate:'confirm', endKey:'end',     actualKey:'actualEnd',        doneStage:4 },
+            uat:     { label:'4_EMS驗收',     obj:'uat',  fields:['start','end'], hist:'history',        color:'#ec4899', timelineLabel:'④ EMS驗收',     gate:'msd',     endKey:'end',     actualKey:'actualEnd',        doneStage:5 }
         };
         const PHASE_KEYS = Object.keys(PHASES);
+
+        // ─── 稽核表 dbo.Controltable_History 的異動類型 ───
+        // ⚠️ init（首次填寫）**不算異動**。所有次數統計都要排除它，
+        // 否則每一筆資料光是建立就會被算成「改過 1 次」，主管看到的異動次數全是假的。
+        const CHANGE_TYPES = {
+            'init':     { label:'首次填寫', color:'var(--text-muted)',  bg:'var(--bg-input)' },
+            '日期異動': { label:'日期異動', color:'var(--tone-warn)',   bg:'var(--tone-warn-bg)' },
+            '提早完成': { label:'提早完成', color:'var(--tone-good)',   bg:'rgba(15,118,110,0.1)' },
+            '延期完成': { label:'延期完成', color:'var(--tone-alert)',  bg:'var(--tone-alert-bg)' },
+            '規格回退': { label:'規格回退', color:'#8b5cf6',            bg:'rgba(139,92,246,0.12)' }
+        };
+        // 異動原因分類（使用者定義的四種）
+        const REASON_CATEGORIES = ['規格變更', '優先級調整', '技術問題', '其他'];
 
         // ─── Components ───
         // 給高階主管瀏覽用，刻意保持克制：不用 emoji、漸層、動畫。
@@ -192,31 +218,162 @@ const { useState, useMemo, Fragment, useEffect } = React;
             </div>
         );
 
-        const PipelineStage = ({ statusKey, items, total, dark }) => {
-            const st = STATUSES[statusKey] || STATUSES['Init'];
-            const count = items.length;
-            const pct = total > 0 ? Math.round((count/total)*100) : 0;
-            const itemBg = dark ? st.darkBg : st.lightBg;
+        // 明細表工具列的下拉篩選。value 為 'All' 時代表不限
+        const FilterSelect = ({ label, value, onChange, options, allLabel }) => {
+            const active = value !== 'All';
             return (
-                <div className="flex-1 min-w-0">
-                    <div className="flex items-baseline gap-2 mb-1.5">
-                        <span className="text-xs font-semibold truncate" style={{color:'var(--text-secondary)'}}>{st.label}</span>
-                        <span className="ml-auto text-lg font-semibold tabular-nums" style={{color:'var(--text-primary)'}}>{count}</span>
-                    </div>
-                    <div className="h-1.5 overflow-hidden" style={{background:'var(--bg-bar-track)'}}>
-                        <div className="h-full" style={{width:`${pct}%`,background:st.color}}></div>
-                    </div>
-                    <div className="mt-2 space-y-1">
-                        {items.slice(0,3).map((item, idx) => (
-                            <div key={item.id || item.nid || idx} className="text-[11px] px-2 py-1 truncate"
-                                 style={{background:'var(--bg-detail-card)', color:'var(--text-tertiary)', borderLeft:`2px solid ${st.color}`}}
-                                 title={`${item.mainCat} - ${item.subCat}`}>
-                                {item.subCat || item.mainCat}
-                            </div>
-                        ))}
-                        {items.length > 3 && <div className="text-[10px] pl-2" style={{color:'var(--text-muted)'}}>另有 {items.length-3} 件</div>}
+                <div className="relative">
+                    <select value={value} onChange={e=>onChange(e.target.value)}
+                        className="appearance-none pl-3 pr-8 py-2 rounded-lg text-[11px] font-bold transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
+                        style={active
+                            ? {background:'var(--bg-pill-active)', color:'var(--text-on-pill)', border:'1px solid transparent'}
+                            : {background:'var(--bg-input)', border:'1px solid var(--bg-input-border)', color:'var(--text-secondary)'}}
+                        title={`依 ${label} 篩選`}>
+                        <option value="All">{allLabel}</option>
+                        {options.map(o => <option key={o.value} value={o.value}>{label}：{o.label}</option>)}
+                    </select>
+                    <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none"
+                         style={{color: active ? 'var(--text-on-pill)' : 'var(--text-muted)'}}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m6 9 6 6 6-6"/></svg>
                     </div>
                 </div>
+            );
+        };
+
+        // 編輯視窗裡某一階段的異動紀錄（讀 dbo.Controltable_History）。
+        // 舊版顯示的是 *History 欄位的原始字串，那些欄位第 13 批起已不再寫入
+        const PhaseAuditList = ({ entries }) => {
+            if (!entries.length) return null;
+            return (
+                <div className="mt-3 p-2 rounded border text-[10px] max-h-[110px] overflow-y-auto scrollbar-thin"
+                     style={{background:'var(--bg-detail-card)', borderColor:'var(--bg-detail-border)', color:'var(--text-tertiary)'}}>
+                    <div className="font-bold mb-1" style={{color:'var(--text-secondary)'}}>異動紀錄 ({entries.filter(e=>e.changeType!=='init').length} 次)</div>
+                    {entries.map((h,i) => {
+                        const ct = CHANGE_TYPES[h.changeType] || CHANGE_TYPES['日期異動'];
+                        const pairs = [['確認日',h.oldConfirm,h.newConfirm], ['開始',h.oldStart,h.newStart], ['結束',h.oldEnd,h.newEnd]]
+                            .filter(([, o, n]) => (o || n) && o !== n);
+                        return (
+                            <div key={h.id||i} className="mb-1 last:mb-0">
+                                <span className="px-1 rounded font-bold mr-1" style={{color:ct.color, background:ct.bg}}>{ct.label}</span>
+                                <span>{h.changedAt}</span>
+                                {h.changedBy && <span> · {h.changedBy}{h.changedBySource==='simulated' && '（模擬）'}</span>}
+                                {pairs.map(([lab,o,n]) => <span key={lab}> ｜ {lab} {o||'未填'} → {n||'未填'}</span>)}
+                                {h.reasonCategory && <span> ｜ {h.reasonCategory}</span>}
+                                {h.note && <span> ｜ {h.note}</span>}
+                            </div>
+                        );
+                    })}
+                </div>
+            );
+        };
+
+        // 前置階段未完成的鎖（第 14 批）。⚠️ 與「已有值防誤改」那把鎖語意完全不同：
+        //   🔒 灰色實心（這個）= 前置階段沒填完，**不可解**，把前面補完就自動開放
+        //   🔓 各階段標題旁的線條鎖 = 已有值防誤改，點一下就能解
+        // 兩者 icon 與顏色刻意分開，否則使用者會一直去點解不開的鎖
+        const GateLock = ({ text, showText }) => (
+            <span className="inline-flex items-center gap-1 text-[11px] cursor-not-allowed" style={{color:'var(--text-muted)'}} title={text}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M12 1a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2h-1V6a5 5 0 0 0-5-5zm0 2a3 3 0 0 1 3 3v3H9V6a3 3 0 0 1 3-3z"/>
+                </svg>
+                {showText && <span>{text}</span>}
+            </span>
+        );
+
+        // 延期完成的「實際完成日」（第 15 批）。原訂 End 保留不動，這行補上實際落點。
+        // 提早完成不會有值 —— 那種情況是直接把 End 更新成完成當天
+        const ActualEndNote = ({ actual, planned }) => {
+            if (!isDateVal(actual)) return null;
+            const d = dayDiff(planned, actual);
+            return (
+                <span className="ml-1.5 text-[11px] font-bold" style={{color:'var(--tone-alert)'}}>
+                    ｜實際 {actual}{d ? `（延期 ${d} 天）` : ''}
+                </span>
+            );
+        };
+
+        // 資料列上的警示徽章（第 17 批）。
+        // **兩個標籤互不影響彼此的計數**：回退 = 規格一直變、延期 = 執行落後，
+        // 主管要能分開判斷責任歸屬，所以不合併成一個「異常 N 次」。
+        // ⚠️ 直接讀 delayCount / rollbackCount 欄位，不去 parse 稽核表 ——
+        // 要能排序與篩選（例如「延期最多的前 5 筆」），每列都掃一次稽核表撐不住。
+        // 提早完成刻意不做徽章（那不是警示），但明細的軌跡本來就查得到。
+        const AlertBadges = ({ delay, rollback }) => {
+            if (!delay && !rollback) return null;
+            // 延期 2 次以上才轉紅。1 次就紅的話整片都是紅字，真正嚴重的反而被淹掉
+            const delayStyle = delay >= 2
+                ? { color:'var(--tone-alert)', background:'var(--tone-alert-bg)', borderColor:'var(--tone-alert)' }
+                : { color:'var(--text-tertiary)', background:'var(--bg-input)', borderColor:'var(--bg-input-border)' };
+            return (
+                <div className="flex flex-wrap gap-1 mt-1">
+                    {rollback > 0 && (
+                        <span className="px-1 rounded text-[10px] font-bold border whitespace-nowrap cursor-help"
+                              style={{color:'#8b5cf6', background:'rgba(139,92,246,0.12)', borderColor:'rgba(139,92,246,0.35)'}}
+                              title={`規格變更回退 ${rollback} 次（展開該列可看每次回退清掉了哪些日期與說明）`}>
+                            🔄{rollback}
+                        </span>
+                    )}
+                    {delay > 0 && (
+                        <span className="px-1 rounded text-[10px] font-bold border whitespace-nowrap cursor-help"
+                              style={delayStyle}
+                              title={`執行延期 ${delay} 次${delay >= 2 ? '（2 次以上轉紅色警示）' : ''}`}>
+                            ⏰{delay}
+                        </span>
+                    )}
+                </div>
+            );
+        };
+
+        // 階段完成鈕（第 15 批）。按下去會依「今天 vs 原訂 End」判定提早或延期，
+        // 兩者都會推進 StatusID 並寫稽核列，所以刻意做成需要二次確認的動作
+        const DoneButton = ({ onClick, title }) => (
+            <button type="button" onClick={onClick} title={title}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold border transition-colors"
+                    style={{color:'var(--tone-good)', background:'rgba(15,118,110,0.08)', borderColor:'rgba(15,118,110,0.3)'}}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                完成
+            </button>
+        );
+
+        // 解鎖後改了日期時要填的「異動原因分類 + 文字說明」。
+        // 兩者都會寫進 dbo.Controltable_History（ReasonCategory / Note）
+        const ReasonFields = ({ phaseKey, categories, setCategories, reasons, setReasons }) => (
+            <>
+                <label className="block text-xs font-bold text-red-600 dark:text-red-400 mb-1.5">⚠️ 請填寫異動原因 (必填)</label>
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                    {REASON_CATEGORIES.map(c => {
+                        const on = categories[phaseKey] === c;
+                        return (
+                            <button key={c} type="button"
+                                    onClick={()=>setCategories({...categories, [phaseKey]: on ? '' : c})}
+                                    className="px-2.5 py-1 rounded text-[11px] font-bold transition-colors border"
+                                    style={on
+                                        ? {background:'rgba(239,68,68,0.12)', color:'#ef4444', borderColor:'#ef4444'}
+                                        : {background:'var(--bg-main)', color:'var(--text-tertiary)', borderColor:'var(--border-table)'}}>
+                                {c}
+                            </button>
+                        );
+                    })}
+                </div>
+                <input type="text" className="w-full px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-red-500/50"
+                       style={{background:'var(--bg-main)', borderColor:'var(--border-table)'}}
+                       placeholder="文字說明：為什麼要改這個日期..."
+                       value={reasons[phaseKey]||''}
+                       onChange={e=>setReasons({...reasons, [phaseKey]:e.target.value})} />
+            </>
+        );
+
+        // 開／關兩態的小按鈕（排序選項用）
+        const ToggleChip = ({ on, onClick, title, tone, children }) => {
+            const clr = tone === 'alert' ? 'var(--tone-alert)' : 'var(--color-indigo-500, #6366f1)';
+            return (
+                <button onClick={onClick} title={title}
+                        className="px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition-colors border flex items-center gap-1.5"
+                        style={on
+                            ? {background:`${tone === 'alert' ? 'var(--tone-alert-bg)' : 'rgba(99,102,241,0.12)'}`, color:clr, borderColor:clr}
+                            : {background:'var(--bg-input)', color:'var(--text-muted)', borderColor:'var(--bg-input-border)'}}>
+                    <span className="text-[10px]">{on ? '✓' : '　'}</span>{children}
+                </button>
             );
         };
 
@@ -266,7 +423,9 @@ const { useState, useMemo, Fragment, useEffect } = React;
             const [activeView, setActiveView] = useState('table');
             const [expandedRows, setExpandedRows] = useState(new Set());
             const [searchTerm, setSearchTerm] = useState('');
-            const [statusFilter, setStatusFilter] = useState('All');
+            // StatusID 篩選（第 18 批）：改為多選，空陣列 = ALL。
+            // 用陣列而不是 Set，是為了讓 useMemo 的相依陣列能靠參考變更觸發重算
+            const [stageFilter, setStageFilter] = useState([]);
             const [sortConfig, setSortConfig] = useState({ key: null, direction: 'asc' });
             const [colFilters, setColFilters] = useState({});
             const [showColFilters, setShowColFilters] = useState(false);
@@ -276,14 +435,35 @@ const { useState, useMemo, Fragment, useEffect } = React;
             const [isPersonnelModalOpen, setIsPersonnelModalOpen] = useState(false);
             const [unlockedSections, setUnlockedSections] = useState({ spec: false, confirm: false, msd: false, uat: false });
             const [unlockReasons, setUnlockReasons] = useState({ spec: '', confirm: '', msd: '', uat: '' });
+            // 異動原因分類（規格變更／優先級調整／技術問題／其他），與上面的文字說明成對
+            const [unlockCategories, setUnlockCategories] = useState({ spec: '', confirm: '', msd: '', uat: '' });
+            // ─── 時程異動稽核（第 13 批）───
+            // historyEntries 是 dbo.Controltable_History 的全部紀錄，
+            // historyMap 依 requirementId 分組供資料列與明細查用
+            const [historyEntries, setHistoryEntries] = useState([]);
+            // 操作者：Windows 帳號（/api/whoami）與模擬帳號
+            const [actor, setActor] = useState({ empId: null, source: 'unknown', allowSimulation: false });
+            const [isActorModalOpen, setIsActorModalOpen] = useState(false);
             // 阻擋型提示視窗（NID 重複、必填未完成）——比 toast 更難被忽略
             const [alertModal, setAlertModal] = useState(null);
             // 確認型視窗（刪除需求、刪除人員），取代原生 confirm()
             const [confirmModal, setConfirmModal] = useState(null); // { title, message, onConfirm }
-            // 到期預警：提醒範圍（天）與層級篩選，另外記住通知橫幅是否被關掉
-            const [dueWindow, setDueWindow] = useState(DUE_WINDOW_DEFAULT);
-            const [dueLevel, setDueLevel] = useState('all');
+            // 規格回退視窗（第 16 批）：{ id, nid, curStage, target, note }
+            const [rollbackModal, setRollbackModal] = useState(null);
+            // 到期提醒橫幅是否被關掉（不持久化，重新整理就會再出現）
             const [noticeDismissed, setNoticeDismissed] = useState(false);
+            // ─── 明細表的篩選與排序（第 12 批：統計、人員、逾期全部收進同一頁）───
+            const [emsFilter, setEmsFilter] = useState('All');
+            const [msdFilter, setMsdFilter] = useState('All');
+            // 'All' | 'attention'(逾期+7日內) | 'overdue' | 'soon'
+            const [dueFilter, setDueFilter] = useState('All');
+            // 警示徽章篩選（第 17 批）：'All' | 'delay' | 'delay2' | 'rollback'
+            const [alertFilter, setAlertFilter] = useState('All');
+            // Done 一律沉到最下面。做成可關閉的 toggle，否則使用者點欄位排序時
+            // 會覺得「排序壞掉了」——Done 列永遠不動
+            const [doneLast, setDoneLast] = useState(true);
+            // 依剩餘天數由少到多排序（逾期最久的在最上面）
+            const [duePriority, setDuePriority] = useState(false);
 
 
             const fetchPersonnel = async () => {
@@ -323,7 +503,53 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 }
             };
 
-            useEffect(() => { fetchReqs(); fetchPersonnel(); }, []);
+            // 時程異動軌跡（dbo.Controltable_History）。整包載入後在前端依 requirementId 分組 ——
+            // 每列展開時再打一次 API 會讓明細開起來有延遲，資料量也不大
+            const fetchHistory = async () => {
+                try {
+                    const res = await fetch('/api/history');
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    const data = await res.json();
+                    setHistoryEntries(Array.isArray(data) ? data : []);
+                } catch (err) {
+                    console.error('Failed to fetch history:', err);
+                    setHistoryEntries([]);
+                }
+            };
+
+            // Windows 帳號偵測（作法對齊 C:\Gantt）。
+            // /api/whoami 需要驗證，非網域環境會回 401 —— 靜默忽略即可，
+            // 寫入照常進行，稽核紀錄的 ChangedBy 留空而已，不要因此擋住存檔。
+            const detectActor = async () => {
+                let allow = false;
+                try {
+                    const info = await fetch('/api/authinfo');
+                    if (info.ok) allow = !!(await info.json()).allowSimulation;
+                } catch (err) { /* 取不到就當不開放模擬 */ }
+                try {
+                    const res = await fetch('/api/whoami');
+                    if (res.ok) {
+                        const d = await res.json();
+                        if (d.empId) { setActor({ empId: d.empId, source: 'windows', allowSimulation: allow }); return; }
+                    }
+                } catch (err) { /* 401 或非網域 → 落到下面 */ }
+                setActor({ empId: null, source: 'unknown', allowSimulation: allow });
+            };
+
+            useEffect(() => { fetchReqs(); fetchPersonnel(); fetchHistory(); detectActor(); }, []);
+
+            const historyMap = useMemo(() => {
+                const m = new Map();
+                historyEntries.forEach(h => {
+                    if (!m.has(h.requirementId)) m.set(h.requirementId, []);
+                    m.get(h.requirementId).push(h);
+                });
+                return m;
+            }, [historyEntries]);
+
+            // 編輯視窗裡某一階段的既有異動紀錄
+            const editingPhaseHist = (phase) =>
+                (editingData?.id ? (historyMap.get(editingData.id) || []) : []).filter(h => h.phase === phase);
 
             const handleExport = () => { window.open('/api/export', '_blank'); };
             const handleImport = async (e) => {
@@ -379,30 +605,52 @@ const { useState, useMemo, Fragment, useEffect } = React;
             const handleUnlock = (key) => {
                 setUnlockedSections(prev => ({ ...prev, [key]: true }));
             };
-            const parseHistoryString = (str) => {
-                if (!str) return [];
-                return str.split(/(?=\[\d{4}\/\d{1,2}\/\d{1,2} 修改\])/).filter(s => s.trim()).map(entry => {
-                    const line = entry.trim();
-                    const match = line.match(/^\[(.*?) 修改\] ([\s\S]*)$/);
-                    if (match) {
-                        return { date: match[1], reason: match[2].trim() };
-                    }
-                    return { date: '', reason: line };
-                });
-            };
+            // parseHistoryString 已於第 13 批移除 —— 軌跡改讀 dbo.Controltable_History，
+            // 不再需要從 [YYYY/M/D 修改] 字串裡拆欄位
 
             // 與到期預警共用同一個「這格是不是有效日期」的判定，避免兩套規則各自漂移
             const isValidVal = isDateVal;
 
-            // 以下三個 helper 一律經由 PHASES 查表 —— ② MSD 確認 與 ③ MSD 開發 的日期
+            // ─── 階段順序 gating（第 14 批）───
+            // 前置階段的日期全部填完，下一階段才開放「從空白開始填寫」。
+            // 判定看的是 editingData 而不是 original —— 使用者在同一個視窗裡把 ① 補完，
+            // ② 要立刻開放，不必先存檔再重開
+            // 只看「直接前置」。前置自己沒開放時它也還是空的，所以整條鏈自然會逐層關著，
+            // 不必再往上遞迴 —— 遞迴反而會把「② 有值但 ① 空」的跳空資料連 ③ 一起鎖死
+            const isPhaseOpen = (phaseKey) => {
+                const gate = PHASES[phaseKey]?.gate;
+                if (!gate) return true;                       // ① 永遠開放
+                const gp = PHASES[gate];
+                const vals = editingData?.[gp.obj] || {};
+                return gp.fields.every(f => isValidVal(vals[f]));
+            };
+            const gateHint = (phaseKey) => {
+                const gate = PHASES[phaseKey]?.gate;
+                return gate ? `請先完成 ${PHASES[gate].label} 的日期` : '';
+            };
+
+            // 以下的 helper 一律經由 PHASES 查表 —— ② MSD 確認 與 ③ MSD 開發 的日期
             // 都掛在 item.msd 下，但各自只管自己的欄位，不可再直接用 phaseKey 當物件名
-            const isFieldLocked = (phaseKey, field) => {
-                if (!editingData?.id) return false;
+            //
+            // 回傳鎖的「來源」讓 UI 決定要畫哪一種鎖與 tooltip：
+            //   'gated'  = 前置階段未完成，不可解
+            //   'locked' = 已有值防誤改，點鎖頭可解
+            //   null     = 可以編輯
+            // ⚠️ gating 只擋「從空白開始填寫」。已經有值的欄位一律照舊可解鎖修改 ——
+            // 現有資料有階段跳空的（③ 有日期但 ② 空），寫成「前置沒填就整個 disable」
+            // 會讓那些列有值卻永遠改不動。① 永遠開放，使用者一定能從前面補回來
+            const fieldLockReason = (phaseKey, field) => {
+                if (!editingData?.id) return null;            // 新增時只有 ①，不套 gating
                 const ph = PHASES[phaseKey];
                 const original = requirementsData.find(d => d.id === editingData.id);
-                if (!original || !original[ph.obj] || !isValidVal(original[ph.obj][field])) return false;
-                return !unlockedSections[phaseKey];
+                const hadValue = !!original?.[ph.obj] && isValidVal(original[ph.obj][field]);
+                // 這個視窗裡剛填進去的值也算「有值」，否則使用者一填完就被自己的 gating 鎖住
+                const hasValue = hadValue || isValidVal(editingData?.[ph.obj]?.[field]);
+                if (!hasValue) return isPhaseOpen(phaseKey) ? null : 'gated';
+                if (!hadValue) return null;                   // 本次新填的，不需要解鎖
+                return unlockedSections[phaseKey] ? null : 'locked';
             };
+            const isFieldLocked = (phaseKey, field) => fieldLockReason(phaseKey, field) !== null;
             const hasAnyField = (phaseKey) => {
                 if (!editingData?.id) return false;
                 const ph = PHASES[phaseKey];
@@ -420,14 +668,141 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 return ph.fields.some(f => (oldP[f] || '') !== (newP[f] || ''));
             };
 
+            // ─── 階段完成 Done（第 15 批）───
+            // 這個階段是否已經標記過完成。⚠️ 只看「最後一次規格回退之後」的紀錄 ——
+            // 回退的語意就是那些階段要重做，重做完當然要能再按一次完成（第 16 批）
+            const phaseDoneEntry = (phaseKey) => {
+                const all = editingData?.id ? (historyMap.get(editingData.id) || []) : [];
+                const lastRollback = [...all].reverse().find(h => h.changeType === '規格回退');
+                return [...all].reverse().find(h =>
+                    h.phase === phaseKey &&
+                    (h.changeType === '提早完成' || h.changeType === '延期完成') &&
+                    (!lastRollback || h.changedAt > lastRollback.changedAt));
+            };
+
+            const handleDone = (phaseKey) => {
+                const ph = PHASES[phaseKey];
+                const original = requirementsData.find(d => d.id === editingData?.id);
+                const planned = original?.[ph.obj]?.[ph.endKey];
+                if (!isDateVal(planned)) {
+                    setAlertModal({
+                        title: '尚未壓日期',
+                        message: `「${ph.label}」還沒有${phaseKey==='confirm'?'確認日期':'結束日期'}。\n\n請先填寫並儲存，再標記完成。`
+                    });
+                    return;
+                }
+                // 視窗裡改了日期卻還沒存，按完成會拿舊值去比對，結果與畫面對不起來
+                if (isPhaseModified(phaseKey)) {
+                    setAlertModal({
+                        title: '有尚未儲存的日期異動',
+                        message: `「${ph.label}」的日期在這個視窗裡被改過但還沒儲存。\n\n請先儲存變更，再標記完成。`
+                    });
+                    return;
+                }
+                const early = TODAY_ISO <= planned;             // 同一天視為準時，算提早
+                const days = Math.abs(dayDiff(planned, TODAY_ISO) || 0);
+                const dateLabel = phaseKey === 'confirm' ? '確認日' : '結束日';
+                const verdict = early
+                    ? (days === 0 ? `準時完成（${dateLabel}更新為今天）` : `提早完成（${dateLabel}由 ${planned} 更新為今天，提早 ${days} 天）`)
+                    : `延期完成（原訂 ${planned} 保留不變，實際完成日記為今天，延期 ${days} 天）`;
+                setConfirmModal({
+                    title: `標記「${ph.label}」完成`,
+                    message: `今天是 ${TODAY_ISO}，原訂${dateLabel}是 ${planned}。\n\n將記為：${verdict}\n\nStatusID 會推進到 ${ph.doneStage}，並寫入一筆稽核紀錄。確定嗎？`,
+                    onConfirm: async () => {
+                        try {
+                            const res = await fetch(`/api/requirements/${editingData.id}/done`, {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({ phase: phaseKey, actorEmpId: actor.empId || '', actorSource: actor.source })
+                            });
+                            const bodyJson = await res.json().catch(() => ({}));
+                            if (!res.ok) {
+                                setAlertModal({ title:'無法標記完成', message: bodyJson.message || `HTTP ${res.status}` });
+                                return;
+                            }
+                            setEditingData(null);
+                            setIsModalOpen(false);
+                            await Promise.all([fetchReqs(), fetchHistory()]);
+                            showToast(bodyJson.message || '已標記完成');
+                        } catch (err) {
+                            console.error(err);
+                            showToast('標記完成失敗：' + err.message, 'error');
+                        }
+                    }
+                });
+            };
+
+            // 階段標題旁要顯示什麼：已完成 → 結果標籤；還沒完成且已壓日期 → 完成鈕；
+            // 連日期都還沒壓 → 什麼都不顯示（沒有原訂日就沒有提早／延期可言）
+            const donePanel = (phaseKey) => {
+                if (!editingData?.id) return null;
+                const ph = PHASES[phaseKey];
+                const done = phaseDoneEntry(phaseKey);
+                if (done) {
+                    const ct = CHANGE_TYPES[done.changeType] || {};
+                    return (
+                        <span className="px-1.5 py-0.5 rounded text-[11px] font-bold cursor-help"
+                              style={{color:ct.color, background:ct.bg}}
+                              title={`${done.changedAt || ''}${done.changedBy ? ' · '+done.changedBy : ''}${done.note ? '｜'+done.note : ''}`}>
+                            ✓ {ct.label || done.changeType}
+                        </span>
+                    );
+                }
+                const original = requirementsData.find(d => d.id === editingData.id);
+                if (!isDateVal(original?.[ph.obj]?.[ph.endKey])) return null;
+                return <DoneButton onClick={()=>handleDone(phaseKey)}
+                                   title={`標記「${ph.label}」完成（今天 ${TODAY_ISO}）`} />;
+            };
+
+            // ─── 規格回退（第 16 批）───
+            // 目前的 StatusID 以**已儲存的值**為準，不看視窗裡還沒存的下拉選擇 ——
+            // 後端也是讀 DB，兩邊看的必須是同一個值
+            const savedStage = (row) => {
+                const c = parseInt(normStageCode(row?.stageCode), 10) || 0;
+                return c || (normStatus(row?.status) === 'Done' ? 5 : 0);   // 舊資料 StageCode 可能是空的
+            };
+            // 回退會清空「≥ 目標階段」的日期（含目標階段本身）
+            const clearedByRollback = (target) =>
+                [1,2,3,4].filter(s => s >= target).map(s => STAGE_CODES[String(s)].label);
+
+            const handleRollback = async () => {
+                const m = rollbackModal;
+                if (!m) return;
+                if (!m.note || !m.note.trim()) {
+                    setAlertModal({ title:'缺少回退說明', message:'規格回退必須填寫文字說明才能執行。' });
+                    return;
+                }
+                try {
+                    const res = await fetch(`/api/requirements/${m.id}/rollback`, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ targetStage: m.target, note: m.note,
+                                               actorEmpId: actor.empId || '', actorSource: actor.source })
+                    });
+                    const body = await res.json().catch(() => ({}));
+                    if (!res.ok) {
+                        setAlertModal({ title:'無法回退', message: body.message || `HTTP ${res.status}` });
+                        return;
+                    }
+                    setRollbackModal(null);
+                    setEditingData(null);
+                    setIsModalOpen(false);
+                    await Promise.all([fetchReqs(), fetchHistory()]);
+                    showToast(body.message || '已回退');
+                } catch (err) {
+                    console.error(err);
+                    showToast('回退失敗：' + err.message, 'error');
+                }
+            };
+
             // 新增/編輯的必填欄位 (見 FIELD_SPEC.md「情況一」)，後端也會再擋一次
             const REQUIRED_FIELDS = [
                 { label:'NID',            get: d => d.nid },
                 { label:'Main Cat',       get: d => d.mainCat },
                 { label:'Sub Cat',        get: d => d.subCat },
                 { label:'EMS 負責人',      get: d => d.emsOwner },
-                { label:'EMS 提Spec 開始日', get: d => d.spec?.start },
-                { label:'EMS 提Spec 結束日', get: d => d.spec?.end }
+                { label:'1_EMS規格確認 開始日', get: d => d.spec?.start },
+                { label:'1_EMS規格確認 結束日', get: d => d.spec?.end }
             ];
 
             const handleSave = async (e) => {
@@ -453,6 +828,24 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     return;
                 }
 
+                // 階段順序 gating（第 14 批）。日期欄本身已經 disable，正常操作走不到這裡，
+                // 但「先填了 ③ 再把 ② 清掉」這種倒著改的順序會漏過去，所以存檔前再擋一次。
+                // 判定與後端一致：只看「本來是空的、這次被填進去」的欄位
+                const gateBad = PHASE_KEYS.filter(key => {
+                    if (!PHASES[key].gate || isPhaseOpen(key)) return false;
+                    const ph = PHASES[key];
+                    const original = requirementsData.find(d => d.id === editingData.id);
+                    return ph.fields.some(f =>
+                        !isValidVal(original?.[ph.obj]?.[f]) && isValidVal(editingData?.[ph.obj]?.[f]));
+                });
+                if (gateBad.length > 0) {
+                    setAlertModal({
+                        title: '階段順序不正確',
+                        message: `以下階段的前置階段還沒填完，不能先壓日期：\n\n${gateBad.map(k=>`・${PHASES[k].label}（${gateHint(k)}）`).join('\n')}`
+                    });
+                    return;
+                }
+
                 // NID 唯一。後端也會擋，這裡先擋是為了不用等 request 就給回饋
                 const nidVal = String(editingData.nid||'').trim();
                 const dup = requirementsData.find(d => String(d.nid||'').trim() === nidVal && d.id !== editingData.id);
@@ -464,53 +857,49 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 // 解鎖後改了日期就必須留下理由
                 for (const key of PHASE_KEYS) {
                     if (unlockedSections[key] && isPhaseModified(key)) {
+                        if (!unlockCategories[key]) {
+                            setAlertModal({
+                                title: '缺少異動原因分類',
+                                message: `「${PHASES[key].label}」的日期被修改了。\n\n請先選擇異動原因分類（${REASON_CATEGORIES.join(' / ')}）。`
+                            });
+                            return;
+                        }
                         if (!unlockReasons[key] || !unlockReasons[key].trim()) {
                             setAlertModal({
-                                title: '缺少異動理由',
-                                message: `「${PHASES[key].label}」的日期被修改了。\n\n變更時程必須填寫異動理由才能儲存。`
+                                title: '缺少異動說明',
+                                message: `「${PHASES[key].label}」的日期被修改了。\n\n變更時程必須填寫文字說明才能儲存。`
                             });
                             return;
                         }
                     }
                 }
 
-                let payload = { ...editingData };
-                if (payload.id) {
-                    const oldData = requirementsData.find(d => d.id === payload.id);
-                    if (oldData) {
-                        const today = new Date().toLocaleDateString('zh-TW');
-                        const checkPhase = (key) => {
-                            const ph = PHASES[key];
-                            const oldP = oldData[ph.obj] || {};
-                            const newP = payload[ph.obj] || {};
-                            // 只有「原本已有日期、後來被改掉」才算異動；首次填寫不寫入軌跡，
-                            // 否則主管看到的「時程異動次數」會把正常的初次填寫也算進去
-                            const changedFields = ph.fields.filter(
-                                f => isValidVal(oldP[f]) && oldP[f] !== (newP[f] || '')
-                            );
-                            if (changedFields.length === 0) return;
-
-                            // 只記這個階段自己的欄位 —— ② 只寫 Confirm、③ 只寫 Start/End
-                            const parts = ph.fields.map(f => `${HIST_FIELD_LABEL[f]}: ${oldP[f] || '-'}`).join(', ');
-                            const reason = unlockReasons[key] ? ` | 理由: ${unlockReasons[key]}` : '';
-                            const changeLog = `[${today} 修改] 原日期: ${parts}${reason}`;
-                            payload[ph.obj][ph.hist] = payload[ph.obj][ph.hist]
-                                ? payload[ph.obj][ph.hist] + '\n' + changeLog
-                                : changeLog;
-                        };
-                        PHASE_KEYS.forEach(checkPhase);
+                // 軌跡改由後端比對新舊日期寫進 dbo.Controltable_History（第 13 批）。
+                // 前端只負責帶上「這次異動的原因分類與說明」與操作者是誰，
+                // 不再自己拼 [YYYY/M/D 修改] 字串 —— 那種格式撐不住 7 個欄位。
+                const changeMeta = {};
+                PHASE_KEYS.forEach(key => {
+                    if (unlockReasons[key]?.trim() || unlockCategories[key]) {
+                        changeMeta[key] = { category: unlockCategories[key] || '', note: unlockReasons[key] || '' };
                     }
-                }
+                });
+                let payload = {
+                    ...editingData,
+                    changeMeta,
+                    actorEmpId: actor.empId || '',
+                    actorSource: actor.source
+                };
 
                 const method = payload.id ? 'PUT' : 'POST';
                 const url = '/api/requirements' + (payload.id ? '/'+payload.id : '');
                 try {
                     const res = await fetch(url, { method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload) });
-                    // 400 = 必填欄位、409 = NID 重複，後端會回帶中文訊息，直接用視窗顯示
+                    // 400 = 必填欄位／日期區間／階段順序、409 = NID 重複。
+                    // 後端會回帶中文訊息，標題保持中性讓訊息自己說明是哪一種
                     if (res.status === 400 || res.status === 409) {
                         const body = await res.json().catch(() => ({}));
                         setAlertModal({
-                            title: res.status === 409 ? 'NID 重複' : '必填欄位未完成',
+                            title: res.status === 409 ? 'NID 重複' : '無法儲存',
                             message: body.message || `儲存被拒絕 (HTTP ${res.status})`
                         });
                         return;
@@ -518,7 +907,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     if (!res.ok) throw new Error(`HTTP ${res.status}`);
                     setEditingData(null);
                     setIsModalOpen(false);
-                    await fetchReqs();
+                    await Promise.all([fetchReqs(), fetchHistory()]);
                     showToast(payload.id ? '已儲存變更' : '已新增需求');
                 } catch(err) {
                     console.error(err);
@@ -547,13 +936,15 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 setEditingData(item);
                 setUnlockedSections({ spec: false, confirm: false, msd: false, uat: false });
                 setUnlockReasons({ spec: '', confirm: '', msd: '', uat: '' });
+                setUnlockCategories({ spec: '', confirm: '', msd: '', uat: '' });
                 setIsModalOpen(true);
             };
             const openAdd = () => { 
                 const today = new Date();
                 const currentYM = today.getFullYear() + '/' + String(today.getMonth() + 1).padStart(2, '0');
-                // 自動產生的預設值：OverallStatus=Init、StatusID=1、YearMonth=當天 YYYY/MM
-                setEditingData({ isNew: true, nid:'', yearMonth: currentYM, mainCat:'', subCat:'', status:'Init', stageCode:'1', notesLink:'', emsOwner:'', msdOwner:'', currentStatus:'', mpSaving:'', spec:{start:'',end:'',history:''}, msd:{confirm:'',confirmNote:'',confirmHistory:'',start:'',end:'',history:''}, uat:{start:'',end:'',history:''} });
+                const todayIso = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+                // 自動產生的預設值：OverallStatus=Init、StatusID=1、RegDate=今天（YearMonth 由後端從 RegDate 反推）
+                setEditingData({ isNew: true, nid:'', regDate: todayIso, yearMonth: currentYM, mainCat:'', subCat:'', status:'Init', stageCode:'1', remark:'', notesLink:'', emsOwner:'', msdOwner:'', currentStatus:'', mpSaving:'', spec:{start:'',end:'',history:''}, msd:{confirm:'',confirmNote:'',confirmHistory:'',start:'',end:'',history:''}, uat:{start:'',end:'',history:''} });
                 setIsModalOpen(true); 
             };
 
@@ -565,7 +956,10 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // ─── Analytics ───
             const analytics = useMemo(() => {
                 const total = requirementsData.length;
-                let ongoing=0, done=0, totalChanges=0;
+                let ongoing=0, done=0;
+                // 時程異動次數直接數稽核表的筆數，**排除 init**（首次填寫不算異動）。
+                // 舊版是去 regex 掃 History 字串，格式一跑掉就失準
+                const totalChanges = historyEntries.filter(h => h.changeType !== 'init').length;
                 const byStatus = { Init:[], Ongoing:[], Pending:[], Done:[] };
                 const emsW={}, msdW={}, trend={};
 
@@ -573,11 +967,6 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     const st = normStatus(item.status);
                     const isDone = st === 'Done';
                     isDone ? done++ : ongoing++;
-                    // 計算「異動筆數」，不是字串長度 —— 原本直接加 .length 會把
-                    // 軌跡文字的字元數當成異動次數（例如 2 筆紀錄顯示成 236 次）
-                    totalChanges += countHistoryEntries(item.spec?.history)
-                                  + countHistoryEntries(item.msd?.history)
-                                  + countHistoryEntries(item.uat?.history);
                     byStatus[st].push(item);
                     if (!isDone) {
                         // 沒填負責人的歸到「未指派」，否則空字串會被當成一個人，
@@ -586,7 +975,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                         const msdName = (item.msdOwner||'').trim() || '未指派';
                         if (emsName !== '未定') emsW[emsName] = (emsW[emsName]||0)+1;
                         if (msdName !== '未定') msdW[msdName] = (msdW[msdName]||0)+1;
-                        // 到期預警不在這裡算 —— 見下方的 dueAlerts / dueList，
+                        // 到期預警不在這裡算 —— 見下方的 dueAlerts / dueInfo，
                         // 兩處共用同一套「依 StatusID 定位目前階段」的規則
                     }
                     const ym = item.yearMonth;
@@ -597,51 +986,147 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 // 人員負載進度條的共同基準，EMS 與 MSD 兩側才有可比性
                 const maxLoad = Math.max(1, ...Object.values(emsW), ...Object.values(msdW));
                 return { total, ongoing, done, totalChanges, byStatus, maxLoad, ems:sortW(emsW), msd:sortW(msdW), trend:Object.values(trend).sort((a,b)=>a.name.localeCompare(b.name)) };
-            }, [requirementsData]);
+            }, [requirementsData, historyEntries]);
 
             // ─── 到期預警 ───
-            // dueAlerts 固定 7 日（總覽的 KPI／風險預警卡與通知橫幅都看這個），
-            // dueList 則跟著使用者在「到期預警」頁選的天數走
+            // 規則的唯一來源是 buildDueList()：先用 StatusID 定位目前卡在哪一階段，
+            // **只比那一個日期**。不可改回「四個日期一起比」（見 FIELD_SPEC.md）。
+            //
+            // dueAlerts 固定 7 日，總覽 KPI／風險預警卡與通知橫幅都看這個。
+            // dueInfo 則用超大天數視窗把「每一列目前該盯的日期」全撈出來，
+            // 供明細表的逾期篩選與「逾期優先」排序查表用（key 是 item.id）。
             const dueAlerts = useMemo(() => buildDueList(requirementsData, DUE_WINDOW_DEFAULT), [requirementsData]);
-            const dueList   = useMemo(() => buildDueList(requirementsData, dueWindow), [requirementsData, dueWindow]);
+            const dueInfo = useMemo(() => {
+                const m = new Map();
+                buildDueList(requirementsData, 36500).forEach(e => m.set(e.item.id, e));
+                return m;
+            }, [requirementsData]);
             const countLevels = list => ({
                 all: list.length,
                 overdue: list.filter(e => e.level === 'overdue').length,
                 soon: list.filter(e => e.level === 'soon').length
             });
-            const dueCounts    = useMemo(() => countLevels(dueList),   [dueList]);
             const dueCountsAll = useMemo(() => countLevels(dueAlerts), [dueAlerts]);
-            const dueShown = useMemo(
-                () => dueLevel === 'all' ? dueList : dueList.filter(e => e.level === dueLevel),
-                [dueList, dueLevel]);
 
-            const filteredData = useMemo(() => {
-                return requirementsData.filter(item => {
-                    const ms = !searchTerm || [item.nid,item.mainCat,item.subCat,item.emsOwner,item.msdOwner,item.currentStatus].some(v=>v?.toLowerCase().includes(searchTerm.toLowerCase()));
-                    const mf = statusFilter==='All' || normStatus(item.status)===statusFilter;
-                    const mc = Object.entries(colFilters).every(([k, v]) => {
-                        if (!v) return true;
-                        let val = item[k];
-                        if (k==='status') val = STATUSES[normStatus(item.status)]?.label || '';
-                        if (k==='specEnd') val = item.spec?.end;
-                        if (k==='msdConfirm') val = item.msd?.confirm;
-                        if (k==='msdEnd') val = item.msd?.end;
-                        if (k==='uatEnd') val = item.uat?.end;
-                        if (k==='stageCode') val = normStageCode(item.stageCode);
-                        return String(val||'').toLowerCase().includes(v.toLowerCase());
-                    });
-                    return ms && mf && mc;
+            // 逾期篩選的四種模式，與 dueInfo 查到的 entry 比對
+            const matchDueFilter = (item, mode) => {
+                if (mode === 'All') return true;
+                const e = dueInfo.get(item.id);
+                if (!e) return false;                       // 已結案或沒壓日期 —— 不算需關注
+                if (mode === 'overdue')   return e.diffDays < 0;
+                if (mode === 'soon')      return e.diffDays >= 0 && e.diffDays <= DUE_WINDOW_DEFAULT;
+                if (mode === 'attention') return e.diffDays <= DUE_WINDOW_DEFAULT;
+                return true;
+            };
+
+            // 人員下拉的選項直接從資料裡取，不用 Personnel 名單 ——
+            // 名單上有但資料裡沒有的人選了只會得到空清單，反而讓人以為壞掉
+            const ownerOptions = useMemo(() => {
+                const pick = get => {
+                    const s = new Set();
+                    requirementsData.forEach(it => s.add((get(it) || '').trim() || '未指派'));
+                    return [...s].sort((a,b) => a === '未指派' ? 1 : b === '未指派' ? -1 : a.localeCompare(b, 'zh-Hant'));
+                };
+                return { ems: pick(it => it.emsOwner), msd: pick(it => it.msdOwner) };
+            }, [requirementsData]);
+            const matchOwner = (val, sel) => sel === 'All' || ((val || '').trim() || '未指派') === sel;
+
+            // 警示徽章的篩選（第 17 批）。直接讀計數欄，不 parse 稽核表
+            const matchAlertFilter = (item, mode) => {
+                if (mode === 'All') return true;
+                if (mode === 'delay')    return (item.delayCount || 0) > 0;
+                if (mode === 'delay2')   return (item.delayCount || 0) >= 2;
+                if (mode === 'rollback') return (item.rollbackCount || 0) > 0;
+                return true;
+            };
+            // 下拉選項要顯示的件數（全域，與逾期下拉的做法一致）
+            const alertCounts = useMemo(() => ({
+                delay:    requirementsData.filter(i => (i.delayCount || 0) > 0).length,
+                delay2:   requirementsData.filter(i => (i.delayCount || 0) >= 2).length,
+                rollback: requirementsData.filter(i => (i.rollbackCount || 0) > 0).length
+            }), [requirementsData]);
+
+            // StatusID 以外的所有篩選條件。抽出來是為了讓上方的 StatusID 統計卡能算出
+            // 「套用其他條件後」的分佈 —— 否則點了 EMS=王小明，上面的統計還是全域數字，
+            // 兩邊對不起來會讓人以為篩選沒生效
+            const matchExceptStage = (item) => {
+                const ms = !searchTerm || [item.nid,item.mainCat,item.subCat,item.emsOwner,item.msdOwner,item.currentStatus].some(v=>v?.toLowerCase().includes(searchTerm.toLowerCase()));
+                if (!ms) return false;
+                if (!matchOwner(item.emsOwner, emsFilter)) return false;
+                if (!matchOwner(item.msdOwner, msdFilter)) return false;
+                if (!matchDueFilter(item, dueFilter)) return false;
+                if (!matchAlertFilter(item, alertFilter)) return false;
+                return Object.entries(colFilters).every(([k, v]) => {
+                    if (!v) return true;
+                    let val = item[k];
+                    if (k==='status') val = STATUSES[normStatus(item.status)]?.label || '';
+                    if (k==='specEnd') val = item.spec?.end;
+                    if (k==='msdConfirm') val = item.msd?.confirm;
+                    if (k==='msdEnd') val = item.msd?.end;
+                    if (k==='uatEnd') val = item.uat?.end;
+                    // StatusID 可用代號或階段名稱篩選（資料列上顯示的是「2 MSD確認中」）
+                    if (k==='stageCode') {
+                        const c = normStageCode(item.stageCode);
+                        val = c + ' ' + (STAGE_CODES[c]?.short || '');
+                    }
+                    // 註冊日期畫面上是 YYYY/MM/DD，篩選字串照畫面比對
+                    if (k==='regDate') val = fmtYmd(item.regDate);
+                    return String(val||'').toLowerCase().includes(v.toLowerCase());
                 });
-            }, [searchTerm, statusFilter, colFilters, requirementsData]);
+            };
+
+            // StatusID 統計卡的數字（連動：已套用其他篩選，但不含 StatusID 本身）。
+            // 注意：1~5 的加總不一定等於 ALL —— StatusID 沒填、或超出 1~5 的舊資料
+            // 不屬於任何一格，這是刻意讓那些資料在數字上「露出來」
+            const stageFacets = useMemo(() => {
+                const base = requirementsData.filter(matchExceptStage);
+                const counts = { All: base.length };
+                Object.keys(STAGE_CODES).forEach(k => { counts[k] = 0; });
+                base.forEach(it => { const c = effStageCode(it); if (counts[c] !== undefined) counts[c]++; });
+                return counts;
+            }, [requirementsData, searchTerm, emsFilter, msdFilter, dueFilter, alertFilter, colFilters, dueInfo]);
+
+            const filteredData = useMemo(
+                () => requirementsData.filter(item =>
+                    matchExceptStage(item) && (stageFilter.length === 0 || stageFilter.includes(effStageCode(item)))),
+                [requirementsData, searchTerm, stageFilter, emsFilter, msdFilter, dueFilter, alertFilter, colFilters, dueInfo]);
+
+            const hasActiveFilter = searchTerm || stageFilter.length > 0 || emsFilter !== 'All'
+                                 || msdFilter !== 'All' || dueFilter !== 'All' || alertFilter !== 'All'
+                                 || Object.values(colFilters).some(Boolean);
+            const clearAllFilters = () => {
+                setSearchTerm(''); setStageFilter([]); setEmsFilter('All');
+                setMsdFilter('All'); setDueFilter('All'); setAlertFilter('All'); setColFilters({});
+            };
 
             const sortedData = useMemo(() => {
                 let items = [...filteredData];
                 items.sort((a,b) => {
-                    const aDone = normStatus(a.status) === 'Done';
-                    const bDone = normStatus(b.status) === 'Done';
-                    if (aDone && !bDone) return 1;
-                    if (!aDone && bDone) return -1;
-                    
+                    // Done 一律沉底（可由工具列的 toggle 關掉）
+                    if (doneLast) {
+                        // Status=Done 與 StatusID=5 有既存資料不一致的情況，任一成立就算結案
+                        const isEnd = r => normStatus(r.status) === 'Done' || normStageCode(r.stageCode) === '5';
+                        const aDone = isEnd(a), bDone = isEnd(b);
+                        if (aDone && !bDone) return 1;
+                        if (!aDone && bDone) return -1;
+                    }
+
+                    // 逾期優先：剩餘天數由少到多，沒有到期資訊的（結案／沒壓日期）排最後
+                    if (duePriority) {
+                        const av = dueInfo.get(a.id)?.diffDays;
+                        const bv = dueInfo.get(b.id)?.diffDays;
+                        if (av == null && bv != null) return 1;
+                        if (av != null && bv == null) return -1;
+                        if (av != null && bv != null && av !== bv) return av - bv;
+                    }
+
+                    // 次數排序（第 17 批）。字串比較會把 10 排在 9 前面，所以走獨立的數值分支
+                    if (sortConfig.key === 'delayCount' || sortConfig.key === 'rollbackCount') {
+                        const av = a[sortConfig.key] || 0, bv = b[sortConfig.key] || 0;
+                        if (av !== bv) return sortConfig.direction === 'asc' ? av - bv : bv - av;
+                        return 0;
+                    }
+
                     if (sortConfig.key) {
                         const pick = (row) => {
                             switch (sortConfig.key) {
@@ -671,7 +1156,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     return 0;
                 });
                 return items;
-            }, [filteredData, sortConfig]);
+            }, [filteredData, sortConfig, doneLast, duePriority, dueInfo]);
 
             const completionRate = analytics.total>0 ? Math.round((analytics.done/analytics.total)*100) : 0;
 
@@ -772,14 +1257,16 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                 </div>
                             </div>
                             <div className="flex items-center gap-3">
-                                {[{k:'dashboard',label:'總覽'},{k:'table',label:'明細表'},{k:'due',label:'到期預警'}].map(v => (
+                                {/* 「到期預警」頁籤已於第 12 批移除 —— 逾期改用明細表上的篩選／排序呈現，
+                                    不再另開一頁維護第二套格式 */}
+                                {[{k:'dashboard',label:'總覽'},{k:'table',label:'明細表'}].map(v => (
                                     <button key={v.k} onClick={()=>setActiveView(v.k)} className="px-3.5 py-1.5 rounded text-xs font-semibold transition-colors flex items-center gap-1.5"
                                         style={activeView===v.k ? {background:'var(--bg-pill-active)',color:'var(--text-on-pill)'} : {color:'var(--text-tertiary)'}}>
                                         {v.label}
                                         {/* 未讀式的數字徽章：7 日內到期或已逾期的件數，0 件時不顯示 */}
-                                        {v.k==='due' && dueAlerts.length>0 && (
+                                        {v.k==='table' && dueAlerts.length>0 && (
                                             <span className="text-[10px] font-black px-1.5 rounded-full tabular-nums"
-                                                  style={activeView==='due'
+                                                  style={activeView==='table'
                                                       ? {background:'rgba(255,255,255,0.25)', color:'#fff'}
                                                       : {background:'var(--tone-alert-bg)', color:'var(--tone-alert)', border:'1px solid var(--tone-alert-border)'}}>
                                                 {dueAlerts.length}
@@ -788,6 +1275,21 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                     </button>
                                 ))}
                                 <div className="mx-1 w-px h-6" style={{background:'var(--border-card)'}}></div>
+                                {/* 異動人員。Windows 帳號由 /api/whoami 自動偵測；
+                                    開發環境（Auth:AllowSimulation=true）可切換成模擬帳號，
+                                    模擬寫入的稽核列會標成「模擬」，不會冒充真實登入者 */}
+                                <button onClick={()=>actor.allowSimulation && setIsActorModalOpen(true)}
+                                        className="px-2.5 py-1 rounded text-[10px] font-bold transition-colors flex items-center gap-1.5 border"
+                                        style={actor.source==='simulated'
+                                            ? {color:'#8b5cf6', background:'rgba(139,92,246,0.12)', borderColor:'#8b5cf6'}
+                                            : actor.empId
+                                                ? {color:'var(--text-tertiary)', background:'var(--bg-input)', borderColor:'var(--bg-input-border)'}
+                                                : {color:'var(--tone-warn)', background:'var(--tone-warn-bg)', borderColor:'var(--tone-warn-border)'}}
+                                        title={actor.empId
+                                            ? `異動人員：${actor.empId}（${actor.source==='simulated'?'模擬帳號':'Windows 登入'}）${actor.allowSimulation?'\n點擊可切換模擬帳號':''}`
+                                            : '無法取得 Windows 帳號，稽核紀錄的異動人員會留空' + (actor.allowSimulation?'\n點擊可設定模擬帳號':'')}>
+                                    🖥️ {actor.empId || '未識別'}{actor.source==='simulated' && ' (模擬)'}
+                                </button>
                                 <ThemeToggle dark={dark} onToggle={()=>setDark(!dark)} />
                                 <div className="text-[10px] font-mono" style={{color:'var(--text-muted)'}}>{formatToday}</div>
                             </div>
@@ -798,8 +1300,8 @@ const { useState, useMemo, Fragment, useEffect } = React;
 
                         {/* ═══ 到期提醒橫幅 ═══
                             每週會議要 review 快到期的需求，所以只要有 7 日內到期或已逾期的項目，
-                            不論在哪一頁都先看到這條，點「查看清單」直接跳到到期預警頁 */}
-                        {dueAlerts.length > 0 && activeView !== 'due' && !noticeDismissed && (
+                            不論在哪一頁都先看到這條。點「查看清單」會切到明細表並套上「需關注」篩選 */}
+                        {dueAlerts.length > 0 && !noticeDismissed && (
                             <div className="mb-4 flex items-center gap-3 px-4 py-3 rounded-lg"
                                  style={{background:'var(--tone-alert-bg)', border:'1px solid var(--tone-alert-border)'}}>
                                 <span className="flex items-center justify-center w-6 h-6 rounded-full shrink-0 text-sm font-black"
@@ -811,7 +1313,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                     )}
                                     <span className="font-normal ml-1" style={{color:'var(--text-muted)'}}>依 StatusID 判定目前階段</span>
                                 </div>
-                                <button onClick={()=>setActiveView('due')}
+                                <button onClick={()=>{ clearAllFilters(); setDueFilter('attention'); setDuePriority(true); setActiveView('table'); }}
                                         className="ml-auto px-3 py-1.5 rounded-lg text-[11px] font-bold text-white shrink-0 transition-colors"
                                         style={{background:'var(--tone-alert)'}}>查看清單</button>
                                 <button onClick={()=>setNoticeDismissed(true)} className="text-sm shrink-0 px-1" title="本次不再提醒"
@@ -831,42 +1333,30 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                     <KpiCard label="時程異動" value={analytics.totalChanges} tone={analytics.totalChanges>0?'warn':null} sub="累計時程變更次數" />
                                 </div>
 
-                                {/* Pipeline + Alerts */}
-                                <div className="grid grid-cols-1 xl:grid-cols-3 gap-4">
-                                    <div className="xl:col-span-2 t-card p-5">
-                                        <div className="flex items-center justify-between mb-4">
-                                            <h2 className="text-sm font-semibold" style={{color:'var(--text-primary)'}}>需求狀態分佈</h2>
-                                            <span className="text-[10px]" style={{color:'var(--text-muted)'}}>依 Overall Status</span>
-                                        </div>
-                                        <div className="flex gap-6">
-                                            {Object.keys(STATUSES).map((key,i) => (
-                                                <Fragment key={key}>
-                                                    {i>0 && <div className="w-px flex-shrink-0" style={{background:'var(--border-card)'}}></div>}
-                                                    <PipelineStage statusKey={key} items={analytics.byStatus[key]} total={analytics.total} dark={dark} />
-                                                </Fragment>
-                                            ))}
-                                        </div>
+                                {/* 「需求狀態分佈」已於第 12 批搬到明細表 —— 改為可點的統計卡，
+                                    點下去直接篩選出那一群資料，不再另外維護一份唯讀的統計。
+                                    總覽保留圖表分析與人員負載（那些放進表格反而擠）。 */}
+                                <div className="t-card p-5">
+                                    <div className="flex items-center justify-between mb-4">
+                                        <h2 className="text-sm font-semibold" style={{color:'var(--text-primary)'}}>風險預警</h2>
+                                        <span className="text-[10px] font-semibold px-2 py-0.5 rounded"
+                                              style={dueAlerts.length>0
+                                                  ? {color:'var(--tone-alert)', background:'var(--tone-alert-bg)', border:'1px solid var(--tone-alert-border)'}
+                                                  : {color:'var(--text-muted)', border:'1px solid var(--border-card)'}}>
+                                            {dueAlerts.length>0 ? `${dueAlerts.length} 項需關注` : '全數正常'}
+                                        </span>
                                     </div>
-
-                                    <div className="t-card p-5">
-                                        <div className="flex items-center justify-between mb-4">
-                                            <h2 className="text-sm font-semibold" style={{color:'var(--text-primary)'}}>風險預警</h2>
-                                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded"
-                                                  style={dueAlerts.length>0
-                                                      ? {color:'var(--tone-alert)', background:'var(--tone-alert-bg)', border:'1px solid var(--tone-alert-border)'}
-                                                      : {color:'var(--text-muted)', border:'1px solid var(--border-card)'}}>
-                                                {dueAlerts.length>0 ? `${dueAlerts.length} 項需關注` : '全數正常'}
-                                            </span>
-                                        </div>
-                                        <div className="space-y-1.5 max-h-[260px] overflow-y-auto scrollbar-thin pr-1">
-                                            {dueAlerts.length===0
-                                                ? <div className="text-center py-8 text-sm" style={{color:'var(--text-muted)'}}>目前無逾期或 {DUE_WINDOW_DEFAULT} 日內到期的項目</div>
-                                                : dueAlerts.map((entry, idx) => (
-                                                    <AlertItem key={entry.item.id || entry.item.nid || idx} entry={entry}
-                                                               onClick={()=>{ setDueWindow(DUE_WINDOW_DEFAULT); setActiveView('due'); }} />
-                                                  ))
-                                            }
-                                        </div>
+                                    <div className="space-y-1.5 max-h-[260px] overflow-y-auto scrollbar-thin pr-1">
+                                        {dueAlerts.length===0
+                                            ? <div className="text-center py-8 text-sm" style={{color:'var(--text-muted)'}}>目前無逾期或 {DUE_WINDOW_DEFAULT} 日內到期的項目</div>
+                                            // 點一筆預警 → 切到明細表、套上「需關注」篩選，並把該列展開。
+                                            // 不用 NID 當搜尋字串 —— NID「6」會連帶命中 16、26
+                                            : dueAlerts.map((entry, idx) => (
+                                                <AlertItem key={entry.item.id || entry.item.nid || idx} entry={entry}
+                                                           onClick={()=>{ clearAllFilters(); setDueFilter('attention'); setDuePriority(true);
+                                                                          setExpandedRows(new Set([entry.item.id])); setActiveView('table'); }} />
+                                              ))
+                                        }
                                     </div>
                                 </div>
 
@@ -932,151 +1422,6 @@ const { useState, useMemo, Fragment, useEffect } = React;
                             </div>
                         )}
 
-                        {/* ═══ 到期預警 (7 日內快到期需求查詢) ═══
-                            每筆需求只比「目前階段」的那一個日期：StatusID 1→EMS 提Spec、
-                            2→MSD 確認Spec、3→MSD 開發、4→EMS 驗收，5(已完成) 與 Done 不列入。
-                            StatusID 沒填的資料退回用「最後一個已壓日期的階段」判斷。 */}
-                        {activeView === 'due' && (
-                            <div className="space-y-4">
-                                {/* 篩選列 */}
-                                <div className="t-card p-4 flex flex-wrap items-center gap-x-4 gap-y-3">
-                                    <div className="flex items-center gap-2">
-                                        <span className="text-[11px] font-bold" style={{color:'var(--text-tertiary)'}}>提醒範圍</span>
-                                        <div className="flex rounded-lg overflow-hidden" style={{border:'1px solid var(--bg-input-border)'}}>
-                                            {[3,7,14,30].map(d => (
-                                                <button key={d} onClick={()=>setDueWindow(d)}
-                                                        className="px-3 py-1.5 text-[11px] font-bold transition-colors"
-                                                        style={dueWindow===d
-                                                            ? {background:'var(--bg-pill-active)', color:'var(--text-on-pill)'}
-                                                            : {background:'var(--bg-input)', color:'var(--text-tertiary)'}}>
-                                                    {d} 日內
-                                                </button>
-                                            ))}
-                                        </div>
-                                    </div>
-                                    <div className="flex gap-1.5">
-                                        {[{k:'all',label:'全部',n:dueCounts.all},
-                                          {k:'overdue',label:'已逾期',n:dueCounts.overdue},
-                                          {k:'soon',label:'尚未到期',n:dueCounts.soon}].map(o => (
-                                            <button key={o.k} onClick={()=>setDueLevel(o.k)}
-                                                    className="px-3 py-1.5 rounded-lg text-[11px] font-bold transition-colors"
-                                                    style={dueLevel===o.k
-                                                        ? {background:'var(--bg-pill-active)', color:'var(--text-on-pill)'}
-                                                        : {background:'var(--bg-input)', color:'var(--text-tertiary)', border:'1px solid var(--bg-input-border)'}}>
-                                                {o.label} ({o.n})
-                                            </button>
-                                        ))}
-                                    </div>
-                                    <div className="ml-auto text-[11px] text-right" style={{color:'var(--text-muted)'}}>
-                                        基準日 {formatToday}　·　已結案 (Done / StatusID 5) 不列入<br/>
-                                        天數只限制「尚未到期」的項目，已逾期的一律列入
-                                    </div>
-                                </div>
-
-                                {/* 各階段件數 —— 一眼看出這週卡在哪一關 */}
-                                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                                    {DUE_PHASES.map(p => {
-                                        const n = dueList.filter(e => e.phase.key === p.key).length;
-                                        const od = dueList.filter(e => e.phase.key === p.key && e.level === 'overdue').length;
-                                        return (
-                                            <div key={p.key} className="t-card px-4 py-3.5" style={{borderLeft:`3px solid ${p.color}`}}>
-                                                <div className="text-[11px] font-semibold mb-1.5" style={{color:'var(--text-tertiary)'}}>{p.label}</div>
-                                                <div className="text-[28px] leading-none font-semibold tabular-nums tracking-tight"
-                                                     style={{color: n>0 ? 'var(--text-primary)' : 'var(--text-muted)'}}>{n}</div>
-                                                <div className="text-[11px] mt-1.5" style={{color: od>0 ? 'var(--tone-alert)' : 'var(--text-muted)'}}>
-                                                    {od>0 ? `其中 ${od} 件已逾期` : '無逾期'}
-                                                </div>
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-
-                                {/* 清單 */}
-                                <div className="t-card t-table-card overflow-hidden">
-                                    <div className="overflow-auto scrollbar-thin" style={{maxHeight:'calc(100vh - 24rem)'}}>
-                                    <table className="w-full text-left border-collapse sticky-table">
-                                        <thead>
-                                            <tr style={{background:'var(--thead-col)', borderBottom:'2px solid var(--border-card)'}}>
-                                                {['到期日','剩餘','目前階段','NID','Status','ID','Main Cat','Sub Cat','負責人',''].map((h,i) => (
-                                                    <th key={i} className="px-2 py-2.5 text-[11px] font-bold"
-                                                        style={{color:'var(--text-tertiary)', borderRight: i<9 ? '1px solid var(--border-card)' : 'none'}}>{h}</th>
-                                                ))}
-                                            </tr>
-                                        </thead>
-                                        <tbody>
-                                            {isLoading ? (
-                                                <tr><td colSpan="10" className="px-4 py-12 text-center text-sm" style={{color:'var(--text-muted)'}}>資料載入中…</td></tr>
-                                            ) : dueShown.length === 0 ? (
-                                                <tr><td colSpan="10" className="px-4 py-12 text-center text-sm" style={{color:'var(--text-muted)'}}>
-                                                    {/* 訊息要跟著層級篩選走 —— 否則在「尚未到期」0 件時會寫成
-                                                        「N 日內沒有到期的需求」，但其實還有已逾期的項目在清單裡 */}
-                                                    {dueLevel==='overdue' ? '目前沒有已逾期的需求'
-                                                     : dueLevel==='soon'  ? `${dueWindow} 日內沒有即將到期的需求`
-                                                     : `${dueWindow} 日內沒有到期的需求`}
-                                                </td></tr>
-                                            ) : dueShown.map((e, idx) => {
-                                                const item = e.item;
-                                                const st = STATUSES[normStatus(item.status)];
-                                                const stageCode = normStageCode(item.stageCode);
-                                                const stage = STAGE_CODES[stageCode];
-                                                const clr = e.level === 'overdue' ? 'var(--tone-alert)' : 'var(--tone-warn)';
-                                                const bg  = e.level === 'overdue' ? 'var(--tone-alert-bg)' : 'var(--tone-warn-bg)';
-                                                const bd  = e.level === 'overdue' ? 'var(--tone-alert-border)' : 'var(--tone-warn-border)';
-                                                return (
-                                                    <tr key={item.id || item.nid || idx}
-                                                        style={{borderBottom:'1px solid var(--border-table)', borderLeft:`3px solid ${clr}`}}>
-                                                        <td className="px-2 py-2.5 text-xs font-bold tabular-nums whitespace-nowrap"
-                                                            style={{color:clr, borderRight:'1px solid var(--border-table)'}}>{e.date}</td>
-                                                        <td className="px-2 py-2.5" style={{borderRight:'1px solid var(--border-table)'}}>
-                                                            <span className="text-[11px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap"
-                                                                  style={{color:clr, background:bg, border:`1px solid ${bd}`}}>{dueLabel(e.diffDays)}</span>
-                                                        </td>
-                                                        <td className="px-2 py-2.5 text-xs font-bold whitespace-nowrap"
-                                                            style={{color:e.phase.color, borderRight:'1px solid var(--border-table)'}}>
-                                                            {e.phase.label}
-                                                            {/* StatusID 沒填時是用日期回推的，標出來免得被當成確定值 */}
-                                                            {e.inferred && <span className="ml-1 text-[10px] font-normal cursor-help" style={{color:'var(--text-muted)'}}
-                                                                                 title="這筆的 StatusID 未設定或與日期不符，階段是依「最後一個已壓日期的階段」推斷的">(推斷)</span>}
-                                                        </td>
-                                                        <td className="px-2 py-2.5 text-sm font-black" style={{color:'var(--text-primary)', borderRight:'1px solid var(--border-table)'}}>{item.nid}</td>
-                                                        <td className="px-2 py-2.5" style={{borderRight:'1px solid var(--border-table)'}}>
-                                                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold whitespace-nowrap"
-                                                                  style={{background: dark ? st.darkBg : st.lightBg, color:st.color, border:`1px solid ${st.border}`}}>{st.label}</span>
-                                                        </td>
-                                                        <td className="px-2 py-2.5 text-center" style={{borderRight:'1px solid var(--border-table)'}}>
-                                                            {stage
-                                                                ? <span className="inline-flex items-center justify-center w-5 h-5 rounded text-[11px] font-black"
-                                                                        style={{color:stage.color, background:`${stage.color}1a`, border:`1px solid ${stage.color}33`}}
-                                                                        title={`StatusID ${stageCode}：${stage.short}`}>{stageCode}</span>
-                                                                : <span style={{color:'var(--text-muted)'}}>-</span>}
-                                                        </td>
-                                                        <td className="px-2 py-2.5" style={{borderRight:'1px solid var(--border-table)'}}>
-                                                            <div className="text-xs font-bold truncate" style={{color:'var(--text-primary)'}} title={item.mainCat}>{item.mainCat}</div>
-                                                        </td>
-                                                        <td className="px-2 py-2.5" style={{borderRight:'1px solid var(--border-table)'}}>
-                                                            <div className="text-xs truncate" style={{color:'var(--text-tertiary)'}} title={item.subCat}>{item.subCat}</div>
-                                                        </td>
-                                                        {/* 該階段實際要交件的人：①④ 是 EMS、②③ 是 MSD */}
-                                                        <td className="px-2 py-2.5 text-xs font-bold whitespace-nowrap"
-                                                            style={{color:'var(--text-secondary)', borderRight:'1px solid var(--border-table)'}}>
-                                                            <span className="text-[10px] font-normal mr-1" style={{color:'var(--text-muted)'}}>{e.phase.side}</span>
-                                                            {e.phase.owner(item) || '未指派'}
-                                                        </td>
-                                                        <td className="px-2 py-2.5 text-center whitespace-nowrap">
-                                                            <button onClick={()=>openEdit(item)} className="text-blue-500 hover:text-blue-600 p-1 rounded transition-colors" title="編輯">
-                                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-                                                            </button>
-                                                        </td>
-                                                    </tr>
-                                                );
-                                            })}
-                                        </tbody>
-                                    </table>
-                                    </div>
-                                </div>
-                            </div>
-                        )}
-
                         {/* ═══ Table View ═══ */}
                         {activeView === 'table' && (
                             <div className="space-y-4">
@@ -1088,23 +1433,27 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                             style={{background:'var(--bg-input)',border:'1px solid var(--bg-input-border)',color:'var(--text-secondary)'}}
                                             placeholder="搜尋 NID、項目、負責人..." value={searchTerm} onChange={e=>setSearchTerm(e.target.value)} />
                                     </div>
-                                    <div className="flex gap-1.5 flex-wrap">
-                                        <div className="relative">
-                                            <select value={statusFilter} onChange={(e)=>setStatusFilter(e.target.value)} 
-                                                className="appearance-none pl-3 pr-8 py-2 rounded-lg text-[11px] font-bold transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
-                                                style={{background:'var(--bg-input)',border:'1px solid var(--bg-input-border)',color:'var(--text-secondary)'}}>
-                                                <option value="All">全部狀態 ({analytics.total})</option>
-                                                {Object.entries(STATUSES).map(([k,v])=>(
-                                                    <option key={k} value={k}>{v.label} ({analytics.byStatus[k].length})</option>
-                                                ))}
-                                            </select>
-                                            <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" style={{color:'var(--text-muted)'}}>
-                                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m6 9 6 6 6-6"/></svg>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    {(searchTerm||statusFilter!=='All') && (
-                                        <button onClick={()=>{setSearchTerm('');setStatusFilter('All');}} className="px-3 py-1.5 rounded-lg text-[11px] font-bold text-red-500 hover:bg-red-500/10 transition-colors">✕ 清除</button>
+                                    {/* 人員與逾期篩選。EMS / MSD 的選項直接從資料裡取（見 ownerOptions） */}
+                                    <FilterSelect label="EMS" value={emsFilter} onChange={setEmsFilter}
+                                                  options={ownerOptions.ems.map(n => ({ value:n, label:n }))} allLabel="全部 EMS" />
+                                    <FilterSelect label="MSD" value={msdFilter} onChange={setMsdFilter}
+                                                  options={ownerOptions.msd.map(n => ({ value:n, label:n }))} allLabel="全部 MSD" />
+                                    {/* 逾期判定沿用 buildDueList()：只比「目前階段」的那一個日期 */}
+                                    <FilterSelect label="逾期" value={dueFilter} onChange={setDueFilter} allLabel="不限到期狀態"
+                                                  options={[
+                                                      { value:'attention', label:`需關注 (${dueCountsAll.all})` },
+                                                      { value:'overdue',   label:`已逾期 (${dueCountsAll.overdue})` },
+                                                      { value:'soon',      label:`${DUE_WINDOW_DEFAULT} 日內到期 (${dueCountsAll.soon})` }
+                                                  ]} />
+                                    {/* 警示徽章篩選（第 17 批）。回退與延期是兩件獨立的事，選項也分開 */}
+                                    <FilterSelect label="警示" value={alertFilter} onChange={setAlertFilter} allLabel="不限警示"
+                                                  options={[
+                                                      { value:'delay',    label:`⏰ 有執行延期 (${alertCounts.delay})` },
+                                                      { value:'delay2',   label:`⏰ 延期 2 次以上 (${alertCounts.delay2})` },
+                                                      { value:'rollback', label:`🔄 有規格回退 (${alertCounts.rollback})` }
+                                                  ]} />
+                                    {hasActiveFilter && (
+                                        <button onClick={clearAllFilters} className="px-3 py-1.5 rounded-lg text-[11px] font-bold text-red-500 hover:bg-red-500/10 transition-colors">✕ 清除全部</button>
                                     )}
                                     <div className="ml-auto flex gap-2 flex-wrap justify-end">
                                         {/* B5: 篩選入口改為明確按鈕，不再隱藏在表頭 10px 圖示 */}
@@ -1117,12 +1466,73 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                             🔍 欄位篩選{showColFilters ? ' ▲' : ' ▼'}
                                         </button>
                                         <div className="w-px h-6 self-center" style={{background:'var(--border-card)'}}></div>
-                                        <button onClick={()=>setIsPersonnelModalOpen(true)} className="px-3 py-1.5 rounded-lg text-[11px] font-bold transition-colors border" style={{background:'var(--bg-input)', color:'var(--text-secondary)', borderColor:'var(--bg-input-border)'}}>人員名單</button>
+                                        {/* 「人員名單」按鈕依使用者要求移除（2026-08-18，目前用不到）。
+                                            PersonnelModal 與 /api/personnel 都保留 —— 人員清單仍供
+                                            編輯視窗的 EMS / MSD 下拉與模擬帳號挑選使用，日後要恢復入口
+                                            只要把這顆按鈕加回來即可 */}
                                         <button onClick={handleExport} className="px-3 py-1.5 rounded-lg text-[11px] font-bold transition-colors border" style={{background:'var(--bg-input)', color:'var(--text-secondary)', borderColor:'var(--bg-input-border)'}}>匯出 Excel</button>
                                         <button onClick={() => fileInputRef.current.click()} className="px-3 py-1.5 rounded-lg text-[11px] font-bold transition-colors border" style={{background:'var(--bg-input)', color:'var(--text-secondary)', borderColor:'var(--bg-input-border)'}}>匯入 Excel</button>
                                         <input type="file" ref={fileInputRef} onChange={handleImport} style={{ display: 'none' }} accept=".xlsx" />
                                         {/* 新增：主要動作用實心色，與次要操作在視覺上分層 */}
                                         <button onClick={openAdd} className="px-4 py-1.5 rounded-lg text-[11px] font-bold bg-indigo-500 text-white hover:bg-indigo-600 transition-colors shadow-sm">＋ 新增需求</button>
+                                    </div>
+                                </div>
+
+                                {/* ═══ StatusID 統計／篩選（第 18 批：由 Overall Status 改為 StatusID 1~5）═══
+                                    點一下就篩出那一群資料，不用切到另一頁看另一種格式的統計。
+                                    1~5 可複選（聯集），ALL 是互斥的「清空選取」。
+                                    數字是「套用其他篩選後」的分佈（stageFacets），所以選了 EMS 之後
+                                    這排數字會跟著變 */}
+                                <div className="t-card p-3 flex flex-wrap items-center gap-2">
+                                    {[{ k:'All', label:'ALL' },
+                                      ...Object.entries(STAGE_CODES).map(([k,v]) => ({ k, label:v.short, color:v.color }))
+                                    ].map(o => {
+                                        const isAll = o.k === 'All';
+                                        const active = isAll ? stageFilter.length === 0 : stageFilter.includes(o.k);
+                                        const n = stageFacets[o.k] ?? 0;
+                                        // ALL 沒有自己的階段色，選中時走通用的 pill-active。
+                                        // ⚠️ 不可以寫成 `${o.color}1a` —— 階段色是 hex 沒問題，
+                                        // 但 ALL 若給 CSS 變數會拼成 var(--x)1a 這種無效值，底色會靜靜變透明
+                                        const activeStyle = o.color
+                                            ? { background:`${o.color}1a`, color:o.color, borderColor:o.color }
+                                            : { background:'var(--bg-pill-active)', color:'var(--text-on-pill)', borderColor:'transparent' };
+                                        return (
+                                            <button key={o.k}
+                                                    onClick={()=>setStageFilter(prev => isAll ? []
+                                                        : (prev.includes(o.k) ? prev.filter(x => x !== o.k) : [...prev, o.k]))}
+                                                    className="px-3 py-2 rounded-lg text-[11px] font-bold transition-colors flex items-center gap-2 border"
+                                                    style={active ? activeStyle
+                                                                  : { background:'var(--bg-input)', color:'var(--text-tertiary)', borderColor:'var(--bg-input-border)' }}
+                                                    title={isAll ? '顯示全部 StatusID（清除已選取的階段）'
+                                                                 : `StatusID ${o.k} ${o.label}（可複選，再點一次取消）`}>
+                                                {!isAll && <span className="font-black" style={{color: active ? 'inherit' : o.color}}>{o.k}</span>}
+                                                {o.label}
+                                                <span className="text-[13px] font-black tabular-nums"
+                                                      style={{color: active ? 'inherit' : 'var(--text-primary)'}}>{n}</span>
+                                            </button>
+                                        );
+                                    })}
+                                    <div className="ml-auto flex flex-wrap items-center gap-2 justify-end">
+                                        <span className="text-[11px] tabular-nums" style={{color:'var(--text-muted)'}}>
+                                            顯示 {sortedData.length} / {requirementsData.length} 筆
+                                        </span>
+                                        <div className="w-px h-6" style={{background:'var(--border-card)'}}></div>
+                                        {/* 這兩個排序開關做成 toggle：Done 沉底是預設值，但使用者點欄位排序時
+                                            如果 Done 列永遠不動會以為排序壞掉，所以留一個關得掉的入口 */}
+                                        <ToggleChip on={doneLast} onClick={()=>setDoneLast(!doneLast)}
+                                                    title="結案 (Done / StatusID 5) 的資料列一律排到最下面">Done 置底</ToggleChip>
+                                        <ToggleChip on={duePriority} onClick={()=>setDuePriority(!duePriority)} tone="alert"
+                                                    title="依剩餘天數由少到多排序，逾期最久的排最上面">逾期優先</ToggleChip>
+                                        {/* 次數排序（第 17 批）。用 sortConfig 而不是另一組 state，
+                                            這樣與表頭排序互斥，不會兩套排序打架 */}
+                                        <ToggleChip on={sortConfig.key === 'delayCount'} tone="alert"
+                                                    onClick={()=>setSortConfig(sortConfig.key === 'delayCount'
+                                                        ? { key:null, direction:'asc' } : { key:'delayCount', direction:'desc' })}
+                                                    title="依執行延期次數由多到少排序。注意：「Done 置底」開著時，結案的案件仍會被排到下方">延期最多</ToggleChip>
+                                        <ToggleChip on={sortConfig.key === 'rollbackCount'}
+                                                    onClick={()=>setSortConfig(sortConfig.key === 'rollbackCount'
+                                                        ? { key:null, direction:'asc' } : { key:'rollbackCount', direction:'desc' })}
+                                                    title="依規格回退次數由多到少排序。注意：「Done 置底」開著時，結案的案件仍會被排到下方">回退最多</ToggleChip>
                                     </div>
                                 </div>
 
@@ -1151,7 +1561,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                             <tr style={{background:'var(--thead-col)', borderBottom:'2px solid var(--border-card)'}}>
                                                 <th className="px-2 py-2.5 text-center text-[11px] font-bold cursor-pointer hover:bg-black/5 transition-colors group" style={{color:'var(--text-tertiary)', borderRight:'1px solid var(--border-card)', width:'42px'}} onClick={()=>setShowColFilters(!showColFilters)} title="顯示/隱藏進階篩選">
                                                     <div className="flex flex-col items-center justify-center">
-                                                        <span>需求</span><span>補充</span>
+                                                        <span>Notes</span><span>Link</span>
                                                         <svg className={`mt-0.5 transition-all ${showColFilters?'text-indigo-500':'opacity-30 group-hover:opacity-100'}`} width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
                                                     </div>
                                                 </th>
@@ -1161,11 +1571,11 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 <th className="px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none" style={{color:'var(--text-tertiary)', borderRight:'1px solid var(--border-card)', width:'96px'}} onClick={()=>requestSort('status')}>
                                                     <div className="flex items-center">Status <span className="ml-1"><SortIcon active={sortConfig.key==='status'} dir={sortConfig.direction} /></span></div>
                                                 </th>
-                                                <th className="px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center" style={{color:'var(--text-tertiary)', borderRight:'1px solid var(--border-card)', width:'44px'}} onClick={()=>requestSort('stageCode')} title="StatusID：1 待 EMS Spec / 2 MSD 評估中 / 3 MSD Ongoing / 4 待 EMS 驗收 / 5 已完成">
-                                                    <div className="flex items-center justify-center">ID <span className="ml-1"><SortIcon active={sortConfig.key==='stageCode'} dir={sortConfig.direction} /></span></div>
+                                                <th className="px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none" style={{color:'var(--text-tertiary)', borderRight:'1px solid var(--border-card)', width:'104px'}} onClick={()=>requestSort('stageCode')} title="StatusID：1.EMS規格確認 / 2.MSD確認中 / 3.MSD開發中 / 4.EMS驗收 / 5.結案">
+                                                    <div className="flex items-center">StatusID <span className="ml-1"><SortIcon active={sortConfig.key==='stageCode'} dir={sortConfig.direction} /></span></div>
                                                 </th>
-                                                <th className="px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none" style={{color:'var(--text-tertiary)', borderRight:'1px solid var(--border-card)', width:'66px'}} onClick={()=>requestSort('yearMonth')}>
-                                                    <div className="flex items-center">年月 <span className="ml-1"><SortIcon active={sortConfig.key==='yearMonth'} dir={sortConfig.direction} /></span></div>
+                                                <th className="px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none" style={{color:'var(--text-tertiary)', borderRight:'1px solid var(--border-card)', width:'86px'}} onClick={()=>requestSort('regDate')}>
+                                                    <div className="flex items-center">註冊日期 <span className="ml-1"><SortIcon active={sortConfig.key==='regDate'} dir={sortConfig.direction} /></span></div>
                                                 </th>
                                                 <th className="px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none" style={{color:'var(--text-tertiary)', borderRight:'1px solid var(--border-card)'}} onClick={()=>requestSort('mainCat')}>
                                                     <div className="flex items-center">Main Cat <span className="ml-1"><SortIcon active={sortConfig.key==='mainCat'} dir={sortConfig.direction} /></span></div>
@@ -1177,19 +1587,19 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                     <div className="flex items-center justify-center">EMS <span className="ml-1"><SortIcon active={sortConfig.key==='emsOwner'} dir={sortConfig.direction} /></span></div>
                                                 </th>
                                                 <th className="px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center" style={{color:'var(--col-schedule-text)', borderRight:'2px solid var(--border-card)', background:'var(--thead-col-schedule)'}} onClick={()=>requestSort('specEnd')}>
-                                                    <div className="flex items-center justify-center">EMS 提Spec <span className="ml-1"><SortIcon active={sortConfig.key==='specEnd'} dir={sortConfig.direction} /></span></div>
+                                                    <div className="flex items-center justify-center"><span className="leading-tight">1_EMS<br/>規格確認</span> <span className="ml-1"><SortIcon active={sortConfig.key==='specEnd'} dir={sortConfig.direction} /></span></div>
                                                 </th>
                                                 <th className="px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center" style={{color:'var(--text-tertiary)', borderRight:'1px solid var(--border-card)', background:'var(--thead-col-msd)', width:'50px'}} onClick={()=>requestSort('msdOwner')}>
                                                     <div className="flex items-center justify-center">MSD <span className="ml-1"><SortIcon active={sortConfig.key==='msdOwner'} dir={sortConfig.direction} /></span></div>
                                                 </th>
                                                 <th className="px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center" style={{color:'var(--col-schedule-text)', borderRight:'1px solid var(--border-card)', background:'var(--thead-col-schedule)'}} onClick={()=>requestSort('msdConfirm')}>
-                                                    <div className="flex items-center justify-center">MSD確認需求 <span className="ml-1"><SortIcon active={sortConfig.key==='msdConfirm'} dir={sortConfig.direction} /></span></div>
+                                                    <div className="flex items-center justify-center"><span className="leading-tight">2_MSD<br/>確認中</span> <span className="ml-1"><SortIcon active={sortConfig.key==='msdConfirm'} dir={sortConfig.direction} /></span></div>
                                                 </th>
                                                 <th className="px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center" style={{color:'var(--col-schedule-text)', borderRight:'1px solid var(--border-card)', background:'var(--thead-col-schedule)'}} onClick={()=>requestSort('msdEnd')}>
-                                                    <div className="flex items-center justify-center">MSD 開發 <span className="ml-1"><SortIcon active={sortConfig.key==='msdEnd'} dir={sortConfig.direction} /></span></div>
+                                                    <div className="flex items-center justify-center"><span className="leading-tight">3_MSD<br/>開發中</span> <span className="ml-1"><SortIcon active={sortConfig.key==='msdEnd'} dir={sortConfig.direction} /></span></div>
                                                 </th>
                                                 <th className="px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center" style={{color:'var(--col-schedule-text)', borderRight:'2px solid var(--border-card)', background:'var(--thead-col-schedule)'}} onClick={()=>requestSort('uatEnd')}>
-                                                    <div className="flex items-center justify-center">EMS 驗收 <span className="ml-1"><SortIcon active={sortConfig.key==='uatEnd'} dir={sortConfig.direction} /></span></div>
+                                                    <div className="flex items-center justify-center"><span className="leading-tight">4_EMS<br/>驗收</span> <span className="ml-1"><SortIcon active={sortConfig.key==='uatEnd'} dir={sortConfig.direction} /></span></div>
                                                 </th>
                                                 {/* 現況描述不放在資料列上 —— 內容太長會被截斷成「1.因CMS WL...」，
                                                     看不出重點。改為只在展開的明細裡完整顯示 */}
@@ -1204,8 +1614,8 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                     <th className="px-1 py-1" style={{borderRight:'1px solid var(--border-card)'}}></th>
                                                     <th className="px-1 py-1" style={{borderRight:'1px solid var(--border-card)'}}><input type="text" className="w-full px-1.5 py-1 text-[10px] rounded focus:outline-none" style={{background:'var(--bg-input)',border:'1px solid var(--border-card)',color:'var(--text-primary)'}} placeholder="篩選" value={colFilters.nid||''} onChange={e=>setColFilters({...colFilters, nid:e.target.value})} /></th>
                                                     <th className="px-1 py-1" style={{borderRight:'1px solid var(--border-card)'}}><input type="text" className="w-full px-1.5 py-1 text-[10px] rounded focus:outline-none" style={{background:'var(--bg-input)',border:'1px solid var(--border-card)',color:'var(--text-primary)'}} placeholder="篩選" value={colFilters.status||''} onChange={e=>setColFilters({...colFilters, status:e.target.value})} /></th>
-                                                    <th className="px-1 py-1" style={{borderRight:'1px solid var(--border-card)'}}><input type="text" className="w-full px-1.5 py-1 text-[10px] rounded focus:outline-none" style={{background:'var(--bg-input)',border:'1px solid var(--border-card)',color:'var(--text-primary)'}} placeholder="1-5" value={colFilters.stageCode||''} onChange={e=>setColFilters({...colFilters, stageCode:e.target.value})} /></th>
-                                                    <th className="px-1 py-1" style={{borderRight:'1px solid var(--border-card)'}}><input type="text" className="w-full px-1.5 py-1 text-[10px] rounded focus:outline-none" style={{background:'var(--bg-input)',border:'1px solid var(--border-card)',color:'var(--text-primary)'}} placeholder="篩選" value={colFilters.yearMonth||''} onChange={e=>setColFilters({...colFilters, yearMonth:e.target.value})} /></th>
+                                                    <th className="px-1 py-1" style={{borderRight:'1px solid var(--border-card)'}}><input type="text" className="w-full px-1.5 py-1 text-[10px] rounded focus:outline-none" style={{background:'var(--bg-input)',border:'1px solid var(--border-card)',color:'var(--text-primary)'}} placeholder="1-5 或名稱" value={colFilters.stageCode||''} onChange={e=>setColFilters({...colFilters, stageCode:e.target.value})} /></th>
+                                                    <th className="px-1 py-1" style={{borderRight:'1px solid var(--border-card)'}}><input type="text" className="w-full px-1.5 py-1 text-[10px] rounded focus:outline-none" style={{background:'var(--bg-input)',border:'1px solid var(--border-card)',color:'var(--text-primary)'}} placeholder="YYYY/MM/DD" value={colFilters.regDate||''} onChange={e=>setColFilters({...colFilters, regDate:e.target.value})} /></th>
                                                     <th className="px-1 py-1" style={{borderRight:'1px solid var(--border-card)'}}><input type="text" className="w-full px-1.5 py-1 text-[10px] rounded focus:outline-none" style={{background:'var(--bg-input)',border:'1px solid var(--border-card)',color:'var(--text-primary)'}} placeholder="篩選" value={colFilters.mainCat||''} onChange={e=>setColFilters({...colFilters, mainCat:e.target.value})} /></th>
                                                     <th className="px-1 py-1" style={{borderRight:'2px solid var(--border-card)'}}><input type="text" className="w-full px-1.5 py-1 text-[10px] rounded focus:outline-none" style={{background:'var(--bg-input)',border:'1px solid var(--border-card)',color:'var(--text-primary)'}} placeholder="篩選" value={colFilters.subCat||''} onChange={e=>setColFilters({...colFilters, subCat:e.target.value})} /></th>
                                                     <th className="px-1 py-1" style={{borderRight:'1px solid var(--border-card)', background:'var(--col-ems-bg)'}}><input type="text" className="w-full px-1.5 py-1 text-[10px] rounded focus:outline-none" style={{background:'var(--bg-input)',border:'1px solid var(--border-card)',color:'var(--text-primary)'}} placeholder="篩選" value={colFilters.emsOwner||''} onChange={e=>setColFilters({...colFilters, emsOwner:e.target.value})} /></th>
@@ -1236,40 +1646,28 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 const st = STATUSES[normStatus(item.status)];
                                                 const stageCode = normStageCode(item.stageCode);
                                                 const stage = STAGE_CODES[stageCode];
-                                                const specHist = parseHistoryString(item.spec?.history);
-                                                const confirmHist = parseHistoryString(item.msd?.confirmHistory);
-                                                const msdHist = parseHistoryString(item.msd?.history);
-                                                const uatHist = parseHistoryString(item.uat?.history);
-                                                const histCount = specHist.length + confirmHist.length + msdHist.length + uatHist.length;
-                                                const hasHist = histCount > 0;
+                                                // 軌跡改讀 dbo.Controltable_History 稽核表（第 13 批）。
+                                                // 舊的 *History 字串欄位已不再讀寫。
+                                                const rowHist = historyMap.get(item.id) || [];
+                                                // ⚠️ init 是首次填寫，不算異動 —— 算進去的話每一筆都會冤枉地掛上 ⚠1
+                                                const changeOf = ph => rowHist.filter(h => h.phase === ph && h.changeType !== 'init').length;
+                                                const histCount = rowHist.filter(h => h.changeType !== 'init').length;
+                                                const hasHist = rowHist.length > 0;
 
                                                 // 各階段的逾期／即將到期狀態，整列取最嚴重的那個當左側色條。
                                                 // Spec 一旦被 MSD 確認就算走完，不再標逾期。
+                                                // 同理，StatusID 已經推過該階段的（第 15 批的 Done 會自動推進）也不再標 ——
+                                                // 否則提早完成把 End 改成今天之後，那格會冒出「今天到期」的琥珀燈
                                                 const msdConfirmed = !!item.msd?.confirm;
-                                                const specAlert = getPhaseAlert(item.spec?.end, isDone || msdConfirmed);
-                                                const msdAlert  = getPhaseAlert(item.msd?.end, isDone);
-                                                const uatAlert  = getPhaseAlert(item.uat?.end, isDone);
+                                                const stageNum = parseInt(stageCode, 10) || 0;
+                                                const specAlert = getPhaseAlert(item.spec?.end, isDone || msdConfirmed || stageNum >= 2);
+                                                const msdAlert  = getPhaseAlert(item.msd?.end, isDone || stageNum >= 4);
+                                                const uatAlert  = getPhaseAlert(item.uat?.end, isDone || stageNum >= 5);
                                                 const rowAlert  = pickRowAlert(specAlert, msdAlert, uatAlert);
 
-                                                // 軌跡只存了「原日期」，新日期要從下一筆的原日期推回來；
-                                                // 最後一筆則對應目前的實際值
-                                                const buildTimeline = (entries, label, clr, current) => {
-                                                    const detailed = entries.map(h => ({ ...h, ...parseHistoryDetail(h.reason) }));
-                                                    return detailed.map((e, i) => {
-                                                        const next = detailed[i+1];
-                                                        const after = next
-                                                            ? { confirm: next.confirm, start: next.start, end: next.end }
-                                                            : { confirm: current?.confirm||'', start: current?.start||'', end: current?.end||'' };
-                                                        return { ...e, phase: label, clr, after };
-                                                    });
-                                                };
-                                                // B2: 四個階段的軌跡都要排進 timeline，包含 ② 的 confirmHistory
-                                                const timeline = [
-                                                    ...buildTimeline(specHist,    '① EMS 提Spec',   '#f59e0b', item.spec),
-                                                    ...buildTimeline(confirmHist, '② MSD 確認Spec', '#8b5cf6', { confirm:item.msd?.confirm, start:'', end:'' }),
-                                                    ...buildTimeline(msdHist,     '③ MSD 開發',     '#3b82f6', item.msd),
-                                                    ...buildTimeline(uatHist,     '④ EMS 驗收',     '#ec4899', item.uat)
-                                                ];
+                                                // 稽核表已經明確存了異動前後的值，不必再像舊版那樣
+                                                // 用「下一筆的原日期」把新日期反推回來
+                                                const timeline = rowHist;
                                                 const stBg = dark ? st.darkBg : st.lightBg;
                                                 // 已結案的列改用淡底色標示，不再整列 opacity:0.5 —— 那會連文字
                                                 // 一起變淡，對比度掉到不易閱讀
@@ -1283,65 +1681,87 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                             onMouseEnter={e=>{if(!isExp)e.currentTarget.style.background='var(--bg-table-hover)'}}
                                                             onMouseLeave={e=>{e.currentTarget.style.background=rowBg}}
                                                             onClick={()=>toggleRow(item.id)}>
-                                                            {/* 需求補充 (Remark) ── 兼作整列的風險色條。
-                                                                內容是描述文字不是網址，所以不做成連結，只用圖示提示「有補充」，
-                                                                完整內容看 tooltip 或展開明細 */}
+                                                            {/* Notes Link (FIELD_SPEC #23)：DB 欄名 NotesLink，只存超連結。
+                                                                需求補充 (Remark) 是另一個欄位，不在這裡顯示（見 08 腳本）。
+                                                                資料列第一欄兼作風險色條：左側 3px 色條 + icon。
+                                                                有值且是連結 → 可點的外部連結 icon
+                                                                有值但不成連結 → 文件 icon + tooltip
+                                                                無值 → 灰色 '-' */}
                                                             <td className="px-2 py-2.5 text-center"
                                                                 style={{borderRight:'1px solid var(--border-table)',
                                                                         borderLeft:`3px solid ${rowAlert ? rowAlert.color : 'transparent'}`}}
                                                                 title={rowAlert ? `${rowAlert.label}` : ''}>
                                                                 {item.notesLink
-                                                                    ? <span className="inline-flex p-1 rounded text-indigo-500 cursor-help" title={`需求補充：${item.notesLink}`}>
-                                                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>
-                                                                      </span>
+                                                                    ? isLinkVal(item.notesLink)
+                                                                        ? <a href={item.notesLink.trim()} target="_blank" rel="noopener noreferrer"
+                                                                             className="inline-flex p-1 rounded text-indigo-500 hover:text-indigo-600 hover:bg-indigo-500/10 transition-colors"
+                                                                             title={`開啟連結：${item.notesLink.trim()}`}
+                                                                             onClick={e => e.stopPropagation()}>
+                                                                            {/* 外部連結 icon */}
+                                                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                                                                          </a>
+                                                                        : <span className="inline-flex p-1 rounded text-indigo-500 cursor-help" title={`Notes Link：${item.notesLink}`}>
+                                                                            {/* 不成連結 → 文件 icon */}
+                                                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>
+                                                                          </span>
                                                                     : <span style={{color:'var(--text-muted)'}}>-</span>}
                                                             </td>
-                                                            {/* NID */}
-                                                            <td className="px-2 py-2.5 text-sm font-black" style={{color:'var(--text-primary)', borderRight:'1px solid var(--border-table)'}}>{item.nid}</td>
+                                                            {/* NID。警示徽章掛在這欄下方 —— 資料列已經很擠（全表 min-content 約 1259px），
+                                                                不能為了兩個徽章再加一欄 */}
+                                                            <td className="px-2 py-2.5 text-sm font-black" style={{color:'var(--text-primary)', borderRight:'1px solid var(--border-table)'}}>
+                                                                {item.nid}
+                                                                <AlertBadges delay={item.delayCount||0} rollback={item.rollbackCount||0} />
+                                                            </td>
                                                             {/* Status */}
                                                             <td className="px-2 py-2.5" style={{borderRight:'1px solid var(--border-table)'}}>
                                                                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold whitespace-nowrap" style={{background:stBg,color:st.color,border:`1px solid ${st.border}`}}>
                                                                     {st.label}
                                                                 </span>
                                                             </td>
-                                                            {/* StatusID (1~5)。B4: Done 案件若 stageCode 為空，自動顯示 5（已完成）*/}
-                                                            <td className="px-2 py-2.5 text-center" style={{borderRight:'1px solid var(--border-table)'}}>
+                                                            {/* StatusID (1~5)：代號 + 階段名稱。
+                                                                B4: Done 案件若 stageCode 為空，自動顯示 5（結案）*/}
+                                                            <td className="px-2 py-2.5" style={{borderRight:'1px solid var(--border-table)'}}>
                                                                 {(() => {
-                                                                    // B4: Done 列若沒有 stageCode，補顯示 5（已完成）
+                                                                    // B4: Done 列若沒有 stageCode，補顯示 5（結案）
                                                                     const displayCode = stageCode || (isDone ? '5' : '');
                                                                     const displayStage = STAGE_CODES[displayCode];
                                                                     if (!displayCode)
                                                                         return <span style={{color:'var(--text-muted)'}}>-</span>;
                                                                     if (displayStage)
-                                                                        return <span className="inline-flex items-center justify-center w-5 h-5 rounded text-[11px] font-black"
+                                                                        return <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-bold whitespace-nowrap"
                                                                                 style={{color:displayStage.color, background:`${displayStage.color}1a`, border:`1px solid ${displayStage.color}33`}}
-                                                                                title={`StatusID ${displayCode}：${displayStage.short}${!stageCode&&isDone?' (由 Done 狀態推斷)':''}`}>{displayCode}</span>;
+                                                                                title={`StatusID ${displayStage.label}${!stageCode&&isDone?' (由 Done 狀態推斷)':''}`}>
+                                                                                <span className="font-black">{displayCode}</span>{displayStage.short}
+                                                                               </span>;
                                                                     return <span className="inline-flex items-center justify-center w-5 h-5 rounded text-[11px] font-black cursor-help"
                                                                                 style={{color:'var(--tone-alert)', background:'var(--tone-alert-bg)', border:'1px solid var(--tone-alert)'}}
                                                                                 title={`StatusID「${displayCode}」超出 1~5 的定義，請修正這筆資料`}>{displayCode}</span>;
                                                                 })()}
                                                             </td>
-                                                            {/* 年月 */}
-                                                            <td className="px-2 py-2.5 text-xs font-bold" style={{color:'var(--text-secondary)', borderRight:'1px solid var(--border-table)'}} title={item.createdAt ? `建立於 ${item.createdAt}` : ''}>{item.yearMonth}</td>
-                                                            {/* Main Cat */}
+                                                            {/* 註冊日期 (RegDate)，YYYY/MM/DD */}
+                                                            <td className="px-2 py-2.5 text-xs font-bold whitespace-nowrap" style={{color:'var(--text-secondary)', borderRight:'1px solid var(--border-table)'}} title={item.createdAt ? `建立於 ${item.createdAt}` : ''}>{fmtYmd(item.regDate) || '-'}</td>
+                                                            {/* Main Cat / Sub Cat 是唯一沒有固定寬度的兩欄。
+                                                                truncate 的 white-space:nowrap 會讓 td 的 min-content 等於整串文字寬度，
+                                                                遇到長字串就把整張表撐出水平捲軸（實測有一筆 Sub Cat 吃掉 285px）。
+                                                                加 maxWidth 才會真的截斷；完整內容看 title 或展開明細。 */}
                                                             <td className="px-2 py-2.5" style={{borderRight:'1px solid var(--border-table)'}}>
-                                                                <div className="text-xs font-bold truncate" style={{color:'var(--text-primary)'}} title={item.mainCat}>{item.mainCat}</div>
+                                                                <div className="text-xs font-bold truncate" style={{color:'var(--text-primary)', maxWidth:'140px'}} title={item.mainCat}>{item.mainCat}</div>
                                                             </td>
                                                             {/* Sub Cat */}
                                                             <td className="px-2 py-2.5" style={{borderRight:'2px solid var(--border-card)'}}>
-                                                                <div className="text-xs font-medium truncate" style={{color:'var(--text-tertiary)'}} title={item.subCat}>{item.subCat}</div>
+                                                                <div className="text-xs font-medium truncate" style={{color:'var(--text-tertiary)', maxWidth:'170px'}} title={item.subCat}>{item.subCat}</div>
                                                             </td>
                                                             {/* EMS */}
                                                             <td className="px-2 py-2.5 text-center text-xs font-bold" style={{color:'var(--text-secondary)', borderRight:'1px solid var(--border-table)', background:'var(--col-ems-bg)'}}>{item.emsOwner}</td>
                                                             {/* 四個時程欄的順序依 FIELD_SPEC.md：
-                                                                EMS │ EMS提Spec │ MSD │ MSD確認需求 │ MSD開發 │ EMS驗收
+                                                                EMS │ 1_EMS規格確認 │ MSD │ 2_MSD確認中 │ 3_MSD開發中 │ 4_EMS驗收
                                                                 每欄顯示：日期 + 逾期標示 + 該階段自己的異動次數 */}
-                                                            {scheduleCell({ val:item.spec?.end, alert:specAlert, changes:specHist.length, label:'EMS 提Spec', br:'2px solid var(--border-card)' })}
+                                                            {scheduleCell({ val:item.spec?.end, alert:specAlert, changes:changeOf('spec'),    label:'1_EMS規格確認', br:'2px solid var(--border-card)', actual:item.spec?.actualEnd })}
                                                             {/* MSD */}
                                                             <td className="px-2 py-2.5 text-center text-xs font-bold" style={{color:'var(--text-secondary)', borderRight:'1px solid var(--border-table)', background:'var(--col-msd-bg)'}}>{item.msdOwner}</td>
-                                                            {scheduleCell({ val:item.msd?.confirm, alert:null,     changes:confirmHist.length, label:'MSD確認需求', br:'1px solid var(--border-table)' })}
-                                                            {scheduleCell({ val:item.msd?.end,     alert:msdAlert,  changes:msdHist.length,     label:'MSD 開發',    br:'1px solid var(--border-table)' })}
-                                                            {scheduleCell({ val:item.uat?.end,     alert:uatAlert,  changes:uatHist.length,     label:'EMS 驗收',    br:'2px solid var(--border-card)' })}
+                                                            {scheduleCell({ val:item.msd?.confirm, alert:null,     changes:changeOf('confirm'), label:'2_MSD確認中', br:'1px solid var(--border-table)', actual:item.msd?.confirmActualEnd })}
+                                                            {scheduleCell({ val:item.msd?.end,     alert:msdAlert,  changes:changeOf('msd'),     label:'3_MSD開發中', br:'1px solid var(--border-table)', actual:item.msd?.actualEnd })}
+                                                            {scheduleCell({ val:item.uat?.end,     alert:uatAlert,  changes:changeOf('uat'),     label:'4_EMS驗收',   br:'2px solid var(--border-card)', actual:item.uat?.actualEnd })}
                                                             {/* 現況描述改放明細，不佔資料列 */}
                                                             {/* MP Saving */}
                                                             <td className="px-2 py-2.5 text-center" style={{borderRight:'1px solid var(--border-card)'}}>
@@ -1370,17 +1790,34 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                                         <div className="p-4 rounded-xl" style={{background:'var(--bg-detail-card)',border:'1px solid var(--bg-detail-border)'}}>
                                                                             <h4 className="text-xs font-bold mb-3 flex items-center gap-1.5" style={{color:'var(--text-primary)'}}>完整時程</h4>
                                                                             <div className="space-y-3 text-[12px]">
-                                                                                {/* 需求補充 = Excel 的 Remark (DB 欄位沿用舊名 NotesLink)。
-                                                                                    它是「針對子分類的描述補充」純文字，不是網址，所以不做成連結 */}
-                                                                                {item.notesLink&&<div><span style={{color:'var(--text-muted)'}} className="font-semibold">需求補充：</span><span style={{color:'var(--text-secondary)'}} className="font-medium whitespace-pre-wrap break-words">{item.notesLink}</span></div>}
-                                                                                <div><span style={{color:'var(--text-muted)'}} className="font-semibold">① EMS 提供Spec：</span><span style={{color:'var(--text-secondary)'}} className="font-medium">{item.spec.start||'-'} → {item.spec.end||'-'}</span></div>
-                                                                                <div><span style={{color:'var(--text-muted)'}} className="font-semibold">② MSD 確認Spec：</span><span style={{color:'var(--text-secondary)'}} className="font-medium">{item.msd.confirm||'-'}</span>
+                                                                                {/* 需求補充 (Excel「Remark」)：針對子分類的描述補充，**純文字不是網址**，
+                                                                                    絕對不可做成 <a href> —— 這個坑 2026-08-17 踩過一次 */}
+                                                                                {item.remark && (
+                                                                                    <div>
+                                                                                        <span style={{color:'var(--text-muted)'}} className="font-semibold">需求補充：</span>
+                                                                                        <span style={{color:'var(--text-secondary)'}} className="font-medium whitespace-pre-wrap break-words">{item.remark}</span>
+                                                                                    </div>
+                                                                                )}
+                                                                                {/* Notes Link (Excel「NotesLink」)：真正的超連結，與上面的需求補充是兩個欄位 */}
+                                                                                {item.notesLink && (
+                                                                                    <div>
+                                                                                        <span style={{color:'var(--text-muted)'}} className="font-semibold">Notes Link：</span>
+                                                                                        {isLinkVal(item.notesLink)
+                                                                                            ? <a href={item.notesLink.trim()} target="_blank" rel="noopener noreferrer"
+                                                                                                 className="font-medium underline text-indigo-500 hover:text-indigo-600 break-all"
+                                                                                                 style={{color:'var(--color-indigo-500)'}}>{item.notesLink.trim()}</a>
+                                                                                            : <span style={{color:'var(--text-secondary)'}} className="font-medium whitespace-pre-wrap break-words">{item.notesLink}</span>}
+                                                                                    </div>
+                                                                                )}
+                                                                                <div><span style={{color:'var(--text-muted)'}} className="font-semibold">① EMS規格確認：</span><span style={{color:'var(--text-secondary)'}} className="font-medium">{item.spec.start||'-'} → {item.spec.end||'-'}</span><ActualEndNote actual={item.spec.actualEnd} planned={item.spec.end} /></div>
+                                                                                <div><span style={{color:'var(--text-muted)'}} className="font-semibold">② MSD確認中：</span><span style={{color:'var(--text-secondary)'}} className="font-medium">{item.msd.confirm||'-'}</span><ActualEndNote actual={item.msd.confirmActualEnd} planned={item.msd.confirm} />
                                                                                     {item.msd.confirmNote&&<div className="text-[11px] mt-0.5 whitespace-pre-wrap" style={{color:'var(--text-muted)'}}>備註: {item.msd.confirmNote}</div>}
                                                                                 </div>
-                                                                                <div><span style={{color:'var(--text-muted)'}} className="font-semibold">③ MSD 開發：</span><span style={{color:'var(--text-secondary)'}} className="font-medium">{item.msd.start||'-'} → {item.msd.end||'-'}</span></div>
-                                                                                <div><span style={{color:'var(--text-muted)'}} className="font-semibold">④ EMS 驗收：</span><span style={{color:'var(--text-secondary)'}} className="font-medium">{item.uat.start||'-'} → {item.uat.end||'-'}</span></div>
+                                                                                <div><span style={{color:'var(--text-muted)'}} className="font-semibold">③ MSD開發中：</span><span style={{color:'var(--text-secondary)'}} className="font-medium">{item.msd.start||'-'} → {item.msd.end||'-'}</span><ActualEndNote actual={item.msd.actualEnd} planned={item.msd.end} /></div>
+                                                                                <div><span style={{color:'var(--text-muted)'}} className="font-semibold">④ EMS驗收：</span><span style={{color:'var(--text-secondary)'}} className="font-medium">{item.uat.start||'-'} → {item.uat.end||'-'}</span><ActualEndNote actual={item.uat.actualEnd} planned={item.uat.end} /></div>
                                                                                 <div className="pt-2 mt-1" style={{borderTop:'1px solid var(--border-card)'}}>
                                                                                     {stage&&<div className="mb-1"><span style={{color:'var(--text-muted)'}} className="font-semibold">StatusID：</span><span className="font-medium" style={{color:stage.color}}>{stage.label}</span></div>}
+                                                                                    <div className="mb-1"><span style={{color:'var(--text-muted)'}} className="font-semibold">註冊日期：</span><span style={{color:'var(--text-secondary)'}} className="font-medium">{fmtYmd(item.regDate)||'-'}</span></div>
                                                                                     <span style={{color:'var(--text-muted)'}} className="font-semibold">建立時間：</span><span style={{color:'var(--text-secondary)'}} className="font-medium">{item.createdAt||'-'}</span>
                                                                                     {item.updatedAt&&<div className="text-[11px] mt-0.5" style={{color:'var(--text-muted)'}}>最後更新: {item.updatedAt}</div>}
                                                                                 </div>
@@ -1400,26 +1837,42 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                                                 ? <div className="text-xs italic py-4 text-center" style={{color:'var(--text-muted)'}}>無變更紀錄</div>
                                                                                 : <div className="space-y-3 max-h-56 overflow-y-auto scrollbar-thin pr-1">
                                                                                     {timeline.map((h,i)=>{
-                                                                                        // 只列出真的有變動的欄位
-                                                                                        const changes = ['confirm','start','end']
-                                                                                            .map(f => ({ f, before:h[f], after:h.after[f] }))
+                                                                                        const ph = PHASES[h.phase] || {};
+                                                                                        const clr = ph.color || 'var(--text-muted)';
+                                                                                        const ct = CHANGE_TYPES[h.changeType] || CHANGE_TYPES['日期異動'];
+                                                                                        // 稽核表已明確存了前後值，直接列出真的有變動的欄位
+                                                                                        const changes = [['confirm','oldConfirm','newConfirm'],
+                                                                                                         ['start','oldStart','newStart'],
+                                                                                                         ['end','oldEnd','newEnd']]
+                                                                                            .map(([f,o,n]) => ({ f, before:h[o]||'', after:h[n]||'' }))
                                                                                             .filter(c => (c.before||c.after) && c.before !== c.after);
                                                                                         return (
-                                                                                            <div key={i} className="flex items-start gap-2 text-[11px]">
-                                                                                                <div className="w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0" style={{background:h.clr}}></div>
+                                                                                            <div key={h.id||i} className="flex items-start gap-2 text-[11px]">
+                                                                                                <div className="w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0" style={{background:clr}}></div>
                                                                                                 <div className="min-w-0 flex-1">
-                                                                                                    <div>
-                                                                                                        <span className="font-bold" style={{color:h.clr}}>{h.phase}</span>
-                                                                                                        <span className="mx-1" style={{color:'var(--text-muted)'}}>·</span>
-                                                                                                        <span style={{color:'var(--text-muted)'}}>{h.date}</span>
+                                                                                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                                                                                        <span className="font-bold" style={{color:clr}}>{ph.timelineLabel || h.phase}</span>
+                                                                                                        <span className="px-1 py-0.5 rounded font-bold"
+                                                                                                              style={{color:ct.color, background:ct.bg}}>{ct.label}</span>
+                                                                                                        <span style={{color:'var(--text-muted)'}}>{h.changedAt}</span>
+                                                                                                        {/* 異動人員。模擬帳號一定標示出來，不可冒充真實登入者 */}
+                                                                                                        {h.changedBy && (
+                                                                                                            <span style={{color:'var(--text-muted)'}}>
+                                                                                                                · {h.changedBy}
+                                                                                                                {h.changedBySource === 'simulated' && <span className="ml-0.5" title="這筆是用模擬帳號寫入的">（模擬）</span>}
+                                                                                                            </span>
+                                                                                                        )}
                                                                                                     </div>
-                                                                                                    {changes.length > 0 ? changes.map(c => {
+                                                                                                    {changes.map(c => {
                                                                                                         const d = dayDiff(c.before, c.after);
+                                                                                                        // 延期完成的原訂日期**沒有被改掉**（那是延遲的證據），
+                                                                                                        // 所以不能畫刪除線，改標成「原訂 → 實際」
+                                                                                                        const isDelay = h.changeType === '延期完成';
                                                                                                         return (
                                                                                                             <div key={c.f} className="mt-1 flex items-center gap-1.5 flex-wrap">
-                                                                                                                <span style={{color:'var(--text-muted)'}}>{PHASE_FIELD_LABEL[c.f]}</span>
-                                                                                                                <span style={{color:'var(--text-muted)', textDecoration:'line-through'}}>{c.before||'未填'}</span>
-                                                                                                                <span style={{color:'var(--text-muted)'}}>→</span>
+                                                                                                                <span style={{color:'var(--text-muted)'}}>{PHASE_FIELD_LABEL[c.f]}{isDelay && ' 原訂'}</span>
+                                                                                                                <span style={{color:'var(--text-muted)', textDecoration: isDelay ? 'none' : 'line-through'}}>{c.before||'未填'}</span>
+                                                                                                                <span style={{color:'var(--text-muted)'}}>{isDelay ? '→ 實際' : '→'}</span>
                                                                                                                 <span className="font-bold" style={{color:'var(--text-primary)'}}>{c.after||'未填'}</span>
                                                                                                                 {d !== null && d !== 0 && (
                                                                                                                     <span className="px-1 py-0.5 rounded font-bold"
@@ -1431,8 +1884,16 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                                                                                 )}
                                                                                                             </div>
                                                                                                         );
-                                                                                                    }) : null}
-                                                                                                    {h.reason && <div className="mt-1 whitespace-pre-wrap" style={{color:'var(--text-tertiary)'}}>理由：{h.reason}</div>}
+                                                                                                    })}
+                                                                                                    {h.reasonCategory && (
+                                                                                                        <div className="mt-1">
+                                                                                                            <span className="px-1 py-0.5 rounded font-bold"
+                                                                                                                  style={{color:'var(--text-tertiary)', background:'var(--bg-input)', border:'1px solid var(--bg-input-border)'}}>
+                                                                                                                {h.reasonCategory}
+                                                                                                            </span>
+                                                                                                        </div>
+                                                                                                    )}
+                                                                                                    {h.note && <div className="mt-1 whitespace-pre-wrap" style={{color:'var(--text-tertiary)'}}>說明：{h.note}</div>}
                                                                                                 </div>
                                                                                             </div>
                                                                                         );
@@ -1476,8 +1937,8 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         </div>
                                         {!editingData.isNew && (
                                         <div className="col-span-1">
-                                            <label className="block text-xs font-bold mb-1" style={{color:'var(--text-secondary)'}}>年月 (YearMonth)</label>
-                                            <input type="text" className="w-full px-3 py-2 rounded-lg text-sm border outline-none cursor-not-allowed text-slate-500 dark:text-slate-400" style={{background:'var(--bg-header-border)', borderColor:'var(--border-table)'}} value={editingData.yearMonth||''} readOnly placeholder="例如: 2026/01"/>
+                                            <label className="block text-xs font-bold mb-1" style={{color:'var(--text-secondary)'}}>註冊日期 (RegDate)</label>
+                                            <input type="text" className="w-full px-3 py-2 rounded-lg text-sm border outline-none cursor-not-allowed text-slate-500 dark:text-slate-400" style={{background:'var(--bg-header-border)', borderColor:'var(--border-table)'}} value={fmtYmd(editingData.regDate)} readOnly placeholder="例如: 2026/01/15"/>
                                         </div>
                                         )}
                                         {!editingData.isNew && (
@@ -1495,6 +1956,21 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 <option value="">未設定</option>
                                                 {Object.entries(STAGE_CODES).map(([k,v])=><option key={k} value={k}>{v.label}</option>)}
                                             </select>
+                                            {/* 規格回退（第 16 批）。只有已經走過第 1 階段的才有東西可退。
+                                                以「已儲存的 StatusID」判斷，與後端看同一個值 */}
+                                            {(() => {
+                                                const cur = savedStage(requirementsData.find(d => d.id === editingData.id));
+                                                if (cur < 2) return null;
+                                                return (
+                                                    <button type="button"
+                                                            onClick={()=>setRollbackModal({ id:editingData.id, nid:editingData.nid, curStage:cur, target:cur-1, note:'' })}
+                                                            className="mt-1.5 w-full px-2 py-1 rounded text-[11px] font-bold border transition-colors"
+                                                            style={{color:'#8b5cf6', background:'rgba(139,92,246,0.08)', borderColor:'rgba(139,92,246,0.3)'}}
+                                                            title="規格變更需要重做前面的階段時使用">
+                                                        🔄 規格回退
+                                                    </button>
+                                                );
+                                            })()}
                                         </div>
                                         )}
                                         <div className="col-span-1">
@@ -1526,12 +2002,13 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         {/* EMS 需求提供 */}
                                         <div className="col-span-1 md:col-span-3 mt-4 border-t pt-4" style={{borderColor:'var(--border-table)'}}>
                                             <div className="flex items-center gap-2 mb-3">
-                                                <h4 className="text-sm font-bold text-amber-500">1. EMS 需求Spec提供</h4>
+                                                <h4 className="text-sm font-bold text-amber-500">1_EMS規格確認</h4>
                                                 {hasAnyField('spec') && !unlockedSections.spec && (
                                                     <button type="button" onClick={() => handleUnlock('spec')} className="text-gray-400 hover:text-amber-500 transition-colors" title="解鎖以修改日期">
                                                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
                                                     </button>
                                                 )}
+                                                {donePanel('spec')}
                                             </div>
                                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                                 <div>
@@ -1546,22 +2023,24 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                             </div>
                                             {unlockedSections.spec && isPhaseModified('spec') && (
                                                 <div className="mt-4 p-3 bg-red-50 dark:bg-red-900/10 border border-red-200 dark:border-red-900/30 rounded-lg">
-                                                    <label className="block text-xs font-bold text-red-600 dark:text-red-400 mb-1">⚠️ 請填寫異動理由 (必填)</label>
-                                                    <input type="text" className="w-full px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-red-500/50" style={{background:'var(--bg-main)', borderColor:'var(--border-table)'}} placeholder="輸入修改日期的原因..." value={unlockReasons.spec||''} onChange={e=>setUnlockReasons({...unlockReasons, spec:e.target.value})} />
+                                                    <ReasonFields phaseKey="spec" categories={unlockCategories} setCategories={setUnlockCategories} reasons={unlockReasons} setReasons={setUnlockReasons} />
                                                 </div>
                                             )}
-                                            {editingData.spec?.history && (
-                                                <div className="mt-3 p-2 bg-slate-50 dark:bg-slate-800/50 rounded border border-slate-200 dark:border-slate-700 text-[10px] text-slate-500 whitespace-pre-wrap max-h-[100px] overflow-y-auto">
-                                                    <div className="font-bold mb-1">異動紀錄</div>
-                                                    {editingData.spec.history}
-                                                </div>
-                                            )}
+                                            <PhaseAuditList entries={editingPhaseHist('spec')} />
                                         </div>
 
-                                        {/* 需求補充 (Excel: Remark)。DB 欄位名沿用舊的 NotesLink，但內容是描述文字不是網址 */}
+                                        {/* 需求補充 (Excel「Remark」)：純文字的描述補充，多行 */}
                                         <div className="col-span-1 md:col-span-3">
-                                            <label className="block text-xs font-bold mb-1" style={{color:'var(--text-secondary)'}}>需求補充 <span className="font-normal" style={{color:'var(--text-muted)'}}>(Remark，針對子項目分類的補充說明)</span></label>
-                                            <textarea className="w-full px-3 py-2 rounded-lg text-sm border h-16 outline-none focus:ring-2 ring-indigo-500/50" style={{background:'var(--bg-main)', borderColor:'var(--border-table)'}} value={editingData.notesLink||''} onChange={e=>setEditingData({...editingData, notesLink:e.target.value})} placeholder="補充說明這個子項目的需求內容..."></textarea>
+                                            <label className="block text-xs font-bold mb-1" style={{color:'var(--text-secondary)'}}>需求補充 <span className="font-normal" style={{color:'var(--text-muted)'}}>(Remark，針對子分類的文字描述)</span></label>
+                                            <textarea rows="2" className="w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 ring-indigo-500/50" style={{background:'var(--bg-main)', borderColor:'var(--border-table)'}} value={editingData.remark||''} onChange={e=>setEditingData({...editingData, remark:e.target.value})} placeholder="例如: 確認是否須執行 Temp unhold or Re-Target" />
+                                        </div>
+
+                                        {/* Notes Link (Excel「NotesLink」)：只放超連結，與上面的需求補充是兩個獨立欄位。
+                                            type 用 text 不用 url —— 實際資料是 Notes:// 開頭，
+                                            type="url" 的原生驗證會把它擋下來不給送出 */}
+                                        <div className="col-span-1 md:col-span-3">
+                                            <label className="block text-xs font-bold mb-1" style={{color:'var(--text-secondary)'}}>Notes Link <span className="font-normal" style={{color:'var(--text-muted)'}}>(超連結，例如 Notes://... 或 https://...)</span></label>
+                                            <input type="text" className="w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 ring-indigo-500/50" style={{background:'var(--bg-main)', borderColor:'var(--border-table)'}} value={editingData.notesLink||''} onChange={e=>setEditingData({...editingData, notesLink:e.target.value})} placeholder="Notes://... 或 https://..." />
                                         </div>
 
                                         {/* ② MSD 確認Spec ── Confirm 日期從「MSD 開發」搬到這裡自成一個階段，
@@ -1569,31 +2048,29 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         {!editingData.isNew && (
                                         <div className="col-span-1 md:col-span-3 mt-2 border-t pt-4" style={{borderColor:'var(--border-table)'}}>
                                             <div className="flex items-center gap-2 mb-3">
-                                                <h4 className="text-sm font-bold text-violet-500">2. MSD 確認Spec</h4>
+                                                <h4 className="text-sm font-bold text-violet-500">2_MSD確認中</h4>
                                                 {hasAnyField('confirm') && !unlockedSections.confirm && (
                                                     <button type="button" onClick={() => handleUnlock('confirm')} className="text-gray-400 hover:text-violet-500 transition-colors" title="解鎖以修改日期">
                                                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
                                                     </button>
                                                 )}
+                                                {!isPhaseOpen('confirm') && <GateLock text={gateHint('confirm')} showText={true} />}
+                                                {donePanel('confirm')}
                                             </div>
                                             <div>
-                                                <label className="block text-xs mb-1" style={{color:'var(--text-secondary)'}}>Confirm EMS Spec Date</label>
-                                                <input type="date" disabled={isFieldLocked('confirm', 'confirm')} className="w-[160px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-violet-500/50 disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800" style={{background:isFieldLocked('confirm','confirm')?undefined:'var(--bg-main)', borderColor:'var(--border-table)'}} value={editingData.msd?.confirm||''} onChange={e=>setEditingData({...editingData, msd:{...editingData.msd, confirm:e.target.value}})} />
+                                                <label className="flex items-center gap-1.5 text-xs mb-1" style={{color:'var(--text-secondary)'}}>Confirm EMS Spec Date
+                                                    {fieldLockReason('confirm','confirm')==='gated' && <GateLock text={gateHint('confirm')} />}
+                                                </label>
+                                                <input type="date" disabled={isFieldLocked('confirm', 'confirm')} title={fieldLockReason('confirm','confirm')==='gated' ? gateHint('confirm') : undefined} className="w-[160px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-violet-500/50 disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800" style={{background:isFieldLocked('confirm','confirm')?undefined:'var(--bg-main)', borderColor:'var(--border-table)'}} value={editingData.msd?.confirm||''} onChange={e=>setEditingData({...editingData, msd:{...editingData.msd, confirm:e.target.value}})} />
                                             </div>
                                             {/* Confirm 備註輸入欄已依需求移除 —— 這個階段只壓確認日期。
                                                 DB 的 MsdConfirmNote 欄位保留，既有資料仍會顯示在展開的明細裡 */}
                                             {unlockedSections.confirm && isPhaseModified('confirm') && (
                                                 <div className="mt-4 p-3 bg-red-50 dark:bg-red-900/10 border border-red-200 dark:border-red-900/30 rounded-lg">
-                                                    <label className="block text-xs font-bold text-red-600 dark:text-red-400 mb-1">⚠️ 請填寫異動理由 (必填)</label>
-                                                    <input type="text" className="w-full px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-red-500/50" style={{background:'var(--bg-main)', borderColor:'var(--border-table)'}} placeholder="輸入修改日期的原因..." value={unlockReasons.confirm||''} onChange={e=>setUnlockReasons({...unlockReasons, confirm:e.target.value})} />
+                                                    <ReasonFields phaseKey="confirm" categories={unlockCategories} setCategories={setUnlockCategories} reasons={unlockReasons} setReasons={setUnlockReasons} />
                                                 </div>
                                             )}
-                                            {editingData.msd?.confirmHistory && (
-                                                <div className="mt-3 p-2 bg-slate-50 dark:bg-slate-800/50 rounded border border-slate-200 dark:border-slate-700 text-[10px] text-slate-500 whitespace-pre-wrap max-h-[100px] overflow-y-auto">
-                                                    <div className="font-bold mb-1">異動紀錄</div>
-                                                    {editingData.msd.confirmHistory}
-                                                </div>
-                                            )}
+                                            <PhaseAuditList entries={editingPhaseHist('confirm')} />
                                         </div>
                                         )}
 
@@ -1601,35 +2078,35 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         {!editingData.isNew && (
                                         <div className="col-span-1 md:col-span-3 mt-2 border-t pt-4" style={{borderColor:'var(--border-table)'}}>
                                             <div className="flex items-center gap-2 mb-3">
-                                                <h4 className="text-sm font-bold text-blue-500">3. MSD 開發</h4>
+                                                <h4 className="text-sm font-bold text-blue-500">3_MSD開發中</h4>
                                                 {hasAnyField('msd') && !unlockedSections.msd && (
                                                     <button type="button" onClick={() => handleUnlock('msd')} className="text-gray-400 hover:text-blue-500 transition-colors" title="解鎖以修改日期">
                                                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
                                                     </button>
                                                 )}
+                                                {!isPhaseOpen('msd') && <GateLock text={gateHint('msd')} showText={true} />}
+                                                {donePanel('msd')}
                                             </div>
                                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                                 <div>
-                                                    <label className="block text-xs mb-1" style={{color:'var(--text-secondary)'}}>Start Date</label>
-                                                    <input type="date" max={editingData.msd?.end||undefined} disabled={isFieldLocked('msd', 'start')} className="w-[160px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-blue-500/50 disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800" style={{background:isFieldLocked('msd','start')?undefined:'var(--bg-main)', borderColor:'var(--border-table)'}} value={editingData.msd?.start||''} onChange={e=>setEditingData({...editingData, msd:{...editingData.msd, start:e.target.value}})} />
+                                                    <label className="flex items-center gap-1.5 text-xs mb-1" style={{color:'var(--text-secondary)'}}>Start Date
+                                                        {fieldLockReason('msd','start')==='gated' && <GateLock text={gateHint('msd')} />}
+                                                    </label>
+                                                    <input type="date" max={editingData.msd?.end||undefined} disabled={isFieldLocked('msd', 'start')} title={fieldLockReason('msd','start')==='gated' ? gateHint('msd') : undefined} className="w-[160px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-blue-500/50 disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800" style={{background:isFieldLocked('msd','start')?undefined:'var(--bg-main)', borderColor:'var(--border-table)'}} value={editingData.msd?.start||''} onChange={e=>setEditingData({...editingData, msd:{...editingData.msd, start:e.target.value}})} />
                                                 </div>
                                                 <div>
-                                                    <label className="block text-xs mb-1" style={{color:'var(--text-secondary)'}}>End Date</label>
-                                                    <input type="date" min={editingData.msd?.start||undefined} disabled={isFieldLocked('msd', 'end')} className="w-[160px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-blue-500/50 disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800" style={{background:isFieldLocked('msd','end')?undefined:'var(--bg-main)', borderColor:'var(--border-table)'}} value={editingData.msd?.end||''} onChange={e=>setEditingData({...editingData, msd:{...editingData.msd, end:e.target.value}})} />
+                                                    <label className="flex items-center gap-1.5 text-xs mb-1" style={{color:'var(--text-secondary)'}}>End Date
+                                                        {fieldLockReason('msd','end')==='gated' && <GateLock text={gateHint('msd')} />}
+                                                    </label>
+                                                    <input type="date" min={editingData.msd?.start||undefined} disabled={isFieldLocked('msd', 'end')} title={fieldLockReason('msd','end')==='gated' ? gateHint('msd') : undefined} className="w-[160px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-blue-500/50 disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800" style={{background:isFieldLocked('msd','end')?undefined:'var(--bg-main)', borderColor:'var(--border-table)'}} value={editingData.msd?.end||''} onChange={e=>setEditingData({...editingData, msd:{...editingData.msd, end:e.target.value}})} />
                                                 </div>
                                             </div>
                                             {unlockedSections.msd && isPhaseModified('msd') && (
                                                 <div className="mt-4 p-3 bg-red-50 dark:bg-red-900/10 border border-red-200 dark:border-red-900/30 rounded-lg">
-                                                    <label className="block text-xs font-bold text-red-600 dark:text-red-400 mb-1">⚠️ 請填寫異動理由 (必填)</label>
-                                                    <input type="text" className="w-full px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-red-500/50" style={{background:'var(--bg-main)', borderColor:'var(--border-table)'}} placeholder="輸入修改日期的原因..." value={unlockReasons.msd||''} onChange={e=>setUnlockReasons({...unlockReasons, msd:e.target.value})} />
+                                                    <ReasonFields phaseKey="msd" categories={unlockCategories} setCategories={setUnlockCategories} reasons={unlockReasons} setReasons={setUnlockReasons} />
                                                 </div>
                                             )}
-                                            {editingData.msd?.history && (
-                                                <div className="mt-3 p-2 bg-slate-50 dark:bg-slate-800/50 rounded border border-slate-200 dark:border-slate-700 text-[10px] text-slate-500 whitespace-pre-wrap max-h-[100px] overflow-y-auto">
-                                                    <div className="font-bold mb-1">異動紀錄</div>
-                                                    {editingData.msd.history}
-                                                </div>
-                                            )}
+                                            <PhaseAuditList entries={editingPhaseHist('msd')} />
                                         </div>
                                         )}
 
@@ -1637,35 +2114,35 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         {!editingData.isNew && (
                                         <div className="col-span-1 md:col-span-3 mt-2 border-t pt-4" style={{borderColor:'var(--border-table)'}}>
                                             <div className="flex items-center gap-2 mb-3">
-                                                <h4 className="text-sm font-bold text-pink-500">4. EMS 驗收</h4>
+                                                <h4 className="text-sm font-bold text-pink-500">4_EMS驗收</h4>
                                                 {hasAnyField('uat') && !unlockedSections.uat && (
                                                     <button type="button" onClick={() => handleUnlock('uat')} className="text-gray-400 hover:text-pink-500 transition-colors" title="解鎖以修改日期">
                                                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>
                                                     </button>
                                                 )}
+                                                {!isPhaseOpen('uat') && <GateLock text={gateHint('uat')} showText={true} />}
+                                                {donePanel('uat')}
                                             </div>
                                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                                 <div>
-                                                    <label className="block text-xs mb-1" style={{color:'var(--text-secondary)'}}>Start Date</label>
-                                                    <input type="date" max={editingData.uat?.end||undefined} disabled={isFieldLocked('uat', 'start')} className="w-[160px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-pink-500/50 disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800" style={{background:isFieldLocked('uat','start')?undefined:'var(--bg-main)', borderColor:'var(--border-table)'}} value={editingData.uat?.start||''} onChange={e=>setEditingData({...editingData, uat:{...editingData.uat, start:e.target.value}})} />
+                                                    <label className="flex items-center gap-1.5 text-xs mb-1" style={{color:'var(--text-secondary)'}}>Start Date
+                                                        {fieldLockReason('uat','start')==='gated' && <GateLock text={gateHint('uat')} />}
+                                                    </label>
+                                                    <input type="date" max={editingData.uat?.end||undefined} disabled={isFieldLocked('uat', 'start')} title={fieldLockReason('uat','start')==='gated' ? gateHint('uat') : undefined} className="w-[160px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-pink-500/50 disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800" style={{background:isFieldLocked('uat','start')?undefined:'var(--bg-main)', borderColor:'var(--border-table)'}} value={editingData.uat?.start||''} onChange={e=>setEditingData({...editingData, uat:{...editingData.uat, start:e.target.value}})} />
                                                 </div>
                                                 <div>
-                                                    <label className="block text-xs mb-1" style={{color:'var(--text-secondary)'}}>End Date</label>
-                                                    <input type="date" min={editingData.uat?.start||undefined} disabled={isFieldLocked('uat', 'end')} className="w-[160px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-pink-500/50 disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800" style={{background:isFieldLocked('uat','end')?undefined:'var(--bg-main)', borderColor:'var(--border-table)'}} value={editingData.uat?.end||''} onChange={e=>setEditingData({...editingData, uat:{...editingData.uat, end:e.target.value}})} />
+                                                    <label className="flex items-center gap-1.5 text-xs mb-1" style={{color:'var(--text-secondary)'}}>End Date
+                                                        {fieldLockReason('uat','end')==='gated' && <GateLock text={gateHint('uat')} />}
+                                                    </label>
+                                                    <input type="date" min={editingData.uat?.start||undefined} disabled={isFieldLocked('uat', 'end')} title={fieldLockReason('uat','end')==='gated' ? gateHint('uat') : undefined} className="w-[160px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-pink-500/50 disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800" style={{background:isFieldLocked('uat','end')?undefined:'var(--bg-main)', borderColor:'var(--border-table)'}} value={editingData.uat?.end||''} onChange={e=>setEditingData({...editingData, uat:{...editingData.uat, end:e.target.value}})} />
                                                 </div>
                                             </div>
                                             {unlockedSections.uat && isPhaseModified('uat') && (
                                                 <div className="mt-4 p-3 bg-red-50 dark:bg-red-900/10 border border-red-200 dark:border-red-900/30 rounded-lg">
-                                                    <label className="block text-xs font-bold text-red-600 dark:text-red-400 mb-1">⚠️ 請填寫異動理由 (必填)</label>
-                                                    <input type="text" className="w-full px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-red-500/50" style={{background:'var(--bg-main)', borderColor:'var(--border-table)'}} placeholder="輸入修改日期的原因..." value={unlockReasons.uat||''} onChange={e=>setUnlockReasons({...unlockReasons, uat:e.target.value})} />
+                                                    <ReasonFields phaseKey="uat" categories={unlockCategories} setCategories={setUnlockCategories} reasons={unlockReasons} setReasons={setUnlockReasons} />
                                                 </div>
                                             )}
-                                            {editingData.uat?.history && (
-                                                <div className="mt-3 p-2 bg-slate-50 dark:bg-slate-800/50 rounded border border-slate-200 dark:border-slate-700 text-[10px] text-slate-500 whitespace-pre-wrap max-h-[100px] overflow-y-auto">
-                                                    <div className="font-bold mb-1">異動紀錄</div>
-                                                    {editingData.uat.history}
-                                                </div>
-                                            )}
+                                            <PhaseAuditList entries={editingPhaseHist('uat')} />
                                         </div>
                                         )}
 
@@ -1686,6 +2163,61 @@ const { useState, useMemo, Fragment, useEffect } = React;
                             </div>
                         )}
 
+                        {/* 模擬 Windows 帳號（只在 Auth:AllowSimulation=true 時開放）。
+                            用途是在非網域機器上測試「異動人員」會怎麼寫進稽核表。
+                            ⚠️ 模擬寫入的稽核列 ChangedBySource = simulated 並在畫面標示，
+                            不會被誤認為真實登入者 —— 稽核表要防的就是假身分靜靜混進去 */}
+                        {isActorModalOpen && (
+                            <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4" onClick={()=>setIsActorModalOpen(false)}>
+                                <div className="rounded-xl shadow-2xl w-full max-w-md" style={{background:'var(--bg-card)', color:'var(--text-primary)'}} onClick={e=>e.stopPropagation()}>
+                                    <div className="p-4 border-b" style={{borderColor:'var(--border-table)'}}>
+                                        <h3 className="text-base font-bold">模擬 Windows 帳號</h3>
+                                        <p className="text-[11px] mt-1" style={{color:'var(--text-muted)'}}>
+                                            用來測試稽核紀錄的「異動人員」。模擬期間寫入的紀錄會標成「模擬」，不會冒充真實登入者。
+                                        </p>
+                                    </div>
+                                    <div className="p-4 space-y-3">
+                                        <div>
+                                            <label className="block text-xs font-bold mb-1" style={{color:'var(--text-secondary)'}}>帳號 / 工號</label>
+                                            <input type="text" autoFocus
+                                                   className="w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 ring-indigo-500/50"
+                                                   style={{background:'var(--bg-main)', borderColor:'var(--border-table)'}}
+                                                   placeholder="例如: 00058897 或 UMC\\00058897"
+                                                   defaultValue={actor.source==='simulated' ? (actor.empId||'') : ''}
+                                                   onKeyDown={e=>{ if(e.key==='Enter'){ const v=e.target.value.trim();
+                                                       if(v){ setActor({...actor, empId:v, source:'simulated'}); setIsActorModalOpen(false); showToast(`已切換為模擬帳號：${v}`); } } }}
+                                                   id="sim-actor-input" />
+                                        </div>
+                                        {/* 直接從人員名單挑，省得手打 */}
+                                        {personnelList.length > 0 && (
+                                            <div className="flex flex-wrap gap-1.5">
+                                                {personnelList.map(p => (
+                                                    <button key={p.Id||p.id||p.Name}
+                                                            onClick={()=>{ const v=p.Name||p.name; setActor({...actor, empId:v, source:'simulated'}); setIsActorModalOpen(false); showToast(`已切換為模擬帳號：${v}`); }}
+                                                            className="px-2 py-1 rounded text-[11px] font-bold border transition-colors"
+                                                            style={{background:'var(--bg-input)', color:'var(--text-tertiary)', borderColor:'var(--bg-input-border)'}}>
+                                                        {p.Name||p.name}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                    <div className="p-4 flex justify-end gap-2 border-t" style={{borderColor:'var(--border-table)'}}>
+                                        <button onClick={()=>{ detectActor(); setIsActorModalOpen(false); showToast('已還原為 Windows 登入帳號'); }}
+                                                className="px-3 py-1.5 rounded-lg text-[11px] font-bold border"
+                                                style={{background:'var(--bg-input)', color:'var(--text-secondary)', borderColor:'var(--bg-input-border)'}}>
+                                            還原真實帳號
+                                        </button>
+                                        <button onClick={()=>{ const el=document.getElementById('sim-actor-input'); const v=(el?.value||'').trim();
+                                                    if(v){ setActor({...actor, empId:v, source:'simulated'}); setIsActorModalOpen(false); showToast(`已切換為模擬帳號：${v}`); } }}
+                                                className="px-4 py-1.5 rounded-lg text-[11px] font-bold bg-indigo-500 text-white hover:bg-indigo-600 transition-colors">
+                                            套用
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
                         {/* 阻擋型提示視窗：NID 重複、必填欄位未完成。
                             z-index 要蓋在編輯視窗 (z-50) 之上 */}
                         {alertModal && (
@@ -1700,6 +2232,71 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                     </div>
                                     <div className="p-3 flex justify-end">
                                         <button onClick={()=>setAlertModal(null)} className="px-5 py-2 rounded-lg text-sm font-bold bg-indigo-500 text-white hover:bg-indigo-600 shadow-md transition-colors">我知道了</button>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* 規格回退視窗（第 16 批）。z-[60] 蓋在編輯視窗之上。
+                            異動原因固定是「規格變更」不必讓使用者選，但文字說明必填 */}
+                        {rollbackModal && (
+                            <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4">
+                                <div className="rounded-xl shadow-2xl w-full max-w-lg" style={{background:'var(--bg-card)', color:'var(--text-primary)'}} onClick={e=>e.stopPropagation()}>
+                                    <div className="p-4 border-b" style={{borderColor:'var(--border-table)'}}>
+                                        <h3 className="text-base font-bold">🔄 規格回退（NID {rollbackModal.nid}）</h3>
+                                        <p className="mt-1 text-[11px]" style={{color:'var(--text-muted)'}}>
+                                            目前 StatusID 為 {STAGE_CODES[String(rollbackModal.curStage)]?.label || rollbackModal.curStage}。
+                                            回退後<span className="font-bold">目標階段（含）以後的日期會全部清空</span>，需要重新填寫；
+                                            提早／延期／回退的次數<span className="font-bold">不會被清掉</span>。
+                                        </p>
+                                    </div>
+                                    <div className="p-4 space-y-3">
+                                        <div>
+                                            <label className="block text-xs font-bold mb-1.5" style={{color:'var(--text-secondary)'}}>回退到哪一個階段 <span className="text-red-500">*</span></label>
+                                            <div className="flex flex-wrap gap-1.5">
+                                                {[1,2,3,4].filter(s => s < rollbackModal.curStage).map(s => {
+                                                    const on = rollbackModal.target === s;
+                                                    const sc = STAGE_CODES[String(s)];
+                                                    return (
+                                                        <button key={s} type="button"
+                                                                onClick={()=>setRollbackModal({...rollbackModal, target:s})}
+                                                                className="px-2.5 py-1 rounded text-[11px] font-bold border transition-colors"
+                                                                style={on
+                                                                    ? {background:'rgba(139,92,246,0.12)', color:'#8b5cf6', borderColor:'#8b5cf6'}
+                                                                    : {background:'var(--bg-main)', color:'var(--text-tertiary)', borderColor:'var(--border-table)'}}>
+                                                            {sc.label}
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                        <div className="p-2.5 rounded-lg text-[11px]" style={{background:'var(--tone-alert-bg)', color:'var(--tone-alert)'}}>
+                                            將清空以下階段的日期（含實際完成日）：<br/>
+                                            <span className="font-bold">{clearedByRollback(rollbackModal.target).join('、')}</span>
+                                            {rollbackModal.target === 1 && (
+                                                <div className="mt-1">⚠️ 1_EMS規格確認 的起訖日是必填欄位，清空後必須重新填寫才能儲存這筆需求。</div>
+                                            )}
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs font-bold mb-1" style={{color:'var(--text-secondary)'}}>
+                                                回退說明 <span className="text-red-500">*</span>
+                                                <span className="font-normal ml-1" style={{color:'var(--text-muted)'}}>（異動原因固定記為「規格變更」）</span>
+                                            </label>
+                                            <textarea rows="3" autoFocus
+                                                      className="w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 ring-violet-500/50"
+                                                      style={{background:'var(--bg-main)', borderColor:'var(--border-table)'}}
+                                                      value={rollbackModal.note}
+                                                      onChange={e=>setRollbackModal({...rollbackModal, note:e.target.value})}
+                                                      placeholder="例如: EMS 追加 Temp unhold 條件，Spec 需重新確認" />
+                                        </div>
+                                    </div>
+                                    <div className="p-3 flex justify-end gap-2 border-t" style={{borderColor:'var(--border-table)'}}>
+                                        <button onClick={()=>setRollbackModal(null)} className="px-5 py-2 rounded-lg text-sm font-bold hover:bg-black/5 dark:hover:bg-white/5 transition-colors">取消</button>
+                                        <button onClick={handleRollback}
+                                                className="px-5 py-2 rounded-lg text-sm font-bold text-white shadow-md transition-colors"
+                                                style={{background:'#8b5cf6'}}>
+                                            確認回退
+                                        </button>
                                     </div>
                                 </div>
                             </div>
