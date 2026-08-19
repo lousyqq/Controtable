@@ -6,9 +6,12 @@
     <title>MSD 需求管控表</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Noto+Sans+TC:wght@400;500;600;700;900&display=swap" rel="stylesheet">
-    <link href="/app.css?v=20260818014" rel="stylesheet">
+    <link href="__BASE__app.css?v=20260820023" rel="stylesheet">
 </head>
 <body>
+    <!-- __BASE__ 由 Program.cs 的中介軟體在回傳 index.html 時換成實際的 PathBase：
+         根站台是 "/"，掛在 IIS 子應用程式底下則是 "/Controltable/"。前端資源一律走它，不可寫死開頭的 "/" -->
+    <script>window.APP_BASE = "__BASE__";</script>
     <div id="error-log"></div>
     <div id="root"></div>
     <script>window.addEventListener('error',function(e){var l=document.getElementById('error-log');if(!l)return;l.style.display='block';l.innerText+=e.message+'\n'+e.filename+':'+e.lineno+'\n'})</script>
@@ -18,6 +21,6 @@
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
 
     <!-- Compiled App Logic -->
-    <script src="/app.js?v=20260818014"></script>
+    <script src="__BASE__app.js?v=20260820023"></script>
 </body>
 </html>

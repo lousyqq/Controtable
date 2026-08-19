@@ -1,0 +1,6 @@
+wwwroot\app.css
+wwwroot\app.js
+wwwroot\index.html
+C:\Controltable\wwwroot\app.css
+C:\Controltable\wwwroot\app.js
+C:\Controltable\wwwroot\index.html

@@ -8,7 +8,9 @@
   }
   html, body {
     margin: 0;
-    overflow-x: hidden;
+    /* ⚠️ 不可加回 overflow-x: hidden。資料表改為整頁捲動後（不再包在
+       overflow:auto 的固定高度容器裡），表格若比視窗寬就只能靠頁面本身橫向捲動；
+       hidden 會把右側欄位直接裁掉且無法捲到，等於操作欄整個消失。 */
   }
   body {
     font-family: 'Inter', 'Noto Sans TC', sans-serif;
@@ -24,8 +26,29 @@
     --bg-table-hover:rgba(99,102,241,0.04); --bg-table-expanded:#f8fafc;
     --bg-detail-card:#f1f5f9; --bg-detail-border:#e2e8f0; --bg-bar-track:#e2e8f0;
     --bg-pill-active:#4f46e5; --bg-pill-hover:#f1f5f9;
-    --text-primary:#0f172a; --text-secondary:#334155; --text-tertiary:#64748b; --text-muted:#94a3b8; --text-on-pill:#ffffff;
-    --border-table:#f1f5f9; --border-card:#e2e8f0;
+    /* 品牌色（頁首 logo、選中的頁籤）。只用在裝飾與選取態上，不用在正文 */
+    --brand:#4f46e5; --brand-soft:rgba(79,70,229,0.10);
+    --seg-on-text:#4338ca;
+    /* 群組表頭與工具列群組之間的細分隔線（比 --border-card 淡一階，
+       它分隔的是「控制項群組」不是資料，不需要投影機看得見） */
+    --border-soft:#e2e8f0;
+    /* ⚠️ 這四級文字色是「一般模式」的基準，2026-08-19 整體加深過一階。
+       原因：這個畫面會直接投在會議室的投影機上（不是每個人都會先按投影模式），
+       而投影機的實際對比遠低於螢幕。加深前量到的對比（白底）——
+         tertiary #64748b 4.8:1（10~11px 的欄名／標籤，實際很吃力）
+         muted    #94a3b8 2.9:1（**連 WCAG 大字的 3:1 都不到**，投出去等於消失）
+       加深後為 7.5:1 / 4.8:1，四級仍然各自可辨（primary → secondary → tertiary → muted
+       用的是 slate 900 / 700 / 600 / 500，每一階差一個色階）。
+       ⚠️ 不要為了「更好看」把 muted 調回 #94a3b8 —— 那一級專門用在圖例、
+       「顯示 N / M 筆」這種說明文字上，正是投影時最先消失的東西。 */
+    --text-primary:#0f172a; --text-secondary:#334155; --text-tertiary:#475569; --text-muted:#64748b; --text-on-pill:#ffffff;
+    /* ⚠️ 框線也於 2026-08-19 一起加深（原因同上，這個畫面會直接投影）。
+       改前 --border-table 是 #f1f5f9，貼在白色卡片上只有 **1.06:1** ——
+       螢幕上勉強看得出來，投出去整片表就完全沒有格線，62 列橫著讀一定跳行。
+       改後：格線 slate-300 1.53:1、卡片外框與 2px 群組分隔線 slate-400 2.2:1。
+       兩者刻意用不同色階：它們的寬度差（1px / 2px）在投影機上不夠明顯，
+       靠顏色才分得出「欄位分隔」與「群組分隔」。 */
+    --border-table:#cbd5e1; --border-card:#94a3b8;
     --thead-group: #e2e8f0; --thead-col: #f1f5f9; --thead-schedule: rgba(59,130,246,0.06);
     --col-ems-bg: rgba(99,102,241,0.04); --col-msd-bg: rgba(16,185,129,0.04); --col-schedule-text: #1e40af;
     /* 表頭凍結用：sticky 儲存格必須是實心底色，半透明會讓資料列透出來。
@@ -47,8 +70,19 @@
     --bg-table-hover:rgba(255,255,255,0.03); --bg-table-expanded:rgba(30,41,59,0.5);
     --bg-detail-card:rgba(15,23,42,0.5); --bg-detail-border:rgba(51,65,85,0.3); --bg-bar-track:rgba(51,65,85,0.5);
     --bg-pill-active:#4f46e5; --bg-pill-hover:#1e293b;
-    --text-primary:#f1f5f9; --text-secondary:#cbd5e1; --text-tertiary:#94a3b8; --text-muted:#475569; --text-on-pill:#ffffff;
-    --border-table:rgba(30,41,59,0.5); --border-card:rgba(255,255,255,0.06);
+    --brand:#6366f1; --brand-soft:rgba(99,102,241,0.16);
+    --seg-on-text:#a5b4fc;
+    --border-soft:rgba(148,163,184,0.22);
+    /* 深色的 muted 原本是 #475569，在卡片底 #1e293b 上只有 **1.6:1** ——
+       那不是「淡」，是根本看不見（螢幕上勉強猜得出來，投影機直接是一片黑）。
+       tertiary 也從 5.4:1 提到 7.8:1。
+       ⚠️ tertiary 用 #b6c2d2 這個非 Tailwind 色階是刻意的：
+       直接用 slate-300 #cbd5e1 會跟 secondary 完全撞色，四級變三級。 */
+    --text-primary:#f1f5f9; --text-secondary:#cbd5e1; --text-tertiary:#b6c2d2; --text-muted:#94a3b8; --text-on-pill:#ffffff;
+    /* 深色的格線原本是 rgba(30,41,59,0.5) —— 那是卡片底色 #1e293b 自己，
+       疊上去等於 **1:1，完全沒有格線**（不是淡，是根本沒畫）。
+       改成帶亮度的 slate-400 疊色，對比與淺色那組對齊（1.5:1 / 2.0:1）。 */
+    --border-table:rgba(148,163,184,0.25); --border-card:rgba(148,163,184,0.4);
     --thead-group: #1a2744; --thead-col: #162032; --thead-schedule: rgba(59,130,246,0.08);
     --col-ems-bg: rgba(99,102,241,0.05); --col-msd-bg: rgba(16,185,129,0.05); --col-schedule-text: #93c5fd;
     --thead-group-schedule: #1d2e52;
@@ -61,13 +95,14 @@
 }
 
 @layer components {
-  /* 給高階主管瀏覽的介面，刻意收斂裝飾性：小圓角、極淡陰影。
-     16px 圓角配上滿版的資料卡片會顯得過於圓潤。 */
+  /* 給高階主管瀏覽的介面，刻意收斂裝飾性：小圓角、淡陰影。
+     16px 圓角配上滿版的資料卡片會顯得過於圓潤；6px 又太像沒設計過的方框。
+     2026-08-20 收斂成 10px —— 三張卡並排時看得出是「卡片」，但仍然方正。 */
   .t-card {
     background: var(--bg-card);
     border: 1px solid var(--border-card);
-    border-radius: 6px;
-    box-shadow: 0 1px 2px var(--bg-card-shadow);
+    border-radius: 10px;
+    box-shadow: 0 1px 2px var(--bg-card-shadow), 0 4px 12px -6px var(--bg-card-shadow);
     transition: border-color 0.2s, background 0.3s;
   }
   .t-card-hover:hover {
@@ -75,10 +110,144 @@
     box-shadow: 0 4px 16px var(--bg-card-shadow);
   }
 
-  /* 明細表用的卡片：16px 圓角在整片資料表上看起來過於圓潤，
-     角落還會把表頭底色切掉。改成接近直角的 6px。 */
+  /* 需求列表用的卡片。⚠️ 這層不可以有 overflow（見 app.jsx 的註解），
+     所以圓角不會把 thead 的底色切掉 —— 表格上面還隔著一條圖例列。 */
   .t-table-card {
-    border-radius: 6px;
+    border-radius: 10px;
+  }
+
+  /* ── 統一控制項尺寸（2026-08-20 版面優化）──
+     工具列原本每顆按鈕各自寫 px-/py-，實際高度落在 26~34px 之間，
+     並排時上下緣參差不齊；圓角也混用 rounded (4px) 與 rounded-lg (8px)。
+     尺寸、圓角、底色、hover 一律收斂到這裡定義一次。
+     ⚠️ 套了這些 class 就不要再寫 inline 的 background / border / color ——
+     inline style 的特異性最高，會把 .ctl-on 的選中樣式整個蓋掉（同 .icon-btn 的坑）。 */
+  .ctl, .ctl-sm {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    border-radius: 8px;
+    border: 1px solid var(--bg-input-border);
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    font-weight: 700;
+    font-size: 11px;
+    line-height: 1;
+    white-space: nowrap;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+  }
+  .ctl    { height: 34px; padding: 0 12px; }
+  .ctl-sm { height: 28px; padding: 0 10px; }
+  .ctl:hover, .ctl-sm:hover {
+    border-color: var(--bg-card-hover-border);
+    color: var(--text-primary);
+  }
+  .ctl-on, .ctl-on:hover {
+    background: var(--bg-pill-active);
+    border-color: transparent;
+    color: var(--text-on-pill);
+  }
+  /* 純圖示的方形版本，維持與同排控制項一樣的高度 */
+  .ctl-icon { width: 34px; padding: 0; justify-content: center; }
+  /* <select> 是替換元素，套 inline-flex 在部分瀏覽器會讓選項文字錯位。
+     它自己就會把文字垂直置中，改回 inline-block 即可 */
+  select.ctl { display: inline-block; }
+
+  /* 分段控制列（頁首的「需求列表／統計報表」）。
+     原本是兩顆獨立按鈕，選中的那顆填滿靛色 —— 看起來像「一顆主要動作鈕
+     旁邊放了一段灰字」，而不是兩個平行的分頁。改成共用一條軌道，
+     選中的那格浮起成卡片色，兩者的平行關係才讀得出來。 */
+  .seg {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 3px;
+    border-radius: 10px;
+    background: var(--bg-input);
+    border: 1px solid var(--bg-input-border);
+  }
+  .seg-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 26px;
+    padding: 0 12px;
+    border-radius: 7px;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-tertiary);
+    transition: background 0.15s, color 0.15s;
+  }
+  .seg-item:hover { color: var(--text-primary); }
+  .seg-item-on, .seg-item-on:hover {
+    background: var(--bg-card);
+    color: var(--seg-on-text);
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.12);
+  }
+
+  /* 工具列裡把「搜尋」「篩選」「動作」分成三群的細直線。
+     分隔的是控制項不是資料，所以用比 --border-card 淡一階的 --border-soft */
+  .ctl-div {
+    width: 1px;
+    height: 20px;
+    flex-shrink: 0;
+    background: var(--border-soft);
+  }
+
+  /* ── 視窗裡的圖示鈕（2026-08-19）──
+     關閉 ✕ 與四個階段的解鎖鎖頭原本寫死 Tailwind 的 `text-gray-400` (#9ca3af)：
+     白底只有 2.9:1，跟加深前的 --text-muted 一樣淡，而且它**不跟著深淺色走**，
+     深色模式下同一個灰在深底上更難找。改吃 --text-tertiary，
+     深淺色與投影模式就會一起套用。
+     ⚠️ 用 class 不用 inline style：inline style 的特異性會把 Tailwind 的
+     `hover:text-amber-500` 這類 hover 色整個蓋掉，鎖頭按下去前就沒有顏色回饋了。
+     `.icon-btn:hover` 與 `hover:text-*` 特異性相同，靠 Tailwind 的 utilities layer
+     排在 components 之後取勝 —— 有指定 hover 色的（四個鎖頭）走自己的顏色，
+     沒指定的（✕）落到下面這條的 primary。 */
+  .icon-btn {
+    color: var(--text-tertiary);
+    transition: color 0.15s;
+  }
+  .icon-btn:hover {
+    color: var(--text-primary);
+  }
+
+  /* ── 投影模式（2026-08-19）──
+     會議室投影的字級下限大約是桌機的 1.5 倍。本表 92% 的文字是 10~12px，
+     直接投出去後三排以後完全讀不到，所以整塊套 CSS `zoom` 而不是逐一改字級：
+     zoom 會連同 padding、欄寬、sticky 的 top 一起放大，而且**會重新排版**。
+     ⚠️ 不要改用 `transform: scale()` —— 它只是把畫成的畫面拉大，
+     版面寬度沒變，右側欄位照樣被切掉且捲不到。
+
+     ⚠️ zoom 只掛在 header 與 main 上，不要掛到最外層的 `.present`：
+     `min-h-screen` 的 100vh 不會被 zoom 縮放，掛在外層會變成 1.5 個螢幕高，
+     永遠掛著一條沒有內容的垂直捲軸。 */
+  .present-zoom {
+    zoom: var(--present-zoom, 1.5);
+  }
+
+  /* 投影機的實際對比遠低於螢幕（黑階其實是灰的，會議室還開著燈）。
+     基礎色盤本身已於 2026-08-19 加深過一階（見上方 :root / .dark 的註解），
+     投影模式在那之上**再**提一階，表格框線同理加深，遠看才分得出格子。
+     兩者是疊加的：一般模式已經投得出來，投影模式是「最後一排也要看得到」。
+     ⚠️ 這裡只覆寫變數不覆寫任何元件樣式 —— 版面與桌機完全一致，
+     關掉投影模式就原封不動回到原本的畫面。 */
+  .present {
+    --text-tertiary: #334155;
+    --text-muted: #475569;
+    /* ⚠️ 基準框線 2026-08-19 加深後，這裡要跟著往下再走一階 ——
+       原本的 #dbe2ea / #cbd5e1 已經比新基準還淡，投影模式反而會變糊 */
+    --border-table: #94a3b8;
+    --border-card: #64748b;
+    /* 斑馬紋用半透明：它會疊在卡片白底上，寫死 hex 的話跟 --bg-row-done 撞色 */
+    --bg-row-zebra: rgba(15, 23, 42, 0.045);
+  }
+  .dark .present {
+    --text-tertiary: #e2e8f0;
+    --text-muted: #cbd5e1;
+    --border-table: rgba(148, 163, 184, 0.45);
+    --border-card: rgba(148, 163, 184, 0.65);
+    --bg-row-zebra: rgba(255, 255, 255, 0.05);
   }
 
   /* 14 欄的表格靠內容最小寬度就要 1100px 出頭，在 1152px 的視窗會擠出水平捲軸。
@@ -90,22 +259,35 @@
     padding-right: 6px;
   }
 
+  /* Main Cat / Sub Cat 改為換行顯示後，資料列高度會依內容變成 1~3 行。
+     其他欄位若還維持垂直置中，同一列的日期會浮在中間、對不上左邊的分類名，
+     整片表看起來高低參差。統一上緣對齊，一列的所有欄位就在同一條基線起跑。 */
+  .sticky-table tbody td {
+    vertical-align: top;
+  }
+
   /* ── 表格表頭凍結 ──
      15 欄的表格往下捲時仍要看得到欄位名稱。
-     表格外層是 overflow:auto 的捲動容器，sticky 是相對該容器定位。
-     第一層（維度歸類）貼齊頂端，第二層（欄位名稱）疊在它下面 34px 處。
-     篩選列不做 sticky，讓它正常捲走即可。 */
+     ⚠️ 這裡**只放底色**，兩層表頭的 top 由 app.jsx 實際量測後用 inline style 指定。
+     不要再把 top 寫死回來：舊版是 `第一層 height:34px / 第二層 top:34px`，
+     但 height 用在表格儲存格上只是「最小高度」—— 欄位名稱換成兩行
+     （1_EMS/規格確認）之後真實列高就超過 34px，第二層卻還停在 34px，
+     中間會漏出一條正在捲動的資料列，看起來像表頭破圖。
+     捲動基準也不是表格容器而是整個頁面（見 app.jsx 的 headOffsets）。 */
   .sticky-table thead th {
     position: sticky;
     z-index: 20;
+    /* 表頭原本與資料列一樣是 10px 上下留白，兩層疊在一起就像三行資料。
+       特異性 (0,2,1) 高於 Tailwind 的 .py-2\.5 (0,1,0)，不需要改 19 個 th */
+    padding-top: 11px;
+    padding-bottom: 11px;
   }
   .sticky-table thead:nth-of-type(1) th {
-    top: 0;
-    height: 34px;
+    top: var(--head-top-group, 56px);
     background: var(--thead-group);
   }
   .sticky-table thead:nth-of-type(2) tr:first-child th {
-    top: 34px;
+    top: var(--head-top-col, 90px);
     background: var(--thead-col);
   }
   /* 篩選列會捲到表頭底下，取消它的 sticky */

@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("Controltable")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+1a1434c7c6af4fefac7bb0d9141a0478f4c36de6")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+dc83b2449ff2de26d571ccec208a1f59d1be9acb")]
 [assembly: System.Reflection.AssemblyProductAttribute("Controltable")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Controltable")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

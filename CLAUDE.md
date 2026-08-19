@@ -29,6 +29,10 @@
   - `npm run build`: 同時執行 JSX 編譯與 Tailwind CSS 編譯。
   - `npm run watch:js` / `npm run watch:css`: 可用來監聽檔案變更自動編譯。
   - **重要提醒**: 每次修改 `app.jsx` 或 `input.css` 後，**必須執行 `npm run build`** (或開啟 watch)，否則瀏覽器讀到的 `wwwroot/app.js` 還是舊的。
+  - **絕對路徑禁用（子路徑部署）**: 這個 App 會掛在 IIS 的子應用程式底下（例如 `http://host/Controltable/`）。前端**不可**再寫死開頭的 `/`：
+    - API 一律用 `api('/api/xxx')` 這個 helper（定義在 `app.jsx` 最上方），它會接上 `window.APP_BASE`。直接寫 `fetch('/api/xxx')` 在子路徑底下必定 404。
+    - `index.html` 的靜態資源用 `__BASE__app.css` / `__BASE__app.js`。`__BASE__` 由 `Program.cs` 的中介軟體在回傳 index.html 時換成實際的 `Request.PathBase`（根站台是 `/`）。所以 index.html 不走 `UseDefaultFiles`，是由該中介軟體攔下來的。
+    - 後端路由維持 `/api/...` 寫法即可，ASP.NET Core 的路由本來就是相對 PathBase，不用改。
   - **版本號一律更新**: build 完**接著就要**把 `wwwroot/index.html` 內 `app.css?v=` 與 `app.js?v=` 的版本號往上帶（格式 `YYYYMMDD` + 三位流水號，例 `20260818014`，兩處必須一致）。不要等到「發現沒生效」才補 —— 瀏覽器拿到舊檔是靜默失敗，看起來會像功能壞掉或只改了一半。
 
 ## 重要業務邏輯 (Key Business Logic)

@@ -88,6 +88,10 @@ C:\Controltable\bin\Debug\net9.0\System.DirectoryServices.Protocols.dll
 C:\Controltable\bin\Debug\net9.0\runtimes\linux\lib\net9.0\System.DirectoryServices.Protocols.dll
 C:\Controltable\bin\Debug\net9.0\runtimes\osx\lib\net9.0\System.DirectoryServices.Protocols.dll
 C:\Controltable\bin\Debug\net9.0\runtimes\win\lib\net9.0\System.DirectoryServices.Protocols.dll
-C:\Controltable\obj\Debug\net9.0\compressed\4ipn0t0ed0-tg714plzv5.gz
-C:\Controltable\obj\Debug\net9.0\compressed\5fokwm4ckt-vy2e7j68v1.gz
-C:\Controltable\obj\Debug\net9.0\compressed\od2m6gwwvn-d9p9niq7wm.gz
+C:\Controltable\obj\Debug\net9.0\compressed\4ipn0t0ed0-yfnpbf1jq7.gz
+C:\Controltable\obj\Debug\net9.0\compressed\5fokwm4ckt-1gkx73dgly.gz
+C:\Controltable\obj\Debug\net9.0\compressed\od2m6gwwvn-eq732ap7hp.gz
+C:\Controltable\obj\Debug\net9.0\compressed\4ipn0t0ed0-s6g3vkut41.gz
+C:\Controltable\obj\Debug\net9.0\compressed\5fokwm4ckt-l3xq1obk64.gz
+C:\Controltable\obj\Debug\net9.0\compressed\od2m6gwwvn-zifi1ovuvc.gz
+C:\Controltable\obj\Debug\net9.0\staticwebassets.upToDateCheck.txt

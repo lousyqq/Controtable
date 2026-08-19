@@ -5,6 +5,13 @@ const {
   useEffect
 } = React;
 
+// ─── API 路徑組裝 ───
+// window.APP_BASE 由後端在回傳 index.html 時填入（根站台是 "/"，掛在 IIS
+// 子應用程式時是 "/Controltable/"）。所有 API 呼叫一律走這個函式，不要再寫死
+// 開頭的 "/api/..." —— 那會被瀏覽器解析到站台根目錄，在子路徑底下必定 404。
+const APP_BASE = window.APP_BASE && window.APP_BASE.indexOf('__') !== 0 ? window.APP_BASE : '/';
+const api = p => APP_BASE + String(p).replace(/^\/+/, '');
+
 // 以「今天」為基準計算逾期／即將到期，時分秒歸零避免比較誤差
 const TODAY = (() => {
   const d = new Date();
@@ -225,7 +232,133 @@ const scheduleCell = ({
     border: `1px solid ${alert.border}`
   }
 }, alert.label)));
+
+// ─── 精簡模式：四個階段時程併成一欄「目前階段時程」（2026-08-19）───
+// 主管要的是「這件事現在卡在哪、什麼時候到」，不是四個階段的完整排程表。
+// 顯示哪一個日期由 resolveDuePhase() 決定 —— 與到期預警、逾期篩選、
+// 「需關注」KPI 完全同一套規則，所以這一欄的紅字必然對得上那些數字。
+//
+// 已結案沒有「目前階段」，改顯示最後一個排定的階段當結果，並標明已結案；
+// 完整四階段時程仍在展開明細裡，需要細節點開列即可（資訊沒有消失）。
+const currentStageCell = ({
+  item,
+  isDone,
+  changeOf,
+  br
+}) => {
+  const r = isDone ? lastFilledPhase(item) ? {
+    phase: lastFilledPhase(item),
+    inferred: false
+  } : null : resolveDuePhase(item);
+  if (!r) return /*#__PURE__*/React.createElement("td", {
+    className: "px-2 py-2.5 text-center",
+    style: {
+      borderRight: br
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "text-xs",
+    style: {
+      color: 'var(--text-muted)'
+    },
+    title: "\u9019\u7B46\u9700\u6C42\u56DB\u500B\u968E\u6BB5\u90FD\u9084\u6C92\u58D3\u65E5\u671F"
+  }, "\u672A\u6392\u5B9A"));
+  const {
+    phase
+  } = r;
+  const val = phase.getDate(item);
+  const actual = phase.getActual(item);
+  const changes = changeOf(phase.key);
+  const alert = getPhaseAlert(val, isDone || !!actual);
+  // 7 日以外的沒有 alert（顏色只留給異常），但「還有多久」對排程判讀很有用，
+  // 所以用灰字補一行 —— 主管掃到第幾列開始不急，一眼就看得出來
+  const diff = isDone ? null : getDueStatus(val).diffDays;
+  const far = !alert && !isDone && diff !== null && diff > 0;
+  return /*#__PURE__*/React.createElement("td", {
+    className: "px-2 py-2.5",
+    style: {
+      borderRight: br
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex flex-col gap-0.5 items-start"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center gap-1"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "text-xs whitespace-nowrap",
+    style: {
+      color: isDone || actual ? 'var(--text-muted)' : alert ? alert.color : 'var(--text-secondary)',
+      fontWeight: alert && !actual ? 700 : 500
+    }
+  }, val || '-'), changes > 0 && /*#__PURE__*/React.createElement("span", {
+    className: "text-[10px] font-bold px-1 rounded whitespace-nowrap cursor-help",
+    style: {
+      color: 'var(--tone-warn)',
+      background: 'var(--tone-warn-bg)',
+      border: '1px solid var(--tone-warn-border)'
+    },
+    title: `${phase.label} 時程異動過 ${changes} 次，展開該列可查看前後對照與理由`
+  }, "\u26A0", changes)), actual && /*#__PURE__*/React.createElement("span", {
+    className: "text-[10px] font-bold whitespace-nowrap cursor-help",
+    style: {
+      color: 'var(--tone-alert)'
+    },
+    title: `${phase.label}：原訂 ${val} 完成，實際完成日 ${actual}（延期 ${dayDiff(val, actual)} 天）`
+  }, "\u2192 ", actual), alert && !actual && /*#__PURE__*/React.createElement("span", {
+    className: "text-[10px] font-bold px-1 py-0.5 rounded whitespace-nowrap",
+    style: {
+      color: alert.color,
+      background: alert.bg,
+      border: `1px solid ${alert.border}`
+    }
+  }, alert.label), far && /*#__PURE__*/React.createElement("span", {
+    className: "text-[10px] whitespace-nowrap",
+    style: {
+      color: 'var(--text-muted)'
+    }
+  }, "\u5269 ", diff, " \u5929"), (isDone || r.inferred) && /*#__PURE__*/React.createElement("span", {
+    className: "text-[10px] whitespace-nowrap",
+    style: {
+      color: 'var(--text-muted)'
+    },
+    title: isDone ? '已結案，顯示最後一個排定的階段' : 'StatusID 未填或該階段尚未壓日期，改取最後一個已排定的階段'
+  }, isDone ? '已結案 · ' : '推斷 · ', phase.label)));
+};
 const pickRowAlert = (...alerts) => alerts.find(a => a?.level === 'overdue') || alerts.find(a => a?.level === 'soon') || null;
+
+// 精簡模式的開關記在 localStorage。duePriority 的初始值也要讀它 ——
+// 精簡模式重開頁面後還在，排序卻退回預設的話，兩者就對不起來了。
+// 某些工廠 PC 會鎖 storage，取不到就當關閉，不要讓它炸掉整個 App
+const readCompactPref = () => {
+  try {
+    return localStorage.getItem('ct.compactMode') === '1';
+  } catch (e) {
+    return false;
+  }
+};
+
+// ─── 投影模式（2026-08-19）───
+// 會議室投影用。倍率做成可調的：會議室大小、投影機解析度與後排距離差很多，
+// 寫死一個數字一定有場合不合用。1.5 是 1920×1080 投影 + 中型會議室的起點。
+// 統計報表預設看最近幾個「有資料的年月」。資料一路累積下去，
+// 19 個月全部攤開時每根柱子只剩幾 px、月份標籤還撐著不縮，整張卡會把版面推爆。
+// 主管要看的是最近的走勢，更早的可以自己把區間拉開
+const YM_RANGE_DEFAULT = 12;
+const PRESENT_ZOOMS = [1.25, 1.4, 1.5, 1.75, 2];
+const PRESENT_ZOOM_DEFAULT = 1.5;
+const readPresentPref = () => {
+  try {
+    return localStorage.getItem('ct.presentMode') === '1';
+  } catch (e) {
+    return false;
+  }
+};
+const readPresentZoom = () => {
+  try {
+    const z = parseFloat(localStorage.getItem('ct.presentZoom'));
+    return PRESENT_ZOOMS.includes(z) ? z : PRESENT_ZOOM_DEFAULT;
+  } catch (e) {
+    return PRESENT_ZOOM_DEFAULT;
+  }
+};
 
 // ─── 到期預警：依 StatusID 決定「現在該盯哪一個日期」 ───
 // 四個階段各有一個關鍵日期，但一筆需求同一時間只會卡在其中一個階段。
@@ -238,6 +371,7 @@ const DUE_PHASES = [{
   label: '① EMS規格確認',
   color: '#f59e0b',
   getDate: i => i.spec?.end,
+  getActual: i => i.spec?.actualEnd,
   owner: i => i.emsOwner,
   side: 'EMS'
 }, {
@@ -246,6 +380,7 @@ const DUE_PHASES = [{
   label: '② MSD確認中',
   color: '#8b5cf6',
   getDate: i => i.msd?.confirm,
+  getActual: i => i.msd?.confirmActualEnd,
   owner: i => i.msdOwner,
   side: 'MSD'
 }, {
@@ -254,6 +389,7 @@ const DUE_PHASES = [{
   label: '③ MSD開發中',
   color: '#3b82f6',
   getDate: i => i.msd?.end,
+  getActual: i => i.msd?.actualEnd,
   owner: i => i.msdOwner,
   side: 'MSD'
 }, {
@@ -262,9 +398,15 @@ const DUE_PHASES = [{
   label: '④ EMS驗收',
   color: '#ec4899',
   getDate: i => i.uat?.end,
+  getActual: i => i.uat?.actualEnd,
   owner: i => i.emsOwner,
   side: 'EMS'
 }];
+// 最後一個已經壓了日期的階段。後面的階段既然還沒排程，現在該盯的就是這一個
+const lastFilledPhase = item => {
+  const filled = DUE_PHASES.filter(p => isDateVal(p.getDate(item)));
+  return filled[filled.length - 1] || null;
+};
 const resolveDuePhase = item => {
   const code = normStageCode(item.stageCode);
   if (code === '5') return null; // 已完成，不再提醒
@@ -273,12 +415,10 @@ const resolveDuePhase = item => {
     phase: byCode,
     inferred: false
   };
-  // StatusID 沒填、超出 1~5、或該階段還沒壓日期時的回退：
-  // 取「最後一個已經壓了日期的階段」—— 後面的階段既然還沒排程，
-  // 現在該盯的就是這一個。現有資料的 StageCode 多半是 NULL（見 memory.md），
-  // 少了這段回退等於整張表都不會預警。
-  const filled = DUE_PHASES.filter(p => isDateVal(p.getDate(item)));
-  const last = filled[filled.length - 1];
+  // StatusID 沒填、超出 1~5、或該階段還沒壓日期時的回退。
+  // 現有資料的 StageCode 多半是 NULL（見 memory.md），少了這段回退
+  // 等於整張表都不會預警。
+  const last = lastFilledPhase(item);
   return last ? {
     phase: last,
     inferred: true
@@ -322,6 +462,13 @@ const PHASE_FIELD_LABEL = {
   start: '開始',
   end: '結束'
 };
+
+// ─── 首次填寫 (init) 的稽核列 ───
+// 它的舊值一定是空的，所以只取新值。畫成「未填 → 2026-01-06」沒有任何資訊量：
+// 一開始本來就沒有值，那不是一次「修改」。
+const initValues = h => [['confirm', h.newConfirm], ['start', h.newStart], ['end', h.newEnd]].filter(([, v]) => !!v);
+// 三個日期全空的 init 是純雜訊（該階段當初根本沒填），整列不顯示
+const isMeaningfulEntry = h => h.changeType !== 'init' || initValues(h).length > 0;
 
 // ─── 四個階段的解鎖／軌跡設定 (見 FIELD_SPEC.md「專案執行期間」) ───
 // obj   = 這個階段的日期掛在 item 的哪個物件下
@@ -422,13 +569,23 @@ const TONE_COLOR = {
   alert: 'var(--tone-alert)',
   warn: 'var(--tone-warn)'
 };
+
+// onClick 有值時整張卡變成可點的入口（例如「需關注」→ 切到需求列表並套上篩選）。
+// 可點時多一條下底線提示，不用 hover 才知道能點
 const KpiCard = ({
   label,
   value,
   sub,
-  tone
+  tone,
+  onClick,
+  hint
 }) => /*#__PURE__*/React.createElement("div", {
-  className: "t-card px-4 py-3.5"
+  className: `t-card px-4 py-3.5 ${onClick ? 'cursor-pointer transition-colors hover:bg-black/[0.02] dark:hover:bg-white/[0.03]' : ''}`,
+  onClick: onClick,
+  title: onClick ? hint : undefined,
+  style: onClick ? {
+    borderBottom: `2px solid ${TONE_COLOR[tone] || 'var(--border-card)'}`
+  } : undefined
 }, /*#__PURE__*/React.createElement("div", {
   className: "text-[11px] font-semibold mb-1.5",
   style: {
@@ -446,7 +603,7 @@ const KpiCard = ({
   }
 }, sub));
 
-// 明細表工具列的下拉篩選。value 為 'All' 時代表不限
+// 需求列表工具列的下拉篩選。value 為 'All' 時代表不限
 const FilterSelect = ({
   label,
   value,
@@ -460,16 +617,7 @@ const FilterSelect = ({
   }, /*#__PURE__*/React.createElement("select", {
     value: value,
     onChange: e => onChange(e.target.value),
-    className: "appearance-none pl-3 pr-8 py-2 rounded-lg text-[11px] font-bold transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500/40",
-    style: active ? {
-      background: 'var(--bg-pill-active)',
-      color: 'var(--text-on-pill)',
-      border: '1px solid transparent'
-    } : {
-      background: 'var(--bg-input)',
-      border: '1px solid var(--bg-input-border)',
-      color: 'var(--text-secondary)'
-    },
+    className: `ctl appearance-none pr-8 focus:outline-none focus:ring-2 focus:ring-indigo-500/40${active ? ' ctl-on' : ''}`,
     title: `依 ${label} 篩選`
   }, /*#__PURE__*/React.createElement("option", {
     value: "All"
@@ -498,7 +646,9 @@ const FilterSelect = ({
 const PhaseAuditList = ({
   entries
 }) => {
-  if (!entries.length) return null;
+  // 空的首次填寫（三個日期全沒填）不顯示 —— 與展開明細的軌跡面板同一套規則
+  const rows = entries.filter(isMeaningfulEntry);
+  if (!rows.length) return null;
   return /*#__PURE__*/React.createElement("div", {
     className: "mt-3 p-2 rounded border text-[10px] max-h-[110px] overflow-y-auto scrollbar-thin",
     style: {
@@ -511,9 +661,11 @@ const PhaseAuditList = ({
     style: {
       color: 'var(--text-secondary)'
     }
-  }, "\u7570\u52D5\u7D00\u9304 (", entries.filter(e => e.changeType !== 'init').length, " \u6B21)"), entries.map((h, i) => {
+  }, "\u7570\u52D5\u7D00\u9304 (", rows.filter(e => e.changeType !== 'init').length, " \u6B21)"), rows.map((h, i) => {
     const ct = CHANGE_TYPES[h.changeType] || CHANGE_TYPES['日期異動'];
-    const pairs = [['確認日', h.oldConfirm, h.newConfirm], ['開始', h.oldStart, h.newStart], ['結束', h.oldEnd, h.newEnd]].filter(([, o, n]) => (o || n) && o !== n);
+    const isInit = h.changeType === 'init';
+    // init 沒有「前值」，寫成「未填 → X」是雜訊，直接列當初填的值
+    const pairs = isInit ? initValues(h).map(([f, v]) => [PHASE_FIELD_LABEL[f], null, v]) : [['確認日', h.oldConfirm, h.newConfirm], ['開始', h.oldStart, h.newStart], ['結束', h.oldEnd, h.newEnd]].filter(([, o, n]) => (o || n) && o !== n);
     return /*#__PURE__*/React.createElement("div", {
       key: h.id || i,
       className: "mb-1 last:mb-0"
@@ -525,7 +677,7 @@ const PhaseAuditList = ({
       }
     }, ct.label), /*#__PURE__*/React.createElement("span", null, h.changedAt), h.changedBy && /*#__PURE__*/React.createElement("span", null, " \xB7 ", h.changedBy, h.changedBySource === 'simulated' && '（模擬）'), pairs.map(([lab, o, n]) => /*#__PURE__*/React.createElement("span", {
       key: lab
-    }, " \uFF5C ", lab, " ", o || '未填', " \u2192 ", n || '未填')), h.reasonCategory && /*#__PURE__*/React.createElement("span", null, " \uFF5C ", h.reasonCategory), h.note && /*#__PURE__*/React.createElement("span", null, " \uFF5C ", h.note));
+    }, " \uFF5C ", lab, " ", isInit ? n : `${o || '未填'} → ${n || '未填'}`)), h.reasonCategory && /*#__PURE__*/React.createElement("span", null, " \uFF5C ", h.reasonCategory), h.note && /*#__PURE__*/React.createElement("span", null, " \uFF5C ", h.note));
   }));
 };
 
@@ -679,32 +831,99 @@ const ReasonFields = ({
   })
 }));
 
-// 開／關兩態的小按鈕（排序選項用）
+// 開／關兩態的小按鈕（排序選項用）。full=true 是放在下拉面板裡的整寬版本
 const ToggleChip = ({
   on,
   onClick,
   title,
   tone,
+  full,
   children
 }) => {
   const clr = tone === 'alert' ? 'var(--tone-alert)' : 'var(--color-indigo-500, #6366f1)';
   return /*#__PURE__*/React.createElement("button", {
     onClick: onClick,
     title: title,
-    className: "px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition-colors border flex items-center gap-1.5",
+    className: `ctl gap-1.5 ${full ? 'w-full justify-start' : ''}`,
     style: on ? {
       background: `${tone === 'alert' ? 'var(--tone-alert-bg)' : 'rgba(99,102,241,0.12)'}`,
       color: clr,
       borderColor: clr
-    } : {
-      background: 'var(--bg-input)',
-      color: 'var(--text-muted)',
-      borderColor: 'var(--bg-input-border)'
-    }
+    } : undefined
   }, /*#__PURE__*/React.createElement("span", {
     className: "text-[10px]"
   }, on ? '✓' : '　'), children);
 };
+
+// ─── 工具列的下拉面板（F）───
+// 工具列原本一次攤開 4 個下拉 + 5 個開關 + 4 顆按鈕，1440px 以下會換行成兩三排，
+// 把表格一直往下推。低頻的選項（排序、匯出入）收進面板，常用的留在外面。
+// 觸發按鈕的父層要有 relative，面板才會貼著它展開。
+// z-index 走 45/46：高於資料表表頭的 20，低於頁首 50 與各種 Modal 的 60/70
+const Popover = ({
+  open,
+  onClose,
+  label,
+  children
+}) => {
+  // ⚠️ useEffect 必須在任何提早 return 之前呼叫 —— hooks 不能有條件地執行。
+  // Esc 關閉：只有點擊外面能收起來的話，鍵盤使用者等於被困住
+  useEffect(() => {
+    if (!open) return;
+    const onKey = e => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+  if (!open) return null;
+  return /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+    className: "fixed inset-0 z-[45]",
+    onClick: onClose
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "absolute right-0 top-full mt-2 z-[46] rounded-lg p-2 flex flex-col gap-1.5 min-w-[190px]",
+    style: {
+      background: 'var(--bg-card)',
+      border: '1px solid var(--border-card)',
+      boxShadow: '0 8px 24px var(--bg-card-shadow)'
+    }
+  }, label && /*#__PURE__*/React.createElement("div", {
+    className: "px-1 pb-1 text-[10px] font-bold",
+    style: {
+      color: 'var(--text-muted)'
+    }
+  }, label), children));
+};
+// 下拉面板的觸發鈕。dot=true 時右上角點一顆小圓點，表示裡面有非預設的選項被打開
+const MenuButton = ({
+  open,
+  onClick,
+  dot,
+  children,
+  title
+}) => /*#__PURE__*/React.createElement("button", {
+  onClick: onClick,
+  title: title,
+  className: `ctl relative gap-1${open ? ' ctl-on' : ''}`
+}, children, /*#__PURE__*/React.createElement("svg", {
+  width: "10",
+  height: "10",
+  viewBox: "0 0 24 24",
+  fill: "none",
+  stroke: "currentColor",
+  strokeWidth: "3",
+  style: {
+    transform: open ? 'rotate(180deg)' : 'none',
+    transition: 'transform 0.15s'
+  }
+}, /*#__PURE__*/React.createElement("path", {
+  d: "m6 9 6 6 6-6"
+})), dot && /*#__PURE__*/React.createElement("span", {
+  className: "absolute -top-1 -right-1 w-2 h-2 rounded-full",
+  style: {
+    background: 'var(--tone-alert)'
+  }
+}));
 
 // entry 來自 getDueEntry：已經帶著「目前該盯的階段」與剩餘天數
 const AlertItem = ({
@@ -730,18 +949,20 @@ const AlertItem = ({
   }, /*#__PURE__*/React.createElement("div", {
     className: "flex-1 min-w-0"
   }, /*#__PURE__*/React.createElement("div", {
-    className: "text-sm font-semibold truncate",
+    className: "text-sm font-semibold leading-snug break-words",
     style: {
-      color: 'var(--text-primary)'
+      color: 'var(--text-primary)',
+      overflowWrap: 'anywhere'
     }
   }, item.mainCat, " ", /*#__PURE__*/React.createElement("span", {
     style: {
       color: 'var(--text-muted)'
     }
   }, "\xB7"), " ", item.subCat), /*#__PURE__*/React.createElement("div", {
-    className: "text-[11px] truncate",
+    className: "text-[11px] break-words",
     style: {
-      color: 'var(--text-muted)'
+      color: 'var(--text-muted)',
+      overflowWrap: 'anywhere'
     }
   }, /*#__PURE__*/React.createElement("span", {
     style: {
@@ -766,13 +987,9 @@ const ThemeToggle = ({
   onToggle
 }) => /*#__PURE__*/React.createElement("button", {
   onClick: onToggle,
-  className: "px-2.5 py-1 rounded text-[11px] font-medium transition-colors flex-shrink-0",
-  style: {
-    color: 'var(--text-tertiary)',
-    border: '1px solid var(--border-card)'
-  },
+  className: "ctl-sm flex-shrink-0",
   title: dark ? '切換至淺色模式' : '切換至深色模式'
-}, dark ? '淺色' : '深色');
+}, dark ? '☀ 淺色' : '☾ 深色');
 const SortIcon = ({
   active,
   dir
@@ -831,7 +1048,18 @@ function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [toast, setToast] = useState(null);
-  const [dark, setDark] = useState(false);
+  // 深淺色模式記在 localStorage（作法與精簡模式一致）。
+  // 沒設定過就跟隨作業系統，不要一律給淺色 —— 工廠有些看板機是深色桌面
+  const [dark, setDark] = useState(() => {
+    try {
+      const saved = localStorage.getItem('ct.darkMode');
+      if (saved === '1') return true;
+      if (saved === '0') return false;
+      return !!window.matchMedia?.('(prefers-color-scheme: dark)').matches;
+    } catch (e) {
+      return false;
+    }
+  });
   const [activeView, setActiveView] = useState('table');
   const [expandedRows, setExpandedRows] = useState(new Set());
   const [searchTerm, setSearchTerm] = useState('');
@@ -884,23 +1112,162 @@ function App() {
   const [confirmModal, setConfirmModal] = useState(null); // { title, message, onConfirm }
   // 規格回退視窗（第 16 批）：{ id, nid, curStage, target, note }
   const [rollbackModal, setRollbackModal] = useState(null);
-  // 到期提醒橫幅是否被關掉（不持久化，重新整理就會再出現）
-  const [noticeDismissed, setNoticeDismissed] = useState(false);
-  // ─── 明細表的篩選與排序（第 12 批：統計、人員、逾期全部收進同一頁）───
+  // 到期提醒橫幅已移除（改為需求列表工具列的「需關注」鈕 + 可點的 KPI 卡），
+  // 連帶不再需要 noticeDismissed 這個關閉狀態
+  // ─── 需求列表的篩選與排序（第 12 批：統計、人員、逾期全部收進同一頁）───
   const [emsFilter, setEmsFilter] = useState('All');
   const [msdFilter, setMsdFilter] = useState('All');
   // 'All' | 'attention'(逾期+7日內) | 'overdue' | 'soon'
   const [dueFilter, setDueFilter] = useState('All');
-  // 警示徽章篩選（第 17 批）：'All' | 'delay' | 'delay2' | 'rollback'
+  // 警示徽章篩選（第 17 批）：'All' | 'delay' | 'delay2' | 'rollback' | 'changed'
   const [alertFilter, setAlertFilter] = useState('All');
+  // 進度篩選：'All' | 'ongoing' | 'done'。定義與統計報表的 KPI 卡完全一致 ——
+  // ongoing = 非 Done（含 Init / Pending），不是 OverallStatus 剛好等於 Ongoing 的那些。
+  // 兩邊若各算各的，主管點了「進行中 17」卻看到 9 筆會直接不信任這張表
+  const [progressFilter, setProgressFilter] = useState('All');
   // Done 一律沉到最下面。做成可關閉的 toggle，否則使用者點欄位排序時
   // 會覺得「排序壞掉了」——Done 列永遠不動
   const [doneLast, setDoneLast] = useState(true);
-  // 依剩餘天數由少到多排序（逾期最久的在最上面）
-  const [duePriority, setDuePriority] = useState(false);
+  // 依剩餘天數由少到多排序（逾期最久的在最上面）。
+  // 精簡模式＝主管檢視，它的預設就是這個排序：最急的在最上層（見 compact）
+  const [duePriority, setDuePriority] = useState(readCompactPref);
+  // 各年月案件數要顯示幾個年月（0 = 全部）。資料一路累積下去，19 個月全部攤開時
+  // 每根柱子只剩幾 px、月份標籤還撐著不縮，整張卡會把版面推爆。
+  // 預設只看最近 12 個年月 —— 主管要看的是「最近的走勢」，兩年前的細節可以自己切
+  // ⚠️ 這一組區間**同時**決定「各年月 × 目前階段」統計表與下方的趨勢圖。
+  // 兩者共用同一個區間也共用同一個 yearMonth 分組，欄合計因此必然相等；
+  // 各自一套的話同一頁會出現兩個對不起來的數字。
+  // `{from:'', to:''}` ＝ 自動，取最近 YM_RANGE_DEFAULT 個「有資料的年月」
+  // （不是日曆月 —— 資料本來就會斷月）
+  const [ymRange, setYmRange] = useState({
+    from: '',
+    to: ''
+  });
+  // ─── 精簡模式（2026-08-19）───
+  // 給高階主管看的顯示模式：把次要欄位收起來，只留「哪一筆、誰負責、卡在哪、什麼時候到期」。
+  // ⚠️ 刻意只做「隱藏既有欄位」，不另外組一張新表 —— 第 12 批已經因為
+  // 「不再維護第二套格式」把到期預警頁籤拿掉過，這裡不要再開一份出來。
+  // 預設 false：不點它，畫面就跟以前一模一樣。
+  // 主管每次開都要重按一次的話這個開關等於沒用，所以記在 localStorage
+  const [compact, setCompact] = useState(readCompactPref);
+  // 切進精簡模式時一併套上「到期日近的在上面」。切出去不動它 ——
+  // 使用者在一般模式自己開的排序不該被這顆開關收走
+  const toggleCompact = () => {
+    const next = !compact;
+    setCompact(next);
+    if (next) {
+      setDuePriority(true);
+      setSortConfig({
+        key: null,
+        direction: 'asc'
+      });
+    }
+  };
+  useEffect(() => {
+    try {
+      localStorage.setItem('ct.compactMode', compact ? '1' : '0');
+    } catch (e) {/* 鎖了就算了 */}
+  }, [compact]);
+  // ─── 投影模式（2026-08-19）───
+  // 刻意**不做第二套版面**（第 12 批已經因為「不再維護第二套格式」拿掉過到期預警頁）。
+  // 它只做四件事，全部是把既有畫面調到會議室看得見的程度：
+  //   1. 放大：header 與 main 套 CSS zoom（見 input.css 的 .present-zoom）
+  //   2. 提高對比：只覆寫 CSS 變數，不動任何元件樣式
+  //   3. 收起「寫入型」操作（新增／Excel／模擬帳號）—— 投影時沒有人會在台上改資料，
+  //      而匯入會 TRUNCATE 整張表，這種鈕不該出現在投影畫面上
+  //   4. 斑馬紋：投影對比低，一列橫掃到右邊很容易跳行
+  // 另外「借用」精簡模式與淺色底：16 欄投出來一定要橫向捲，而投影機的黑階是灰的，
+  // 深色底在開著燈的會議室會糊成一片。**離開時還原成進來之前的值**，不是接管。
+  const [present, setPresent] = useState(readPresentPref);
+  const [presentZoom, setPresentZoom] = useState(readPresentZoom);
+  const beforePresent = React.useRef(null);
+  const togglePresent = () => {
+    if (!present) {
+      beforePresent.current = {
+        dark,
+        compact,
+        duePriority
+      };
+      setDark(false);
+      if (!compact) {
+        setCompact(true);
+        setDuePriority(true);
+        setSortConfig({
+          key: null,
+          direction: 'asc'
+        });
+      }
+      setPresent(true);
+    } else {
+      // 重新整理過的話 ref 是空的（狀態本來就各自記在 localStorage），
+      // 那就維持現狀不亂還原
+      const b = beforePresent.current;
+      if (b) {
+        setDark(b.dark);
+        setCompact(b.compact);
+        setDuePriority(b.duePriority);
+      }
+      setPresent(false);
+    }
+  };
+  const stepZoom = d => setPresentZoom(z => {
+    const i = PRESENT_ZOOMS.indexOf(z);
+    const next = (i < 0 ? PRESENT_ZOOMS.indexOf(PRESENT_ZOOM_DEFAULT) : i) + d;
+    return PRESENT_ZOOMS[Math.max(0, Math.min(PRESENT_ZOOMS.length - 1, next))];
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem('ct.presentMode', present ? '1' : '0');
+      localStorage.setItem('ct.presentZoom', String(presentZoom));
+    } catch (e) {/* 鎖了就算了 */}
+  }, [present, presentZoom]);
+  // 精簡模式要收起來的欄位。key 與下方表頭／資料列的欄位一一對應，
+  // 三個地方（群組表頭 colSpan、欄位表頭、篩選列、資料列）都查這支，
+  // 少改一處就會出現欄位對不齊的錯位表格
+  // ─── 表頭凍結的位置（2026-08-19）───
+  // 資料表改為整頁捲動（不再是固定高度的內捲容器），所以兩層表頭是相對
+  // **視窗**吸附，起點要讓開最上面那條 sticky 的頁首。
+  // ⚠️ 一律實際量測，不可寫死：舊版把第二層寫死在 top:34px，欄位名稱換成
+  // 兩行之後真實列高超過 34px，中間就漏出一條正在捲動的資料列（表頭破圖）。
+  const appHeaderRef = React.useRef(null);
+  const groupHeadRef = React.useRef(null);
+  const [headOffsets, setHeadOffsets] = useState({
+    group: 56,
+    col: 90
+  });
+  useEffect(() => {
+    const measure = () => {
+      const h = appHeaderRef.current?.offsetHeight || 56;
+      const g = groupHeadRef.current?.offsetHeight || 34;
+      setHeadOffsets(prev => prev.group === h && prev.col === h + g ? prev : {
+        group: h,
+        col: h + g
+      });
+    };
+    measure();
+    // 欄寬／字級變化都會改變列高，換頁與切換精簡模式後也要重量一次
+    window.addEventListener('resize', measure);
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+    if (ro && groupHeadRef.current) ro.observe(groupHeadRef.current);
+    return () => {
+      window.removeEventListener('resize', measure);
+      if (ro) ro.disconnect();
+    };
+  });
+
+  // 工具列下拉面板：同時只開一個（'sort' | 'data' | null）
+  const [openMenu, setOpenMenu] = useState(null);
+  const toggleMenu = k => setOpenMenu(prev => prev === k ? null : k);
+  const COMPACT_HIDDEN = ['notesLink', 'status', 'regDate', 'mpSaving', 'actions'];
+  const showCol = k => !compact || !COMPACT_HIDDEN.includes(k);
+  // 一般模式 16 欄（含最左的 No）。
+  // 精簡模式：16 − 收掉的 5 欄 − 四個時程併成一欄(−3) + 現況描述(+1) ＝ 9 欄。
+  // 橫跨整列的 td（載入中／查無資料／展開明細）的 colSpan 要跟著變，
+  // 否則展開的明細會撐出多餘的空白欄
+  const colCount = compact ? 16 - COMPACT_HIDDEN.length - 3 + 1 : 16;
   const fetchPersonnel = async () => {
     try {
-      const res = await fetch('/api/personnel');
+      const res = await fetch(api('/api/personnel'));
       if (res.ok) {
         const data = await res.json();
         setPersonnelList(data);
@@ -922,7 +1289,7 @@ function App() {
   const fetchReqs = async () => {
     setIsLoading(true);
     try {
-      const res = await fetch('/api/requirements');
+      const res = await fetch(api('/api/requirements'));
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setRequirementsData(Array.isArray(data) ? data : []);
@@ -941,7 +1308,7 @@ function App() {
   // 每列展開時再打一次 API 會讓明細開起來有延遲，資料量也不大
   const fetchHistory = async () => {
     try {
-      const res = await fetch('/api/history');
+      const res = await fetch(api('/api/history'));
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setHistoryEntries(Array.isArray(data) ? data : []);
@@ -957,11 +1324,11 @@ function App() {
   const detectActor = async () => {
     let allow = false;
     try {
-      const info = await fetch('/api/authinfo');
+      const info = await fetch(api('/api/authinfo'));
       if (info.ok) allow = !!(await info.json()).allowSimulation;
     } catch (err) {/* 取不到就當不開放模擬 */}
     try {
-      const res = await fetch('/api/whoami');
+      const res = await fetch(api('/api/whoami'));
       if (res.ok) {
         const d = await res.json();
         if (d.empId) {
@@ -995,10 +1362,21 @@ function App() {
     return m;
   }, [historyEntries]);
 
+  // 有過時程異動（排除 init 首次填寫）的需求 Id。
+  // 統計報表「時程異動」KPI 卡數的是**事件筆數**，這裡數的是**需求件數**，
+  // 兩者不會相等（一件需求可以改很多次）—— 點卡片跳到列表時要用這個
+  const changedIdSet = useMemo(() => {
+    const s = new Set();
+    historyEntries.forEach(h => {
+      if (h.changeType !== 'init') s.add(h.requirementId);
+    });
+    return s;
+  }, [historyEntries]);
+
   // 編輯視窗裡某一階段的既有異動紀錄
   const editingPhaseHist = phase => (editingData?.id ? historyMap.get(editingData.id) || [] : []).filter(h => h.phase === phase);
   const handleExport = () => {
-    window.open('/api/export', '_blank');
+    window.open(api('/api/export'), '_blank');
   };
   const handleImport = async e => {
     if (!e.target.files.length) return;
@@ -1012,7 +1390,7 @@ function App() {
         const fd = new FormData();
         fd.append('file', fileRef);
         try {
-          const res = await fetch('/api/import', {
+          const res = await fetch(api('/api/import'), {
             method: 'POST',
             body: fd
           });
@@ -1035,7 +1413,7 @@ function App() {
     const fd = new FormData();
     fd.append('file', e.target.files[0]);
     try {
-      const res = await fetch('/api/import', {
+      const res = await fetch(api('/api/import'), {
         method: 'POST',
         body: fd
       });
@@ -1155,7 +1533,7 @@ function App() {
       message: `今天是 ${TODAY_ISO}，原訂${dateLabel}是 ${planned}。\n\n將記為：${verdict}\n\nStatusID 會推進到 ${ph.doneStage}，並寫入一筆稽核紀錄。確定嗎？`,
       onConfirm: async () => {
         try {
-          const res = await fetch(`/api/requirements/${editingData.id}/done`, {
+          const res = await fetch(api(`/api/requirements/${editingData.id}/done`), {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json'
@@ -1231,7 +1609,7 @@ function App() {
       return;
     }
     try {
-      const res = await fetch(`/api/requirements/${m.id}/rollback`, {
+      const res = await fetch(api(`/api/requirements/${m.id}/rollback`), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -1379,7 +1757,7 @@ function App() {
       actorSource: actor.source
     };
     const method = payload.id ? 'PUT' : 'POST';
-    const url = '/api/requirements' + (payload.id ? '/' + payload.id : '');
+    const url = api('/api/requirements') + (payload.id ? '/' + payload.id : '');
     try {
       const res = await fetch(url, {
         method,
@@ -1415,7 +1793,7 @@ function App() {
       message: '確定刪除此筆紀錄？\n\n（資料庫仍保留紀錄以供追溯，但不再顯示於清單中）',
       onConfirm: async () => {
         try {
-          const res = await fetch('/api/requirements/' + id, {
+          const res = await fetch(api('/api/requirements/' + id), {
             method: 'DELETE'
           });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -1493,6 +1871,9 @@ function App() {
   };
   useEffect(() => {
     document.body.classList.toggle('dark', dark);
+    try {
+      localStorage.setItem('ct.darkMode', dark ? '1' : '0');
+    } catch (e) {/* 鎖了就算了 */}
   }, [dark]);
   // 以 Id 為 key，NID 改為手動輸入後可能重複或留空，不適合當識別
   const toggleRow = id => {
@@ -1521,9 +1902,12 @@ function App() {
       Pending: [],
       Done: []
     };
+    // stageYm 是「目前階段 × 年月」的交叉統計（統計報表最上面那張表）：
+    // stageYm[stageCode][yearMonth] = 件數
     const emsW = {},
       msdW = {},
-      trend = {};
+      trend = {},
+      stageYm = {};
     requirementsData.forEach(item => {
       const st = normStatus(item.status);
       const isDone = st === 'Done';
@@ -1546,6 +1930,15 @@ function App() {
         done: 0
       };
       isDone ? trend[ym].done++ : trend[ym].ongoing++;
+      // ⚠️ 交叉表的年月**刻意與趨勢圖用同一個 yearMonth**（由 RegDate 反推的註冊年月）。
+      // 換成「目前階段的到期日」看起來更貼近進度，但那樣兩張圖的欄合計就不會相等 ——
+      // 主管一發現同一頁上兩個數字對不起來，整頁都不會再被信任（第 12 批的教訓）
+      // 空 StageCode 的沿用資料列 B4 的推斷：Done 視為 5；仍推不出來的歸 '-'，
+      // 不靜靜吃掉，否則合計會少掉幾筆而看不出原因
+      const sc = normStageCode(item.stageCode) || (isDone ? '5' : '');
+      const sKey = STAGE_CODES[sc] ? sc : '-';
+      if (!stageYm[sKey]) stageYm[sKey] = {};
+      stageYm[sKey][ym] = (stageYm[sKey][ym] || 0) + 1;
     });
     const sortW = obj => Object.entries(obj).map(([name, count]) => ({
       name,
@@ -1560,6 +1953,7 @@ function App() {
       totalChanges,
       byStatus,
       maxLoad,
+      stageYm,
       ems: sortW(emsW),
       msd: sortW(msdW),
       trend: Object.values(trend).sort((a, b) => a.name.localeCompare(b.name))
@@ -1570,9 +1964,9 @@ function App() {
   // 規則的唯一來源是 buildDueList()：先用 StatusID 定位目前卡在哪一階段，
   // **只比那一個日期**。不可改回「四個日期一起比」（見 FIELD_SPEC.md）。
   //
-  // dueAlerts 固定 7 日，總覽 KPI／風險預警卡與通知橫幅都看這個。
+  // dueAlerts 固定 7 日，統計報表 KPI／風險預警卡與通知橫幅都看這個。
   // dueInfo 則用超大天數視窗把「每一列目前該盯的日期」全撈出來，
-  // 供明細表的逾期篩選與「逾期優先」排序查表用（key 是 item.id）。
+  // 供需求列表的逾期篩選與「逾期優先」排序查表用（key 是 item.id）。
   const dueAlerts = useMemo(() => buildDueList(requirementsData, DUE_WINDOW_DEFAULT), [requirementsData]);
   const dueInfo = useMemo(() => {
     const m = new Map();
@@ -1585,6 +1979,143 @@ function App() {
     soon: list.filter(e => e.level === 'soon').length
   });
   const dueCountsAll = useMemo(() => countLevels(dueAlerts), [dueAlerts]);
+
+  // 趨勢圖實際畫出來的區間 = 最新的 N 個「有資料的年月」（不是日曆月，
+  // 資料本來就有斷月）。maxVal 一併在這裡算 —— 只比畫面上這幾根，
+  // 否則切成近 6 月後所有柱子仍以兩年前的高峰為基準，全部矮成一片看不出差異
+  // yearMonth 的格式固定是 `YYYY/MM`，所以字串比大小就等於時間比大小，
+  // 不需要 parse 成日期
+  const ymList = useMemo(() => analytics.trend.map(t => t.name), [analytics.trend]);
+  const effFrom = ymRange.from || ymList[Math.max(0, ymList.length - YM_RANGE_DEFAULT)] || '';
+  const effTo = ymRange.to || ymList[ymList.length - 1] || '';
+  // 起訖被選反了就把另一端一起帶過去 —— 否則畫面直接空掉，而且看不出原因
+  const pickFrom = v => setYmRange({
+    from: v,
+    to: effTo && effTo < v ? v : effTo
+  });
+  const pickTo = v => setYmRange({
+    from: effFrom && effFrom > v ? v : effFrom,
+    to: v
+  });
+  // n > 0 ＝ 最近 n 個有資料的年月；n = 0 ＝ 全部
+  const applyYmPreset = n => {
+    if (!ymList.length) return;
+    setYmRange({
+      from: ymList[n > 0 ? Math.max(0, ymList.length - n) : 0],
+      to: ymList[ymList.length - 1]
+    });
+  };
+  // 目前的區間剛好等於哪一顆預設鈕（用來標示選中狀態）。
+  // 只有「結尾貼齊最新年月」才算命中預設 —— 使用者自己挑的區間不該被標成預設
+  const activeYmPreset = useMemo(() => {
+    if (!ymRange.from && !ymRange.to) return YM_RANGE_DEFAULT;
+    if (!ymList.length || effTo !== ymList[ymList.length - 1]) return null;
+    const i = ymList.indexOf(effFrom);
+    if (i < 0) return null;
+    const n = ymList.length - i;
+    return n === ymList.length ? 0 : n === 6 || n === 12 ? n : null;
+  }, [ymRange, ymList, effFrom, effTo]);
+  const trendView = useMemo(() => {
+    const rows = analytics.trend.filter(r => (!effFrom || r.name >= effFrom) && (!effTo || r.name <= effTo));
+    return {
+      rows,
+      maxVal: Math.max(1, ...rows.map(x => x.ongoing + x.done))
+    };
+  }, [analytics.trend, effFrom, effTo]);
+
+  // 交叉表的列：1~5 固定都列出來（0 件也要看得到「這一階段是空的」），
+  // 推不出階段的 '-' 只有真的存在時才多一列
+  const stageRows = useMemo(() => {
+    const keys = Object.keys(STAGE_CODES);
+    if (analytics.stageYm['-']) keys.push('-');
+    return keys.map(k => {
+      const cells = trendView.rows.map(r => analytics.stageYm[k]?.[r.name] || 0);
+      return {
+        key: k,
+        cells,
+        sum: cells.reduce((a, b) => a + b, 0)
+      };
+    });
+  }, [analytics.stageYm, trendView.rows]);
+
+  // 年月區間選擇器（交叉表與趨勢圖共用）。
+  // 兩個下拉負責「對齊某一季／某一年」，三顆預設鈕負責「快速看最近 N 個月」，
+  // 兩種入口寫進同一組 state。
+  // ⚠️ 這是**普通函式**不是元件（沒有寫成 `<YmRangePicker />`）：
+  // 在 App 裡用 `const X = () => ...` 定義的元件，每次 render 都是一個新的型別，
+  // React 會整棵重新掛載 —— 下拉選單會在每次選取後失焦。直接呼叫回傳 JSX 就沒這問題
+  const renderYmRange = () => {
+    if (!ymList.length) return null;
+    const presets = [{
+      v: 6,
+      l: '近 6 月'
+    }, {
+      v: 12,
+      l: '近 12 月'
+    }, {
+      v: 0,
+      l: `全部 (${ymList.length})`
+    }].filter(o => o.v === 0 || o.v < ymList.length);
+    const selSty = {
+      background: 'var(--bg-input)',
+      border: '1px solid var(--bg-input-border)',
+      color: 'var(--text-secondary)'
+    };
+    return /*#__PURE__*/React.createElement("div", {
+      className: "flex items-center gap-1.5 flex-wrap justify-end"
+    }, /*#__PURE__*/React.createElement("select", {
+      className: "px-2 py-1 rounded-lg text-[11px] font-bold tabular-nums focus:outline-none",
+      style: selSty,
+      value: effFrom,
+      onChange: e => pickFrom(e.target.value),
+      title: "\u7D71\u8A08\u5340\u9593\u7684\u8D77\u59CB\u5E74\u6708"
+    }, ymList.map(m => /*#__PURE__*/React.createElement("option", {
+      key: m,
+      value: m
+    }, m))), /*#__PURE__*/React.createElement("span", {
+      className: "text-[11px]",
+      style: {
+        color: 'var(--text-muted)'
+      }
+    }, "\uFF5E"), /*#__PURE__*/React.createElement("select", {
+      className: "px-2 py-1 rounded-lg text-[11px] font-bold tabular-nums focus:outline-none",
+      style: selSty,
+      value: effTo,
+      onChange: e => pickTo(e.target.value),
+      title: "\u7D71\u8A08\u5340\u9593\u7684\u7D50\u675F\u5E74\u6708"
+    }, ymList.map(m => /*#__PURE__*/React.createElement("option", {
+      key: m,
+      value: m
+    }, m))), presets.map(o => /*#__PURE__*/React.createElement("button", {
+      key: o.v,
+      onClick: () => applyYmPreset(o.v),
+      className: "px-2.5 py-1 rounded-lg text-[11px] font-bold transition-colors border",
+      style: activeYmPreset === o.v ? {
+        background: 'var(--bg-pill-active)',
+        color: 'var(--text-on-pill)',
+        borderColor: 'transparent'
+      } : {
+        background: 'var(--bg-input)',
+        color: 'var(--text-tertiary)',
+        borderColor: 'var(--bg-input-border)'
+      },
+      title: o.v === 0 ? '涵蓋全部有資料的年月（超出寬度時可左右捲動）' : `資料中最新的 ${o.v} 個有資料的年月`
+    }, o.l)));
+  };
+
+  // ─── 資料新鮮度（H）───
+  // 主管看數字前會想知道「這是什麼時候的資料」。取全部資料列裡最晚的
+  // UpdatedAt／CreatedAt。後端回傳的是 "YYYY-MM-DD HH:mm:ss" 這種前綴固定的格式，
+  // 字串比大小就等於時間比大小，不必逐筆 new Date()
+  const lastDataUpdate = useMemo(() => {
+    let max = '';
+    requirementsData.forEach(it => {
+      [it.updatedAt, it.createdAt].forEach(v => {
+        if (v && v > max) max = v;
+      });
+    });
+    return max;
+  }, [requirementsData]);
 
   // 逾期篩選的四種模式，與 dueInfo 查到的 entry 比對
   const matchDueFilter = (item, mode) => {
@@ -1618,14 +2149,24 @@ function App() {
     if (mode === 'delay') return (item.delayCount || 0) > 0;
     if (mode === 'delay2') return (item.delayCount || 0) >= 2;
     if (mode === 'rollback') return (item.rollbackCount || 0) > 0;
+    // 有任何時程異動（不限延期或回退）—— 統計報表「時程異動」KPI 卡的落點
+    if (mode === 'changed') return changedIdSet.has(item.id);
     return true;
   };
   // 下拉選項要顯示的件數（全域，與逾期下拉的做法一致）
   const alertCounts = useMemo(() => ({
     delay: requirementsData.filter(i => (i.delayCount || 0) > 0).length,
     delay2: requirementsData.filter(i => (i.delayCount || 0) >= 2).length,
-    rollback: requirementsData.filter(i => (i.rollbackCount || 0) > 0).length
-  }), [requirementsData]);
+    rollback: requirementsData.filter(i => (i.rollbackCount || 0) > 0).length,
+    changed: requirementsData.filter(i => changedIdSet.has(i.id)).length
+  }), [requirementsData, changedIdSet]);
+
+  // 進度篩選：與 analytics 的 ongoing / done 同一條規則（見 progressFilter 宣告處）
+  const matchProgressFilter = (item, mode) => {
+    if (mode === 'All') return true;
+    const isDone = normStatus(item.status) === 'Done';
+    return mode === 'done' ? isDone : !isDone;
+  };
 
   // StatusID 以外的所有篩選條件。抽出來是為了讓上方的 StatusID 統計卡能算出
   // 「套用其他條件後」的分佈 —— 否則點了 EMS=王小明，上面的統計還是全域數字，
@@ -1637,6 +2178,7 @@ function App() {
     if (!matchOwner(item.msdOwner, msdFilter)) return false;
     if (!matchDueFilter(item, dueFilter)) return false;
     if (!matchAlertFilter(item, alertFilter)) return false;
+    if (!matchProgressFilter(item, progressFilter)) return false;
     return Object.entries(colFilters).every(([k, v]) => {
       if (!v) return true;
       let val = item[k];
@@ -1645,6 +2187,8 @@ function App() {
       if (k === 'msdConfirm') val = item.msd?.confirm;
       if (k === 'msdEnd') val = item.msd?.end;
       if (k === 'uatEnd') val = item.uat?.end;
+      // 精簡模式合併後的時程欄：比對「目前階段」的那一個日期
+      if (k === 'dueDate') val = dueInfo.get(item.id)?.date || '';
       // StatusID 可用代號或階段名稱篩選（資料列上顯示的是「2 MSD確認中」）
       if (k === 'stageCode') {
         const c = normStageCode(item.stageCode);
@@ -1672,9 +2216,13 @@ function App() {
       if (counts[c] !== undefined) counts[c]++;
     });
     return counts;
-  }, [requirementsData, searchTerm, emsFilter, msdFilter, dueFilter, alertFilter, colFilters, dueInfo]);
-  const filteredData = useMemo(() => requirementsData.filter(item => matchExceptStage(item) && (stageFilter.length === 0 || stageFilter.includes(effStageCode(item)))), [requirementsData, searchTerm, stageFilter, emsFilter, msdFilter, dueFilter, alertFilter, colFilters, dueInfo]);
-  const hasActiveFilter = searchTerm || stageFilter.length > 0 || emsFilter !== 'All' || msdFilter !== 'All' || dueFilter !== 'All' || alertFilter !== 'All' || Object.values(colFilters).some(Boolean);
+  }, [requirementsData, searchTerm, emsFilter, msdFilter, dueFilter, alertFilter, progressFilter, colFilters, dueInfo, changedIdSet]);
+  const filteredData = useMemo(() => requirementsData.filter(item => matchExceptStage(item) && (stageFilter.length === 0 || stageFilter.includes(effStageCode(item)))), [requirementsData, searchTerm, stageFilter, emsFilter, msdFilter, dueFilter, alertFilter, progressFilter, colFilters, dueInfo, changedIdSet]);
+
+  // 欄位篩選收成圖示鈕之後，用這個數字在鈕上掛徽章 —— 面板收起來時
+  // 使用者仍要看得出「我還開著幾個欄位篩選」，否則會以為資料不見了
+  const colFilterCount = Object.values(colFilters).filter(Boolean).length;
+  const hasActiveFilter = searchTerm || stageFilter.length > 0 || emsFilter !== 'All' || msdFilter !== 'All' || dueFilter !== 'All' || alertFilter !== 'All' || progressFilter !== 'All' || colFilterCount > 0;
   const clearAllFilters = () => {
     setSearchTerm('');
     setStageFilter([]);
@@ -1682,7 +2230,18 @@ function App() {
     setMsdFilter('All');
     setDueFilter('All');
     setAlertFilter('All');
+    setProgressFilter('All');
     setColFilters({});
+  };
+
+  // 統計報表的 KPI 卡 → 需求列表。每張卡都先把畫面上的篩選清乾淨再套自己那一條，
+  // 否則上一張卡留下的條件會疊上來，列表筆數與卡片數字對不起來。
+  // 「逾期優先」排序也一併歸位 —— 只有「需關注」那張卡需要它
+  const openListWith = apply => {
+    clearAllFilters();
+    setDuePriority(false);
+    if (apply) apply();
+    setActiveView('table');
   };
   const sortedData = useMemo(() => {
     let items = [...filteredData];
@@ -1758,7 +2317,7 @@ function App() {
     const [newPDept, setNewPDept] = useState('EMS');
     const handleAddPersonnel = async () => {
       if (!newPName.trim()) return;
-      const res = await fetch('/api/personnel', {
+      const res = await fetch(api('/api/personnel'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -1779,7 +2338,7 @@ function App() {
         title: '確認刪除人員',
         message: '確定刪除此人員？',
         onConfirm: async () => {
-          await fetch(`/api/personnel/${id}`, {
+          await fetch(api(`/api/personnel/${id}`), {
             method: 'DELETE'
           });
           fetchPersonnel();
@@ -1804,7 +2363,7 @@ function App() {
       className: "text-lg font-bold"
     }, "\u7DAD\u8B77\u4EBA\u54E1\u540D\u55AE"), /*#__PURE__*/React.createElement("button", {
       onClick: () => setIsPersonnelModalOpen(false),
-      className: "text-gray-400 hover:text-gray-600 transition-colors font-bold"
+      className: "icon-btn transition-colors font-bold"
     }, "\u2715")), /*#__PURE__*/React.createElement("div", {
       className: "p-4 border-b flex gap-2",
       style: {
@@ -1867,13 +2426,21 @@ function App() {
       className: "text-red-500 hover:text-red-600 text-xs font-bold bg-red-500/10 px-2 py-1 rounded"
     }, "\u522A\u9664")))), personnelList.length === 0 && /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
       colSpan: "3",
-      className: "p-4 text-center text-gray-500"
+      className: "p-4 text-center",
+      style: {
+        color: 'var(--text-tertiary)'
+      }
     }, "\u5C1A\u7121\u4EBA\u54E1\u8CC7\u6599")))))));
   };
+
+  // 投影模式只在最外層掛 .present（提高對比的變數覆寫），
+  // 真正的放大 .present-zoom 掛在 header 與 main 上 ——
+  // 100vh 不會被 zoom 縮放，掛在這層會多出一整條空白捲軸
   return /*#__PURE__*/React.createElement("div", {
-    className: "min-h-screen",
+    className: `min-h-screen${present ? ' present' : ''}`,
     style: {
-      color: 'var(--text-secondary)'
+      color: 'var(--text-secondary)',
+      '--present-zoom': presentZoom
     }
   }, /*#__PURE__*/React.createElement(PersonnelModal, null), toast && /*#__PURE__*/React.createElement("div", {
     className: "fixed top-20 right-6 z-[70] px-4 py-3 rounded-xl shadow-2xl text-sm font-bold max-w-md",
@@ -1882,161 +2449,151 @@ function App() {
       color: '#fff'
     }
   }, toast.type === 'error' ? '✕ ' : toast.type === 'warn' ? '⚠ ' : '✓ ', toast.message), /*#__PURE__*/React.createElement("header", {
-    className: "sticky top-0 z-50",
+    ref: appHeaderRef,
+    className: `sticky top-0 z-50${present ? ' present-zoom' : ''}`,
     style: {
       background: 'var(--bg-header)',
       borderBottom: '1px solid var(--bg-header-border)',
       backdropFilter: 'blur(16px)'
     }
   }, /*#__PURE__*/React.createElement("div", {
-    className: "max-w-[1440px] mx-auto px-6 h-14 flex items-center justify-between"
+    className: "max-w-[1440px] mx-auto px-6 h-16 flex items-center justify-between gap-4"
   }, /*#__PURE__*/React.createElement("div", {
-    className: "flex items-center gap-3"
+    className: "flex items-center gap-2.5 min-w-0"
   }, /*#__PURE__*/React.createElement("div", {
-    className: "w-7 h-7 rounded flex items-center justify-center text-white text-xs font-bold",
+    className: "w-8 h-8 rounded-lg flex items-center justify-center text-white text-sm font-black flex-shrink-0",
     style: {
-      background: '#334155'
+      background: 'var(--brand)',
+      boxShadow: '0 2px 6px -1px var(--brand-soft)'
     }
-  }, "M"), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h1", {
-    className: "text-sm font-semibold tracking-wide",
+  }, "M"), /*#__PURE__*/React.createElement("div", {
+    className: "min-w-0"
+  }, /*#__PURE__*/React.createElement("h1", {
+    className: "text-[15px] font-bold leading-tight tracking-tight truncate",
     style: {
       color: 'var(--text-primary)'
     }
   }, "MSD \u9700\u6C42\u7BA1\u63A7\u8868"), /*#__PURE__*/React.createElement("p", {
-    className: "text-[10px]",
+    className: "text-[10px] leading-tight mt-0.5",
     style: {
       color: 'var(--text-muted)'
     }
   }, "EMS \xD7 MSD \u8DE8\u90E8\u9580\u9700\u6C42\u7BA1\u63A7"))), /*#__PURE__*/React.createElement("div", {
-    className: "flex items-center gap-3"
+    className: "flex items-center gap-2"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "seg mr-1"
   }, [{
-    k: 'dashboard',
-    label: '總覽'
-  }, {
     k: 'table',
-    label: '明細表'
+    label: '需求列表'
+  }, {
+    k: 'dashboard',
+    label: '統計報表'
   }].map(v => /*#__PURE__*/React.createElement("button", {
     key: v.k,
     onClick: () => setActiveView(v.k),
-    className: "px-3.5 py-1.5 rounded text-xs font-semibold transition-colors flex items-center gap-1.5",
-    style: activeView === v.k ? {
-      background: 'var(--bg-pill-active)',
-      color: 'var(--text-on-pill)'
-    } : {
-      color: 'var(--text-tertiary)'
-    }
-  }, v.label, v.k === 'table' && dueAlerts.length > 0 && /*#__PURE__*/React.createElement("span", {
-    className: "text-[10px] font-black px-1.5 rounded-full tabular-nums",
-    style: activeView === 'table' ? {
-      background: 'rgba(255,255,255,0.25)',
-      color: '#fff'
-    } : {
-      background: 'var(--tone-alert-bg)',
-      color: 'var(--tone-alert)',
-      border: '1px solid var(--tone-alert-border)'
-    }
-  }, dueAlerts.length))), /*#__PURE__*/React.createElement("div", {
-    className: "mx-1 w-px h-6",
+    className: `seg-item${activeView === v.k ? ' seg-item-on' : ''}`
+  }, v.label, v.k === 'table' && dueAlerts.length > 0 && activeView !== 'table' && /*#__PURE__*/React.createElement("span", {
+    className: "w-1.5 h-1.5 rounded-full flex-shrink-0",
     style: {
-      background: 'var(--border-card)'
-    }
-  }), /*#__PURE__*/React.createElement("button", {
+      background: 'var(--tone-alert)'
+    },
+    title: `需求列表有 ${dueAlerts.length} 件需關注`
+  })))), !present && /*#__PURE__*/React.createElement("button", {
     onClick: () => actor.allowSimulation && setIsActorModalOpen(true),
-    className: "px-2.5 py-1 rounded text-[10px] font-bold transition-colors flex items-center gap-1.5 border",
+    className: "ctl-sm",
     style: actor.source === 'simulated' ? {
       color: '#8b5cf6',
       background: 'rgba(139,92,246,0.12)',
       borderColor: '#8b5cf6'
-    } : actor.empId ? {
-      color: 'var(--text-tertiary)',
-      background: 'var(--bg-input)',
-      borderColor: 'var(--bg-input-border)'
-    } : {
+    } : actor.empId ? undefined : {
       color: 'var(--tone-warn)',
       background: 'var(--tone-warn-bg)',
       borderColor: 'var(--tone-warn-border)'
     },
     title: actor.empId ? `異動人員：${actor.empId}（${actor.source === 'simulated' ? '模擬帳號' : 'Windows 登入'}）${actor.allowSimulation ? '\n點擊可切換模擬帳號' : ''}` : '無法取得 Windows 帳號，稽核紀錄的異動人員會留空' + (actor.allowSimulation ? '\n點擊可設定模擬帳號' : '')
-  }, "\uD83D\uDDA5\uFE0F ", actor.empId || '未識別', actor.source === 'simulated' && ' (模擬)'), /*#__PURE__*/React.createElement(ThemeToggle, {
+  }, "\uD83D\uDDA5\uFE0F ", actor.empId || '未識別', actor.source === 'simulated' && ' (模擬)'), present && /*#__PURE__*/React.createElement("div", {
+    className: "ctl-sm flex-shrink-0 gap-0.5 px-1",
+    title: "\u6295\u5F71\u500D\u7387\uFF1A\u5F8C\u6392\u770B\u4E0D\u6E05\u5C31\u5F80\u4E0A\u52A0\uFF0C\u53F3\u908A\u88AB\u5207\u6389\u5C31\u5F80\u4E0B\u964D"
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => stepZoom(-1),
+    disabled: presentZoom <= PRESENT_ZOOMS[0],
+    className: "w-5 h-5 rounded text-[13px] font-black leading-none disabled:opacity-30",
+    style: {
+      color: 'var(--text-tertiary)'
+    }
+  }, "\u2212"), /*#__PURE__*/React.createElement("span", {
+    className: "text-[10px] font-black tabular-nums w-9 text-center",
+    style: {
+      color: 'var(--text-secondary)'
+    }
+  }, Math.round(presentZoom * 100), "%"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => stepZoom(1),
+    disabled: presentZoom >= PRESENT_ZOOMS[PRESENT_ZOOMS.length - 1],
+    className: "w-5 h-5 rounded text-[13px] font-black leading-none disabled:opacity-30",
+    style: {
+      color: 'var(--text-tertiary)'
+    }
+  }, "\uFF0B")), /*#__PURE__*/React.createElement("button", {
+    onClick: togglePresent,
+    className: `ctl-sm flex-shrink-0${present ? ' ctl-on' : ''}`,
+    title: present ? '離開投影模式：字級、對比與被收起的操作鈕都會回到原本的樣子（含進入前的深淺色與精簡模式設定）' : '投影模式：整體放大、提高對比、加上斑馬紋，並收起新增／Excel 這類寫入型操作。同時會切到淺色底與精簡模式（投影機黑階偏灰、16 欄投出來會橫向捲），離開時自動還原'
+  }, "\uD83D\uDCFD \u6295\u5F71"), /*#__PURE__*/React.createElement(ThemeToggle, {
     dark: dark,
     onToggle: () => setDark(!dark)
   }), /*#__PURE__*/React.createElement("div", {
-    className: "text-[10px] font-mono",
+    className: "ctl-div ml-1"
+  }), /*#__PURE__*/React.createElement("div", {
+    className: "text-[10px] leading-tight text-right pl-1",
     style: {
       color: 'var(--text-muted)'
-    }
-  }, formatToday)))), /*#__PURE__*/React.createElement("main", {
-    className: "max-w-[1440px] mx-auto px-6 py-6"
-  }, dueAlerts.length > 0 && !noticeDismissed && /*#__PURE__*/React.createElement("div", {
-    className: "mb-4 flex items-center gap-3 px-4 py-3 rounded-lg",
-    style: {
-      background: 'var(--tone-alert-bg)',
-      border: '1px solid var(--tone-alert-border)'
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "flex items-center justify-center w-6 h-6 rounded-full shrink-0 text-sm font-black",
-    style: {
-      background: 'var(--tone-alert)',
-      color: '#fff'
-    }
-  }, "!"), /*#__PURE__*/React.createElement("div", {
-    className: "text-xs font-semibold min-w-0",
-    style: {
-      color: 'var(--text-primary)'
-    }
-  }, "\u6709 ", dueAlerts.length, " \u4EF6\u9700\u6C42\u5728 ", DUE_WINDOW_DEFAULT, " \u65E5\u5167\u5230\u671F", dueCountsAll.overdue > 0 && /*#__PURE__*/React.createElement("span", {
-    style: {
-      color: 'var(--tone-alert)'
-    }
-  }, "\uFF08\u5176\u4E2D ", dueCountsAll.overdue, " \u4EF6\u5DF2\u903E\u671F\uFF09"), /*#__PURE__*/React.createElement("span", {
-    className: "font-normal ml-1",
-    style: {
-      color: 'var(--text-muted)'
-    }
-  }, "\u4F9D StatusID \u5224\u5B9A\u76EE\u524D\u968E\u6BB5")), /*#__PURE__*/React.createElement("button", {
-    onClick: () => {
-      clearAllFilters();
-      setDueFilter('attention');
-      setDuePriority(true);
-      setActiveView('table');
     },
-    className: "ml-auto px-3 py-1.5 rounded-lg text-[11px] font-bold text-white shrink-0 transition-colors",
+    title: `逾期／到期一律以今天 ${formatToday} 為基準計算`
+  }, /*#__PURE__*/React.createElement("div", null, "\u8CC7\u6599\u66F4\u65B0"), /*#__PURE__*/React.createElement("div", {
+    className: "font-mono font-semibold",
     style: {
-      background: 'var(--tone-alert)'
+      color: 'var(--text-tertiary)'
     }
-  }, "\u67E5\u770B\u6E05\u55AE"), /*#__PURE__*/React.createElement("button", {
-    onClick: () => setNoticeDismissed(true),
-    className: "text-sm shrink-0 px-1",
-    title: "\u672C\u6B21\u4E0D\u518D\u63D0\u9192",
-    style: {
-      color: 'var(--text-muted)'
-    }
-  }, "\u2715")), activeView === 'dashboard' && /*#__PURE__*/React.createElement("div", {
+  }, lastDataUpdate ? lastDataUpdate.slice(0, 16) : '—'))))), /*#__PURE__*/React.createElement("main", {
+    className: `max-w-[1440px] mx-auto px-6 py-6${present ? ' present-zoom' : ''}`
+  }, activeView === 'dashboard' && /*#__PURE__*/React.createElement("div", {
     className: "space-y-4"
   }, /*#__PURE__*/React.createElement("div", {
     className: "grid grid-cols-2 lg:grid-cols-5 gap-3"
   }, /*#__PURE__*/React.createElement(KpiCard, {
     label: "\u7E3D\u9700\u6C42\u6578",
     value: analytics.total,
-    sub: "\u6240\u6709\u5DF2\u767B\u8A18\u9700\u6C42"
+    sub: "\u6240\u6709\u5DF2\u767B\u8A18\u9700\u6C42",
+    onClick: analytics.total > 0 ? () => openListWith(null) : null,
+    hint: "\u9EDE\u6B64\u5207\u5230\u9700\u6C42\u5217\u8868\uFF0C\u770B\u5168\u90E8\u9700\u6C42\uFF08\u6E05\u9664\u6240\u6709\u7BE9\u9078\uFF09"
   }), /*#__PURE__*/React.createElement(KpiCard, {
     label: "\u9032\u884C\u4E2D",
     value: analytics.ongoing,
-    sub: `佔比 ${analytics.total > 0 ? Math.round(analytics.ongoing / analytics.total * 100) : 0}%`
+    sub: `佔比 ${analytics.total > 0 ? Math.round(analytics.ongoing / analytics.total * 100) : 0}%`,
+    onClick: analytics.ongoing > 0 ? () => openListWith(() => setProgressFilter('ongoing')) : null,
+    hint: "\u9EDE\u6B64\u5207\u5230\u9700\u6C42\u5217\u8868\uFF0C\u53EA\u770B\u5C1A\u672A\u7D50\u6848\u7684\u9700\u6C42"
   }), /*#__PURE__*/React.createElement(KpiCard, {
     label: "\u5DF2\u5B8C\u6210",
     value: analytics.done,
-    sub: `完成率 ${completionRate}%`
+    sub: `完成率 ${completionRate}%`,
+    onClick: analytics.done > 0 ? () => openListWith(() => setProgressFilter('done')) : null,
+    hint: "\u9EDE\u6B64\u5207\u5230\u9700\u6C42\u5217\u8868\uFF0C\u53EA\u770B\u5DF2\u7D50\u6848\u7684\u9700\u6C42"
   }), /*#__PURE__*/React.createElement(KpiCard, {
     label: "\u9700\u95DC\u6CE8",
     value: dueAlerts.length,
     tone: dueAlerts.length > 0 ? 'alert' : null,
-    sub: dueAlerts.length > 0 ? `逾期 ${dueCountsAll.overdue} · 7 日內 ${dueCountsAll.soon}` : "無緊急項目"
+    sub: dueAlerts.length > 0 ? `逾期 ${dueCountsAll.overdue} · 7 日內 ${dueCountsAll.soon}` : "無緊急項目",
+    onClick: dueAlerts.length > 0 ? () => openListWith(() => {
+      setDueFilter('attention');
+      setDuePriority(true);
+    }) : null,
+    hint: "\u9EDE\u6B64\u5207\u5230\u9700\u6C42\u5217\u8868\uFF0C\u53EA\u770B\u9700\u95DC\u6CE8\u7684\u9805\u76EE"
   }), /*#__PURE__*/React.createElement(KpiCard, {
     label: "\u6642\u7A0B\u7570\u52D5",
     value: analytics.totalChanges,
     tone: analytics.totalChanges > 0 ? 'warn' : null,
-    sub: "\u7D2F\u8A08\u6642\u7A0B\u8B8A\u66F4\u6B21\u6578"
+    sub: analytics.totalChanges > 0 ? `累計變更 · 涉及 ${alertCounts.changed} 件` : "累計時程變更次數",
+    onClick: alertCounts.changed > 0 ? () => openListWith(() => setAlertFilter('changed')) : null,
+    hint: "\u9EDE\u6B64\u5207\u5230\u9700\u6C42\u5217\u8868\uFF0C\u53EA\u770B\u6709\u6642\u7A0B\u7570\u52D5\u904E\u7684\u9700\u6C42"
   })), /*#__PURE__*/React.createElement("div", {
     className: "t-card p-5"
   }, /*#__PURE__*/React.createElement("div", {
@@ -2064,21 +2621,132 @@ function App() {
       color: 'var(--text-muted)'
     }
   }, "\u76EE\u524D\u7121\u903E\u671F\u6216 ", DUE_WINDOW_DEFAULT, " \u65E5\u5167\u5230\u671F\u7684\u9805\u76EE")
-  // 點一筆預警 → 切到明細表、套上「需關注」篩選，並把該列展開。
+  // 點一筆預警 → 切到需求列表、套上「需關注」篩選，並把該列展開。
   // 不用 NID 當搜尋字串 —— NID「6」會連帶命中 16、26
   : dueAlerts.map((entry, idx) => /*#__PURE__*/React.createElement(AlertItem, {
     key: entry.item.id || entry.item.nid || idx,
     entry: entry,
-    onClick: () => {
-      clearAllFilters();
+    onClick: () => openListWith(() => {
       setDueFilter('attention');
       setDuePriority(true);
       setExpandedRows(new Set([entry.item.id]));
-      setActiveView('table');
-    }
+    })
   })))), /*#__PURE__*/React.createElement("div", {
-    className: "grid grid-cols-1 lg:grid-cols-2 gap-4"
+    className: "t-card p-5"
   }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-start justify-between gap-3 mb-4 flex-wrap"
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("h2", {
+    className: "text-sm font-semibold",
+    style: {
+      color: 'var(--text-primary)'
+    }
+  }, "\u5404\u5E74\u6708 \xD7 \u76EE\u524D\u968E\u6BB5\u6848\u4EF6\u6578"), /*#__PURE__*/React.createElement("p", {
+    className: "text-[10px] mt-0.5",
+    style: {
+      color: 'var(--text-muted)'
+    }
+  }, "\u4F9D", /*#__PURE__*/React.createElement("span", {
+    className: "font-semibold"
+  }, "\u8A3B\u518A\u5E74\u6708"), "\u5206\u7D44\uFF08\u540C\u4E0B\u65B9\u8DA8\u52E2\u5716\uFF09\uFF0C\u6B04\u4F4D\u70BA\u8A72\u9700\u6C42", /*#__PURE__*/React.createElement("span", {
+    className: "font-semibold"
+  }, "\u76EE\u524D\u6240\u5728\u7684\u968E\u6BB5"))), renderYmRange()), trendView.rows.length === 0 ? /*#__PURE__*/React.createElement("div", {
+    className: "text-center py-8 text-sm",
+    style: {
+      color: 'var(--text-muted)'
+    }
+  }, "\u9019\u500B\u5E74\u6708\u5340\u9593\u5167\u6C92\u6709\u8CC7\u6599") :
+  /*#__PURE__*/
+  /* 全部年月攤開時會超過卡片寬度，捲動條留在這一層 ——
+     不可以讓它變成整頁的橫向捲動 */
+  React.createElement("div", {
+    className: "overflow-x-auto scrollbar-thin"
+  }, /*#__PURE__*/React.createElement("table", {
+    className: "w-full text-xs border-collapse"
+  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", {
+    className: "px-2 py-2 text-left font-bold whitespace-nowrap sticky left-0",
+    style: {
+      color: 'var(--text-tertiary)',
+      background: 'var(--bg-card)',
+      borderBottom: '2px solid var(--border-card)'
+    }
+  }, "\u76EE\u524D\u968E\u6BB5"), /*#__PURE__*/React.createElement("th", {
+    className: "px-2 py-2 text-right font-bold whitespace-nowrap",
+    style: {
+      color: 'var(--text-tertiary)',
+      borderBottom: '2px solid var(--border-card)',
+      borderRight: '2px solid var(--border-card)'
+    }
+  }, "\u5408\u8A08"), trendView.rows.map(r => /*#__PURE__*/React.createElement("th", {
+    key: r.name,
+    className: "px-2 py-2 text-right font-bold whitespace-nowrap tabular-nums",
+    style: {
+      color: 'var(--text-tertiary)',
+      borderBottom: '2px solid var(--border-card)'
+    }
+  }, r.name.replace('20', ''))))), /*#__PURE__*/React.createElement("tbody", null, stageRows.map(row => {
+    const sc = STAGE_CODES[row.key];
+    return /*#__PURE__*/React.createElement("tr", {
+      key: row.key
+    }, /*#__PURE__*/React.createElement("td", {
+      className: "px-2 py-1.5 whitespace-nowrap sticky left-0",
+      style: {
+        background: 'var(--bg-card)',
+        borderBottom: '1px solid var(--border-table)'
+      }
+    }, sc ? /*#__PURE__*/React.createElement("span", {
+      className: "inline-flex items-center gap-1.5 font-semibold",
+      style: {
+        color: sc.color
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "w-2 h-2 rounded-sm flex-shrink-0",
+      style: {
+        background: sc.color
+      }
+    }), row.key, ". ", sc.short) : /*#__PURE__*/React.createElement("span", {
+      className: "font-semibold",
+      style: {
+        color: 'var(--tone-warn)'
+      },
+      title: "StatusID \u672A\u586B\u3001\u4E14\u7121\u6CD5\u7531 Done \u63A8\u65B7\u3002\u9019\u5E7E\u7B46\u9700\u8981\u6709\u4EBA\u88DC\u4E0A\u968E\u6BB5\u4EE3\u865F"
+    }, "\u2014 \u672A\u5206\u985E")), /*#__PURE__*/React.createElement("td", {
+      className: "px-2 py-1.5 text-right font-black tabular-nums",
+      style: {
+        color: 'var(--text-primary)',
+        borderBottom: '1px solid var(--border-table)',
+        borderRight: '2px solid var(--border-card)'
+      }
+    }, row.sum || ''), row.cells.map((n, i) => /*#__PURE__*/React.createElement("td", {
+      key: i,
+      className: "px-2 py-1.5 text-right tabular-nums font-semibold",
+      style: {
+        color: 'var(--text-secondary)',
+        borderBottom: '1px solid var(--border-table)'
+      }
+    }, n || '')));
+  })), /*#__PURE__*/React.createElement("tfoot", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
+    className: "px-2 py-2 font-bold whitespace-nowrap sticky left-0",
+    style: {
+      color: 'var(--text-tertiary)',
+      background: 'var(--bg-card)',
+      borderTop: '2px solid var(--border-card)'
+    }
+  }, "\u5408\u8A08"), /*#__PURE__*/React.createElement("td", {
+    className: "px-2 py-2 text-right font-black tabular-nums",
+    style: {
+      color: 'var(--text-primary)',
+      borderTop: '2px solid var(--border-card)',
+      borderRight: '2px solid var(--border-card)'
+    }
+  }, stageRows.reduce((s, r) => s + r.sum, 0)), trendView.rows.map((r, i) => /*#__PURE__*/React.createElement("td", {
+    key: r.name,
+    className: "px-2 py-2 text-right font-black tabular-nums",
+    style: {
+      color: 'var(--text-primary)',
+      borderTop: '2px solid var(--border-card)'
+    },
+    title: `${r.name}：進行中 ${r.ongoing} · 已完成 ${r.done}`
+  }, stageRows.reduce((s, row) => s + row.cells[i], 0) || ''))))))), /*#__PURE__*/React.createElement("div", {
     className: "t-card p-5"
   }, /*#__PURE__*/React.createElement("h2", {
     className: "text-sm font-semibold mb-4",
@@ -2135,49 +2803,75 @@ function App() {
     }
   }, o.count))))))), /*#__PURE__*/React.createElement("div", {
     className: "t-card p-5"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-between gap-2 mb-4 flex-wrap"
   }, /*#__PURE__*/React.createElement("h2", {
-    className: "text-sm font-semibold mb-4",
+    className: "text-sm font-semibold",
     style: {
       color: 'var(--text-primary)'
     }
-  }, "\u5404\u5E74\u6708\u6848\u4EF6\u6578"), /*#__PURE__*/React.createElement("div", {
-    className: "flex items-end gap-3 h-44"
-  }, analytics.trend.map((t, i) => {
-    const maxVal = Math.max(...analytics.trend.map(x => x.ongoing + x.done), 1);
-    const totalH = (t.ongoing + t.done) / maxVal * 100;
-    const doneH = t.done > 0 ? t.done / (t.ongoing + t.done) * totalH : 0;
+  }, "\u5404\u5E74\u6708\u6848\u4EF6\u6578"), /*#__PURE__*/React.createElement("span", {
+    className: "text-[10px]",
+    style: {
+      color: 'var(--text-muted)'
+    }
+  }, "\u5340\u9593\u8207\u4E0A\u65B9\u7D71\u8A08\u8868\u9023\u52D5")), /*#__PURE__*/React.createElement("div", {
+    className: "overflow-x-auto scrollbar-thin pb-1"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-end gap-3 h-52",
+    style: {
+      minWidth: `max(100%, ${trendView.rows.length * 48}px)`
+    }
+  }, trendView.rows.map((t, i) => {
+    const sum = t.ongoing + t.done;
+    const totalH = sum / trendView.maxVal * 100;
+    const doneH = t.done > 0 ? t.done / sum * totalH : 0;
     const ongoingH = totalH - doneH;
+    const donePx = doneH * 1.4,
+      ongoingPx = ongoingH * 1.4;
     return /*#__PURE__*/React.createElement("div", {
       key: i,
-      className: "flex-1 flex flex-col items-center group"
+      className: "flex-1 flex flex-col items-center cursor-default",
+      title: `${t.name}　進行中 ${t.ongoing} · 已完成 ${t.done}`
     }, /*#__PURE__*/React.createElement("div", {
-      className: "flex-1 w-full flex flex-col justify-end items-center relative"
+      className: "flex-1 w-full flex flex-col justify-end items-center"
     }, /*#__PURE__*/React.createElement("div", {
-      className: "absolute -top-8 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] px-2 py-1 rounded shadow-lg pointer-events-none whitespace-nowrap z-10",
+      className: "text-[11px] font-black tabular-nums mb-1",
       style: {
-        background: dark ? '#334155' : '#1e293b',
-        color: '#fff'
+        color: 'var(--text-primary)'
       }
-    }, "\u9032\u884C\u4E2D:", t.ongoing, " \xB7 \u5DF2\u5B8C\u6210:", t.done), /*#__PURE__*/React.createElement("div", {
-      className: "w-full max-w-[28px] flex flex-col items-stretch"
-    }, doneH > 0 && /*#__PURE__*/React.createElement("div", {
+    }, sum || ''), /*#__PURE__*/React.createElement("div", {
+      className: "w-full max-w-[30px] flex flex-col items-stretch"
+    }, donePx > 0 && /*#__PURE__*/React.createElement("div", {
+      className: "flex items-center justify-center",
       style: {
-        height: `${doneH * 1.4}px`,
+        height: `${donePx}px`,
         background: '#0f766e'
       }
-    }), ongoingH > 0 && /*#__PURE__*/React.createElement("div", {
+    }, donePx >= 16 && /*#__PURE__*/React.createElement("span", {
+      className: "text-[10px] font-bold tabular-nums",
       style: {
-        height: `${ongoingH * 1.4}px`,
+        color: '#ffffff'
+      }
+    }, t.done)), ongoingPx > 0 && /*#__PURE__*/React.createElement("div", {
+      className: "flex items-center justify-center",
+      style: {
+        height: `${ongoingPx}px`,
         background: '#94a3b8'
       }
-    }))), /*#__PURE__*/React.createElement("div", {
-      className: "text-[10px] mt-2 font-medium",
+    }, ongoingPx >= 16 && /*#__PURE__*/React.createElement("span", {
+      className: "text-[10px] font-bold tabular-nums",
       style: {
-        color: 'var(--text-muted)'
+        color: '#0f172a'
+      }
+    }, t.ongoing)))), /*#__PURE__*/React.createElement("div", {
+      className: "text-[10px] mt-2 font-semibold whitespace-nowrap",
+      style: {
+        color: 'var(--text-tertiary)'
       }
     }, t.name.replace('20', '')));
-  })), /*#__PURE__*/React.createElement("div", {
-    className: "flex justify-center gap-6 mt-4 pt-3",
+  }))), /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-center gap-6 mt-4 pt-3 flex-wrap min-h-[26px]",
     style: {
       borderTop: '1px solid var(--border-card)'
     }
@@ -2201,12 +2895,17 @@ function App() {
     style: {
       background: '#0f766e'
     }
-  }), "\u5DF2\u5B8C\u6210"))))), activeView === 'table' && /*#__PURE__*/React.createElement("div", {
+  }), "\u5DF2\u5B8C\u6210"), trendView.rows.length > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "text-[10px] tabular-nums",
+    style: {
+      color: 'var(--text-muted)'
+    }
+  }, "\u5340\u9593 ", trendView.rows[0].name.replace('20', ''), " \u2013 ", trendView.rows[trendView.rows.length - 1].name.replace('20', ''), "\uFF0E\u5171 ", trendView.rows.reduce((s, r) => s + r.ongoing + r.done, 0), " \u4EF6")))), activeView === 'table' && /*#__PURE__*/React.createElement("div", {
     className: "space-y-4"
   }, /*#__PURE__*/React.createElement("div", {
-    className: "t-card p-4 flex flex-wrap items-center gap-3"
+    className: "t-card px-4 py-3 flex flex-wrap items-center gap-2"
   }, /*#__PURE__*/React.createElement("div", {
-    className: "relative flex-1 min-w-[180px] max-w-xs"
+    className: "relative flex-1 min-w-[180px] max-w-[280px]"
   }, /*#__PURE__*/React.createElement("svg", {
     className: "absolute left-3 top-1/2 -translate-y-1/2",
     style: {
@@ -2226,7 +2925,7 @@ function App() {
     d: "m21 21-4.3-4.3"
   })), /*#__PURE__*/React.createElement("input", {
     type: "text",
-    className: "w-full pl-9 pr-3 py-2 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-colors",
+    className: "w-full h-[34px] pl-9 pr-3 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-colors",
     style: {
       background: 'var(--bg-input)',
       border: '1px solid var(--bg-input-border)',
@@ -2235,7 +2934,28 @@ function App() {
     placeholder: "\u641C\u5C0B NID\u3001\u9805\u76EE\u3001\u8CA0\u8CAC\u4EBA...",
     value: searchTerm,
     onChange: e => setSearchTerm(e.target.value)
-  })), /*#__PURE__*/React.createElement(FilterSelect, {
+  })), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setShowColFilters(!showColFilters),
+    className: `ctl ctl-icon relative shrink-0${showColFilters ? ' ctl-on' : ''}`,
+    title: colFilterCount > 0 ? `欄位篩選（${colFilterCount} 個生效中）` : '欄位篩選：在表頭下方開一排輸入框，可逐欄過濾'
+  }, /*#__PURE__*/React.createElement("svg", {
+    width: "14",
+    height: "14",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "2"
+  }, /*#__PURE__*/React.createElement("polygon", {
+    points: "22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"
+  })), colFilterCount > 0 && /*#__PURE__*/React.createElement("span", {
+    className: "absolute -top-1.5 -right-1.5 min-w-[15px] h-[15px] px-1 rounded-full text-[9px] font-bold flex items-center justify-center tabular-nums",
+    style: {
+      background: 'var(--tone-alert)',
+      color: '#fff'
+    }
+  }, colFilterCount)), /*#__PURE__*/React.createElement("div", {
+    className: "ctl-div mx-1"
+  }), /*#__PURE__*/React.createElement(FilterSelect, {
     label: "EMS",
     value: emsFilter,
     onChange: setEmsFilter,
@@ -2269,11 +2989,26 @@ function App() {
       label: `${DUE_WINDOW_DEFAULT} 日內到期 (${dueCountsAll.soon})`
     }]
   }), /*#__PURE__*/React.createElement(FilterSelect, {
+    label: "\u9032\u5EA6",
+    value: progressFilter,
+    onChange: setProgressFilter,
+    allLabel: "\u4E0D\u9650\u9032\u5EA6",
+    options: [{
+      value: 'ongoing',
+      label: `進行中 (${analytics.ongoing})`
+    }, {
+      value: 'done',
+      label: `已完成 (${analytics.done})`
+    }]
+  }), /*#__PURE__*/React.createElement(FilterSelect, {
     label: "\u8B66\u793A",
     value: alertFilter,
     onChange: setAlertFilter,
     allLabel: "\u4E0D\u9650\u8B66\u793A",
     options: [{
+      value: 'changed',
+      label: `📝 有時程異動 (${alertCounts.changed})`
+    }, {
       value: 'delay',
       label: `⏰ 有執行延期 (${alertCounts.delay})`
     }, {
@@ -2285,44 +3020,54 @@ function App() {
     }]
   }), hasActiveFilter && /*#__PURE__*/React.createElement("button", {
     onClick: clearAllFilters,
-    className: "px-3 py-1.5 rounded-lg text-[11px] font-bold text-red-500 hover:bg-red-500/10 transition-colors"
-  }, "\u2715 \u6E05\u9664\u5168\u90E8"), /*#__PURE__*/React.createElement("div", {
-    className: "ml-auto flex gap-2 flex-wrap justify-end"
+    className: "ctl",
+    style: {
+      color: 'var(--tone-alert)',
+      background: 'var(--tone-alert-bg)',
+      borderColor: 'var(--tone-alert-border)'
+    }
+  }, "\u2715 \u6E05\u9664\u5168\u90E8"), !present && /*#__PURE__*/React.createElement("div", {
+    className: "ml-auto flex items-center gap-2 flex-wrap justify-end"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "relative"
+  }, /*#__PURE__*/React.createElement(MenuButton, {
+    open: openMenu === 'data',
+    onClick: () => toggleMenu('data'),
+    title: "Excel \u532F\u51FA\uFF0F\u532F\u5165"
+  }, "Excel"), /*#__PURE__*/React.createElement(Popover, {
+    open: openMenu === 'data',
+    onClose: () => setOpenMenu(null),
+    label: "\u8CC7\u6599\u8F49\u79FB"
   }, /*#__PURE__*/React.createElement("button", {
-    onClick: () => setShowColFilters(!showColFilters),
-    className: "px-3 py-1.5 rounded-lg text-[11px] font-bold transition-colors border",
-    style: showColFilters ? {
-      background: 'var(--bg-pill-active)',
-      color: 'var(--text-on-pill)',
-      borderColor: 'transparent'
-    } : {
-      background: 'var(--bg-input)',
-      color: 'var(--text-secondary)',
-      borderColor: 'var(--bg-input-border)'
+    onClick: () => {
+      setOpenMenu(null);
+      handleExport();
     },
-    title: "\u986F\u793A/\u96B1\u85CF\u5404\u6B04\u4F4D\u7684\u7D30\u90E8\u7BE9\u9078\u8F38\u5165\u6846"
-  }, "\uD83D\uDD0D \u6B04\u4F4D\u7BE9\u9078", showColFilters ? ' ▲' : ' ▼'), /*#__PURE__*/React.createElement("div", {
-    className: "w-px h-6 self-center",
-    style: {
-      background: 'var(--border-card)'
-    }
-  }), /*#__PURE__*/React.createElement("button", {
-    onClick: handleExport,
-    className: "px-3 py-1.5 rounded-lg text-[11px] font-bold transition-colors border",
+    className: "w-full text-left px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition-colors border",
     style: {
       background: 'var(--bg-input)',
       color: 'var(--text-secondary)',
       borderColor: 'var(--bg-input-border)'
     }
-  }, "\u532F\u51FA Excel"), /*#__PURE__*/React.createElement("button", {
-    onClick: () => fileInputRef.current.click(),
-    className: "px-3 py-1.5 rounded-lg text-[11px] font-bold transition-colors border",
+  }, "\u2193 \u532F\u51FA Excel", /*#__PURE__*/React.createElement("div", {
+    className: "font-normal mt-0.5",
     style: {
-      background: 'var(--bg-input)',
-      color: 'var(--text-secondary)',
-      borderColor: 'var(--bg-input-border)'
+      color: 'var(--text-muted)'
     }
-  }, "\u532F\u5165 Excel"), /*#__PURE__*/React.createElement("input", {
+  }, "\u628A\u76EE\u524D\u7684\u8CC7\u6599\u4E0B\u8F09\u6210 .xlsx")), /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      setOpenMenu(null);
+      fileInputRef.current.click();
+    },
+    className: "w-full text-left px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition-colors border",
+    style: {
+      background: 'var(--tone-alert-bg)',
+      color: 'var(--tone-alert)',
+      borderColor: 'var(--tone-alert-border)'
+    }
+  }, "\u26A0 \u532F\u5165 Excel", /*#__PURE__*/React.createElement("div", {
+    className: "font-normal mt-0.5"
+  }, "\u6703", /*#__PURE__*/React.createElement("b", null, "\u6E05\u7A7A\u6574\u5F35\u8868"), "\u5F8C\u4EE5\u6A94\u6848\u5167\u5BB9\u91CD\u5EFA")))), /*#__PURE__*/React.createElement("input", {
     type: "file",
     ref: fileInputRef,
     onChange: handleImport,
@@ -2332,9 +3077,14 @@ function App() {
     accept: ".xlsx"
   }), /*#__PURE__*/React.createElement("button", {
     onClick: openAdd,
-    className: "px-4 py-1.5 rounded-lg text-[11px] font-bold bg-indigo-500 text-white hover:bg-indigo-600 transition-colors shadow-sm"
+    className: "ctl px-4 text-white hover:text-white",
+    style: {
+      background: 'var(--brand)',
+      borderColor: 'transparent',
+      boxShadow: '0 1px 2px rgba(15,23,42,0.12)'
+    }
   }, "\uFF0B \u65B0\u589E\u9700\u6C42"))), /*#__PURE__*/React.createElement("div", {
-    className: "t-card p-3 flex flex-wrap items-center gap-2"
+    className: "t-card px-4 py-3 flex flex-wrap items-center gap-2"
   }, [{
     k: 'All',
     label: 'ALL'
@@ -2358,49 +3108,101 @@ function App() {
       color: 'var(--text-on-pill)',
       borderColor: 'transparent'
     };
-    return /*#__PURE__*/React.createElement("button", {
-      key: o.k,
+    return /*#__PURE__*/React.createElement(Fragment, {
+      key: o.k
+    }, o.k === '1' && /*#__PURE__*/React.createElement("div", {
+      className: "ctl-div mx-0.5"
+    }), /*#__PURE__*/React.createElement("button", {
       onClick: () => setStageFilter(prev => isAll ? [] : prev.includes(o.k) ? prev.filter(x => x !== o.k) : [...prev, o.k]),
-      className: "px-3 py-2 rounded-lg text-[11px] font-bold transition-colors flex items-center gap-2 border",
-      style: active ? activeStyle : {
-        background: 'var(--bg-input)',
-        color: 'var(--text-tertiary)',
-        borderColor: 'var(--bg-input-border)'
-      },
+      className: "ctl gap-2",
+      style: active ? activeStyle : undefined,
       title: isAll ? '顯示全部 StatusID（清除已選取的階段）' : `StatusID ${o.k} ${o.label}（可複選，再點一次取消）`
     }, !isAll && /*#__PURE__*/React.createElement("span", {
-      className: "font-black",
+      className: "w-1.5 h-1.5 rounded-full flex-shrink-0",
       style: {
-        color: active ? 'inherit' : o.color
+        background: o.color
+      }
+    }), !isAll && /*#__PURE__*/React.createElement("span", {
+      className: "font-black -mr-1",
+      style: {
+        color: active ? 'inherit' : 'var(--text-tertiary)'
       }
     }, o.k), o.label, /*#__PURE__*/React.createElement("span", {
-      className: "text-[13px] font-black tabular-nums",
+      className: "text-[13px] font-black tabular-nums leading-none",
       style: {
         color: active ? 'inherit' : 'var(--text-primary)'
       }
-    }, n));
+    }, n)));
   }), /*#__PURE__*/React.createElement("div", {
     className: "ml-auto flex flex-wrap items-center gap-2 justify-end"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "text-[11px] tabular-nums",
+  }, dueAlerts.length > 0 && (() => {
+    const on = dueFilter === 'attention';
+    return /*#__PURE__*/React.createElement("button", {
+      onClick: () => {
+        setDueFilter(on ? 'All' : 'attention');
+        setDuePriority(!on);
+      },
+      className: "ctl gap-1.5",
+      style: on ? {
+        background: 'var(--tone-alert)',
+        color: '#fff',
+        borderColor: 'var(--tone-alert)'
+      } : {
+        background: 'var(--tone-alert-bg)',
+        color: 'var(--tone-alert)',
+        borderColor: 'var(--tone-alert-border)'
+      },
+      title: `${DUE_WINDOW_DEFAULT} 日內到期或已逾期共 ${dueAlerts.length} 件（依 StatusID 判定目前階段）。點一下只看這些，再點一次取消`
+    }, "\u9700\u95DC\u6CE8", /*#__PURE__*/React.createElement("span", {
+      className: "text-[13px] font-black tabular-nums"
+    }, dueAlerts.length), dueCountsAll.overdue > 0 && /*#__PURE__*/React.createElement("span", {
+      className: "font-semibold",
+      style: {
+        opacity: 0.85
+      }
+    }, "\xB7 \u903E\u671F ", dueCountsAll.overdue));
+  })(), /*#__PURE__*/React.createElement("div", {
+    className: "ctl-div"
+  }), /*#__PURE__*/React.createElement("span", {
+    className: "text-[11px] tabular-nums px-0.5",
     style: {
       color: 'var(--text-muted)'
     }
-  }, "\u986F\u793A ", sortedData.length, " / ", requirementsData.length, " \u7B46"), /*#__PURE__*/React.createElement("div", {
-    className: "w-px h-6",
+  }, "\u986F\u793A ", /*#__PURE__*/React.createElement("b", {
+    className: "tabular-nums",
     style: {
-      background: 'var(--border-card)'
+      color: 'var(--text-secondary)'
     }
+  }, sortedData.length), " / ", requirementsData.length, " \u7B46"), /*#__PURE__*/React.createElement("div", {
+    className: "ctl-div"
   }), /*#__PURE__*/React.createElement(ToggleChip, {
+    on: compact,
+    onClick: toggleCompact,
+    title: "\u4E3B\u7BA1\u6AA2\u8996\uFF1A\u6536\u8D77\u6B21\u8981\u6B04\u4F4D\uFF08Notes Link\u3001Status\u3001\u8A3B\u518A\u65E5\u671F\u3001MP Saving\u3001\u64CD\u4F5C\uFF09\uFF0C\u56DB\u500B\u968E\u6BB5\u6642\u7A0B\u53EA\u7559 StatusID \u5C0D\u61C9\u7684\u90A3\u4E00\u500B\uFF0C\u4E26\u4EE5\u5230\u671F\u65E5\u8FD1\u7684\u6392\u5728\u4E0A\u9762\u3002\u5B8C\u6574\u6642\u7A0B\u4ECD\u53EF\u5C55\u958B\u8A72\u5217\u67E5\u770B\uFF1B\u95DC\u9589\u5F8C\u756B\u9762\u8207\u539F\u672C\u5B8C\u5168\u76F8\u540C"
+  }, "\u7CBE\u7C21\u6A21\u5F0F"), /*#__PURE__*/React.createElement("div", {
+    className: "relative"
+  }, /*#__PURE__*/React.createElement(MenuButton, {
+    open: openMenu === 'sort',
+    onClick: () => toggleMenu('sort'),
+    dot: duePriority || !doneLast || sortConfig.key === 'delayCount' || sortConfig.key === 'rollbackCount',
+    title: "\u6392\u5E8F\u65B9\u5F0F"
+  }, "\u6392\u5E8F"), /*#__PURE__*/React.createElement(Popover, {
+    open: openMenu === 'sort',
+    onClose: () => setOpenMenu(null),
+    label: "\u6392\u5E8F\u8207\u7F6E\u5E95"
+  }, /*#__PURE__*/React.createElement(ToggleChip, {
+    full: true,
     on: doneLast,
     onClick: () => setDoneLast(!doneLast),
     title: "\u7D50\u6848 (Done / StatusID 5) \u7684\u8CC7\u6599\u5217\u4E00\u5F8B\u6392\u5230\u6700\u4E0B\u9762"
   }, "Done \u7F6E\u5E95"), /*#__PURE__*/React.createElement(ToggleChip, {
+    full: true,
     on: duePriority,
     onClick: () => setDuePriority(!duePriority),
     tone: "alert",
     title: "\u4F9D\u5269\u9918\u5929\u6578\u7531\u5C11\u5230\u591A\u6392\u5E8F\uFF0C\u903E\u671F\u6700\u4E45\u7684\u6392\u6700\u4E0A\u9762"
   }, "\u903E\u671F\u512A\u5148"), /*#__PURE__*/React.createElement(ToggleChip, {
+    full: true,
     on: sortConfig.key === 'delayCount',
     tone: "alert",
     onClick: () => setSortConfig(sortConfig.key === 'delayCount' ? {
@@ -2412,6 +3214,7 @@ function App() {
     }),
     title: "\u4F9D\u57F7\u884C\u5EF6\u671F\u6B21\u6578\u7531\u591A\u5230\u5C11\u6392\u5E8F\u3002\u6CE8\u610F\uFF1A\u300CDone \u7F6E\u5E95\u300D\u958B\u8457\u6642\uFF0C\u7D50\u6848\u7684\u6848\u4EF6\u4ECD\u6703\u88AB\u6392\u5230\u4E0B\u65B9"
   }, "\u5EF6\u671F\u6700\u591A"), /*#__PURE__*/React.createElement(ToggleChip, {
+    full: true,
     on: sortConfig.key === 'rollbackCount',
     onClick: () => setSortConfig(sortConfig.key === 'rollbackCount' ? {
       key: null,
@@ -2421,43 +3224,74 @@ function App() {
       direction: 'desc'
     }),
     title: "\u4F9D\u898F\u683C\u56DE\u9000\u6B21\u6578\u7531\u591A\u5230\u5C11\u6392\u5E8F\u3002\u6CE8\u610F\uFF1A\u300CDone \u7F6E\u5E95\u300D\u958B\u8457\u6642\uFF0C\u7D50\u6848\u7684\u6848\u4EF6\u4ECD\u6703\u88AB\u6392\u5230\u4E0B\u65B9"
-  }, "\u56DE\u9000\u6700\u591A"))), /*#__PURE__*/React.createElement("div", {
-    className: "t-card t-table-card overflow-hidden"
+  }, "\u56DE\u9000\u6700\u591A"))))), /*#__PURE__*/React.createElement("div", {
+    className: "t-card t-table-card"
   }, /*#__PURE__*/React.createElement("div", {
-    className: "overflow-auto scrollbar-thin",
+    className: "flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2.5 text-[10px] rounded-t-[10px]",
     style: {
-      maxHeight: 'calc(100vh - 15rem)'
+      color: 'var(--text-muted)',
+      background: 'var(--bg-input)',
+      borderBottom: '1px solid var(--border-card)'
     }
-  }, /*#__PURE__*/React.createElement("table", {
-    className: "w-full text-left border-collapse sticky-table"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "font-bold px-1.5 py-0.5 rounded",
+    style: {
+      color: 'var(--text-tertiary)',
+      background: 'var(--bg-card)',
+      border: '1px solid var(--bg-input-border)'
+    }
+  }, "\u5716\u4F8B"), /*#__PURE__*/React.createElement("span", {
+    className: "flex items-center gap-1"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "inline-block w-0.5 h-3 align-middle",
+    style: {
+      background: 'var(--tone-alert)'
+    }
+  }), "\u5DE6\u5074\u8272\u689D\uFF1D\u8A72\u5217\u6700\u56B4\u91CD\u7684\u5230\u671F\u98A8\u96AA"), /*#__PURE__*/React.createElement("span", null, "\u23F0 \u57F7\u884C\u5EF6\u671F\u6B21\u6578\uFF082 \u6B21\u4EE5\u4E0A\u8F49\u7D05\uFF09"), /*#__PURE__*/React.createElement("span", null, "\uD83D\uDD04 \u898F\u683C\u56DE\u9000\u6B21\u6578"), /*#__PURE__*/React.createElement("span", null, "\u26A0 \u8A72\u968E\u6BB5\u6642\u7A0B\u7570\u52D5\u6B21\u6578"), /*#__PURE__*/React.createElement("span", null, "\u2192 \u65E5\u671F\uFF1D\u5EF6\u671F\u5F8C\u7684\u5BE6\u969B\u5B8C\u6210\u65E5"), compact && /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: 'var(--text-tertiary)'
+    }
+  }, "\u76EE\u524D\u968E\u6BB5\u6642\u7A0B\uFF1DStatusID \u5C0D\u61C9\u7684\u90A3\u4E00\u500B\u65E5\u671F\uFF08\u9EDE\u8A72\u5217\u53EF\u770B\u5B8C\u6574\u56DB\u968E\u6BB5\uFF09")), /*#__PURE__*/React.createElement("table", {
+    className: "w-full text-left border-collapse sticky-table",
+    style: {
+      '--head-top-group': `${headOffsets.group}px`,
+      '--head-top-col': `${headOffsets.col}px`
+    }
   }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
+    ref: groupHeadRef,
     style: {
       background: 'var(--thead-group)',
       borderBottom: '1px solid var(--border-card)'
     }
   }, /*#__PURE__*/React.createElement("th", {
-    colSpan: "7",
+    colSpan: compact ? 4 : 8,
     className: "px-3 py-2 text-center text-[11px] font-black uppercase tracking-wider",
     style: {
       color: 'var(--text-tertiary)',
       borderRight: '2px solid var(--border-card)'
     }
   }, "\u5C08\u6848\u57FA\u672C\u8CC7\u8A0A"), /*#__PURE__*/React.createElement("th", {
-    colSpan: "6",
+    colSpan: compact ? 4 : 6,
     className: "px-3 py-2 text-center text-[11px] font-black uppercase tracking-wider",
     style: {
       color: 'var(--text-tertiary)',
       borderRight: '2px solid var(--border-card)',
       background: 'var(--thead-group-schedule)'
     }
-  }, "\u6B0A\u8CAC\u4EBA\u54E1\u8207\u5404\u968E\u6BB5\u6642\u7A0B (Schedule)"), /*#__PURE__*/React.createElement("th", {
+  }, compact ? '權責人員與目前階段時程' : '權責人員與各階段時程 (Schedule)'), compact && /*#__PURE__*/React.createElement("th", {
+    colSpan: "1",
+    className: "px-3 py-2 text-center text-[11px] font-black uppercase tracking-wider",
+    style: {
+      color: 'var(--text-tertiary)'
+    }
+  }, "\u73FE\u6CC1"), showCol('mpSaving') && /*#__PURE__*/React.createElement("th", {
     colSpan: "1",
     className: "px-3 py-2 text-center text-[11px] font-black uppercase tracking-wider",
     style: {
       color: 'var(--text-tertiary)',
       borderRight: '1px solid var(--border-card)'
     }
-  }, "\u6548\u76CA\u8A55\u4F30"), /*#__PURE__*/React.createElement("th", {
+  }, "\u6548\u76CA\u8A55\u4F30"), showCol('actions') && /*#__PURE__*/React.createElement("th", {
     colSpan: "1",
     className: "px-3 py-2 text-center text-[11px] font-black uppercase tracking-wider",
     style: {
@@ -2469,28 +3303,17 @@ function App() {
       borderBottom: '2px solid var(--border-card)'
     }
   }, /*#__PURE__*/React.createElement("th", {
-    className: "px-2 py-2.5 text-center text-[11px] font-bold cursor-pointer hover:bg-black/5 transition-colors group",
+    className: "px-2 py-2.5 text-[11px] font-bold select-none whitespace-nowrap",
     style: {
       color: 'var(--text-tertiary)',
       borderRight: '1px solid var(--border-card)',
-      width: '42px'
+      width: '44px'
     },
-    onClick: () => setShowColFilters(!showColFilters),
-    title: "\u986F\u793A/\u96B1\u85CF\u9032\u968E\u7BE9\u9078"
+    title: "\u6D41\u6C34\u865F\uFF1A\u76EE\u524D\u6392\u5E8F\u8207\u7BE9\u9078\u4E0B\u7684\u7B2C\u5E7E\u5217\uFF08\u4E0D\u662F NID\uFF09"
   }, /*#__PURE__*/React.createElement("div", {
-    className: "flex flex-col items-center justify-center"
-  }, /*#__PURE__*/React.createElement("span", null, "Notes"), /*#__PURE__*/React.createElement("span", null, "Link"), /*#__PURE__*/React.createElement("svg", {
-    className: `mt-0.5 transition-all ${showColFilters ? 'text-indigo-500' : 'opacity-30 group-hover:opacity-100'}`,
-    width: "10",
-    height: "10",
-    viewBox: "0 0 24 24",
-    fill: "none",
-    stroke: "currentColor",
-    strokeWidth: "2"
-  }, /*#__PURE__*/React.createElement("polygon", {
-    points: "22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"
-  })))), /*#__PURE__*/React.createElement("th", {
-    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none",
+    className: "flex items-center"
+  }, "No")), /*#__PURE__*/React.createElement("th", {
+    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none whitespace-nowrap",
     style: {
       color: 'var(--text-tertiary)',
       borderRight: '1px solid var(--border-card)',
@@ -2504,8 +3327,8 @@ function App() {
   }, /*#__PURE__*/React.createElement(SortIcon, {
     active: sortConfig.key === 'nid',
     dir: sortConfig.direction
-  })))), /*#__PURE__*/React.createElement("th", {
-    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none",
+  })))), showCol('status') && /*#__PURE__*/React.createElement("th", {
+    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none whitespace-nowrap",
     style: {
       color: 'var(--text-tertiary)',
       borderRight: '1px solid var(--border-card)',
@@ -2519,8 +3342,8 @@ function App() {
   }, /*#__PURE__*/React.createElement(SortIcon, {
     active: sortConfig.key === 'status',
     dir: sortConfig.direction
-  })))), /*#__PURE__*/React.createElement("th", {
-    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none",
+  })))), !compact && /*#__PURE__*/React.createElement("th", {
+    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none whitespace-nowrap",
     style: {
       color: 'var(--text-tertiary)',
       borderRight: '1px solid var(--border-card)',
@@ -2535,8 +3358,8 @@ function App() {
   }, /*#__PURE__*/React.createElement(SortIcon, {
     active: sortConfig.key === 'stageCode',
     dir: sortConfig.direction
-  })))), /*#__PURE__*/React.createElement("th", {
-    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none",
+  })))), showCol('regDate') && /*#__PURE__*/React.createElement("th", {
+    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none whitespace-nowrap",
     style: {
       color: 'var(--text-tertiary)',
       borderRight: '1px solid var(--border-card)',
@@ -2551,10 +3374,11 @@ function App() {
     active: sortConfig.key === 'regDate',
     dir: sortConfig.direction
   })))), /*#__PURE__*/React.createElement("th", {
-    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none",
+    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none whitespace-nowrap",
     style: {
       color: 'var(--text-tertiary)',
-      borderRight: '1px solid var(--border-card)'
+      borderRight: '1px solid var(--border-card)',
+      width: '150px'
     },
     onClick: () => requestSort('mainCat')
   }, /*#__PURE__*/React.createElement("div", {
@@ -2565,10 +3389,11 @@ function App() {
     active: sortConfig.key === 'mainCat',
     dir: sortConfig.direction
   })))), /*#__PURE__*/React.createElement("th", {
-    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none",
+    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none whitespace-nowrap",
     style: {
       color: 'var(--text-tertiary)',
-      borderRight: '2px solid var(--border-card)'
+      borderRight: showCol('notesLink') ? '1px solid var(--border-card)' : '2px solid var(--border-card)',
+      width: '190px'
     },
     onClick: () => requestSort('subCat')
   }, /*#__PURE__*/React.createElement("div", {
@@ -2578,8 +3403,18 @@ function App() {
   }, /*#__PURE__*/React.createElement(SortIcon, {
     active: sortConfig.key === 'subCat',
     dir: sortConfig.direction
-  })))), /*#__PURE__*/React.createElement("th", {
-    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center",
+  })))), showCol('notesLink') && /*#__PURE__*/React.createElement("th", {
+    className: "px-2 py-2.5 text-center text-[11px] font-bold select-none whitespace-nowrap",
+    style: {
+      color: 'var(--text-tertiary)',
+      borderRight: '2px solid var(--border-card)',
+      width: '62px'
+    },
+    title: "Notes Link\uFF1A\u9EDE\u8CC7\u6599\u5217\u4E0A\u7684\u5716\u793A\u958B\u555F\u9023\u7D50"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-center"
+  }, "Notes Link")), /*#__PURE__*/React.createElement("th", {
+    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center whitespace-nowrap",
     style: {
       color: 'var(--text-tertiary)',
       borderRight: '1px solid var(--border-card)',
@@ -2595,27 +3430,10 @@ function App() {
     active: sortConfig.key === 'emsOwner',
     dir: sortConfig.direction
   })))), /*#__PURE__*/React.createElement("th", {
-    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center",
-    style: {
-      color: 'var(--col-schedule-text)',
-      borderRight: '2px solid var(--border-card)',
-      background: 'var(--thead-col-schedule)'
-    },
-    onClick: () => requestSort('specEnd')
-  }, /*#__PURE__*/React.createElement("div", {
-    className: "flex items-center justify-center"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "leading-tight"
-  }, "1_EMS", /*#__PURE__*/React.createElement("br", null), "\u898F\u683C\u78BA\u8A8D"), " ", /*#__PURE__*/React.createElement("span", {
-    className: "ml-1"
-  }, /*#__PURE__*/React.createElement(SortIcon, {
-    active: sortConfig.key === 'specEnd',
-    dir: sortConfig.direction
-  })))), /*#__PURE__*/React.createElement("th", {
-    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center",
+    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center whitespace-nowrap",
     style: {
       color: 'var(--text-tertiary)',
-      borderRight: '1px solid var(--border-card)',
+      borderRight: compact ? '1px solid var(--border-card)' : '2px solid var(--border-card)',
       background: 'var(--thead-col-msd)',
       width: '50px'
     },
@@ -2627,8 +3445,56 @@ function App() {
   }, /*#__PURE__*/React.createElement(SortIcon, {
     active: sortConfig.key === 'msdOwner',
     dir: sortConfig.direction
+  })))), compact && /*#__PURE__*/React.createElement("th", {
+    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none whitespace-nowrap",
+    style: {
+      color: 'var(--text-tertiary)',
+      borderRight: '2px solid var(--border-card)',
+      width: '104px'
+    },
+    onClick: () => requestSort('stageCode'),
+    title: "StatusID\uFF1A1.EMS\u898F\u683C\u78BA\u8A8D / 2.MSD\u78BA\u8A8D\u4E2D / 3.MSD\u958B\u767C\u4E2D / 4.EMS\u9A57\u6536 / 5.\u7D50\u6848"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center"
+  }, "StatusID ", /*#__PURE__*/React.createElement("span", {
+    className: "ml-1"
+  }, /*#__PURE__*/React.createElement(SortIcon, {
+    active: sortConfig.key === 'stageCode',
+    dir: sortConfig.direction
+  })))), compact ? /*#__PURE__*/React.createElement("th", {
+    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center whitespace-nowrap",
+    style: {
+      color: 'var(--col-schedule-text)',
+      borderRight: '2px solid var(--border-card)',
+      background: 'var(--thead-col-schedule)',
+      width: '126px'
+    },
+    onClick: () => setDuePriority(!duePriority),
+    title: "\u53EA\u986F\u793A StatusID \u5C0D\u61C9\u7684\u90A3\u4E00\u500B\u968E\u6BB5\u65E5\u671F\uFF08\u5DF2\u7D50\u6848\u5247\u986F\u793A\u6700\u5F8C\u6392\u5B9A\u7684\u968E\u6BB5\uFF09\u3002\u9EDE\u4E00\u4E0B\u5207\u63DB\u300C\u5230\u671F\u65E5\u8FD1\u7684\u6392\u4E0A\u9762\u300D"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-center"
+  }, "\u76EE\u524D\u968E\u6BB5\u6642\u7A0B ", /*#__PURE__*/React.createElement("span", {
+    className: "ml-1"
+  }, /*#__PURE__*/React.createElement(SortIcon, {
+    active: duePriority,
+    dir: "asc"
+  })))) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("th", {
+    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center whitespace-nowrap",
+    style: {
+      color: 'var(--col-schedule-text)',
+      borderRight: '1px solid var(--border-card)',
+      background: 'var(--thead-col-schedule)'
+    },
+    onClick: () => requestSort('specEnd')
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-center"
+  }, "1_EMS\u898F\u683C\u78BA\u8A8D ", /*#__PURE__*/React.createElement("span", {
+    className: "ml-1"
+  }, /*#__PURE__*/React.createElement(SortIcon, {
+    active: sortConfig.key === 'specEnd',
+    dir: sortConfig.direction
   })))), /*#__PURE__*/React.createElement("th", {
-    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center",
+    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center whitespace-nowrap",
     style: {
       color: 'var(--col-schedule-text)',
       borderRight: '1px solid var(--border-card)',
@@ -2637,15 +3503,13 @@ function App() {
     onClick: () => requestSort('msdConfirm')
   }, /*#__PURE__*/React.createElement("div", {
     className: "flex items-center justify-center"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "leading-tight"
-  }, "2_MSD", /*#__PURE__*/React.createElement("br", null), "\u78BA\u8A8D\u4E2D"), " ", /*#__PURE__*/React.createElement("span", {
+  }, "2_MSD\u78BA\u8A8D\u4E2D ", /*#__PURE__*/React.createElement("span", {
     className: "ml-1"
   }, /*#__PURE__*/React.createElement(SortIcon, {
     active: sortConfig.key === 'msdConfirm',
     dir: sortConfig.direction
   })))), /*#__PURE__*/React.createElement("th", {
-    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center",
+    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center whitespace-nowrap",
     style: {
       color: 'var(--col-schedule-text)',
       borderRight: '1px solid var(--border-card)',
@@ -2654,15 +3518,13 @@ function App() {
     onClick: () => requestSort('msdEnd')
   }, /*#__PURE__*/React.createElement("div", {
     className: "flex items-center justify-center"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "leading-tight"
-  }, "3_MSD", /*#__PURE__*/React.createElement("br", null), "\u958B\u767C\u4E2D"), " ", /*#__PURE__*/React.createElement("span", {
+  }, "3_MSD\u958B\u767C\u4E2D ", /*#__PURE__*/React.createElement("span", {
     className: "ml-1"
   }, /*#__PURE__*/React.createElement(SortIcon, {
     active: sortConfig.key === 'msdEnd',
     dir: sortConfig.direction
   })))), /*#__PURE__*/React.createElement("th", {
-    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center",
+    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center whitespace-nowrap",
     style: {
       color: 'var(--col-schedule-text)',
       borderRight: '2px solid var(--border-card)',
@@ -2671,35 +3533,61 @@ function App() {
     onClick: () => requestSort('uatEnd')
   }, /*#__PURE__*/React.createElement("div", {
     className: "flex items-center justify-center"
-  }, /*#__PURE__*/React.createElement("span", {
-    className: "leading-tight"
-  }, "4_EMS", /*#__PURE__*/React.createElement("br", null), "\u9A57\u6536"), " ", /*#__PURE__*/React.createElement("span", {
+  }, "4_EMS\u9A57\u6536 ", /*#__PURE__*/React.createElement("span", {
     className: "ml-1"
   }, /*#__PURE__*/React.createElement(SortIcon, {
     active: sortConfig.key === 'uatEnd',
     dir: sortConfig.direction
-  })))), /*#__PURE__*/React.createElement("th", {
-    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center",
+  }))))), compact && /*#__PURE__*/React.createElement("th", {
+    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none whitespace-nowrap",
     style: {
       color: 'var(--text-tertiary)',
-      width: '58px',
+      width: '260px'
+    },
+    onClick: () => requestSort('currentStatus')
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center"
+  }, "\u73FE\u6CC1\u63CF\u8FF0 ", /*#__PURE__*/React.createElement("span", {
+    className: "ml-1"
+  }, /*#__PURE__*/React.createElement(SortIcon, {
+    active: sortConfig.key === 'currentStatus',
+    dir: sortConfig.direction
+  })))), showCol('mpSaving') && /*#__PURE__*/React.createElement("th", {
+    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center whitespace-nowrap",
+    style: {
+      color: 'var(--text-tertiary)',
+      width: '72px',
       borderRight: '1px solid var(--border-card)'
     },
     onClick: () => requestSort('mpSaving')
   }, /*#__PURE__*/React.createElement("div", {
     className: "flex items-center justify-center"
-  }, "MP", /*#__PURE__*/React.createElement("br", null), "Saving ", /*#__PURE__*/React.createElement("span", {
+  }, "MP Saving ", /*#__PURE__*/React.createElement("span", {
     className: "ml-1"
   }, /*#__PURE__*/React.createElement(SortIcon, {
     active: sortConfig.key === 'mpSaving',
     dir: sortConfig.direction
-  })))), /*#__PURE__*/React.createElement("th", {
-    className: "px-2 py-2.5 text-[11px] font-bold text-center",
+  })))), showCol('actions') && /*#__PURE__*/React.createElement("th", {
+    className: "px-2 py-2.5 text-[11px] font-bold text-center cursor-pointer hover:bg-black/5 transition-colors group",
     style: {
       color: 'var(--text-tertiary)',
       width: '56px'
-    }
-  })), showColFilters && /*#__PURE__*/React.createElement("tr", {
+    },
+    onClick: () => setShowColFilters(!showColFilters),
+    title: "\u986F\u793A/\u96B1\u85CF\u9032\u968E\u7BE9\u9078"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center justify-center"
+  }, /*#__PURE__*/React.createElement("svg", {
+    className: `transition-all ${showColFilters ? 'text-indigo-500' : 'opacity-30 group-hover:opacity-100'}`,
+    width: "12",
+    height: "12",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "2"
+  }, /*#__PURE__*/React.createElement("polygon", {
+    points: "22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"
+  }))))), showColFilters && /*#__PURE__*/React.createElement("tr", {
     style: {
       background: 'var(--bg-table)',
       borderBottom: '2px solid var(--border-card)'
@@ -2728,7 +3616,7 @@ function App() {
       ...colFilters,
       nid: e.target.value
     })
-  })), /*#__PURE__*/React.createElement("th", {
+  })), showCol('status') && /*#__PURE__*/React.createElement("th", {
     className: "px-1 py-1",
     style: {
       borderRight: '1px solid var(--border-card)'
@@ -2747,7 +3635,7 @@ function App() {
       ...colFilters,
       status: e.target.value
     })
-  })), /*#__PURE__*/React.createElement("th", {
+  })), !compact && /*#__PURE__*/React.createElement("th", {
     className: "px-1 py-1",
     style: {
       borderRight: '1px solid var(--border-card)'
@@ -2766,7 +3654,7 @@ function App() {
       ...colFilters,
       stageCode: e.target.value
     })
-  })), /*#__PURE__*/React.createElement("th", {
+  })), showCol('regDate') && /*#__PURE__*/React.createElement("th", {
     className: "px-1 py-1",
     style: {
       borderRight: '1px solid var(--border-card)'
@@ -2807,7 +3695,7 @@ function App() {
   })), /*#__PURE__*/React.createElement("th", {
     className: "px-1 py-1",
     style: {
-      borderRight: '2px solid var(--border-card)'
+      borderRight: showCol('notesLink') ? '1px solid var(--border-card)' : '2px solid var(--border-card)'
     }
   }, /*#__PURE__*/React.createElement("input", {
     type: "text",
@@ -2823,7 +3711,12 @@ function App() {
       ...colFilters,
       subCat: e.target.value
     })
-  })), /*#__PURE__*/React.createElement("th", {
+  })), showCol('notesLink') && /*#__PURE__*/React.createElement("th", {
+    className: "px-1 py-1",
+    style: {
+      borderRight: '2px solid var(--border-card)'
+    }
+  }), /*#__PURE__*/React.createElement("th", {
     className: "px-1 py-1",
     style: {
       borderRight: '1px solid var(--border-card)',
@@ -2846,27 +3739,7 @@ function App() {
   })), /*#__PURE__*/React.createElement("th", {
     className: "px-1 py-1",
     style: {
-      borderRight: '2px solid var(--border-card)',
-      background: 'var(--thead-schedule)'
-    }
-  }, /*#__PURE__*/React.createElement("input", {
-    type: "text",
-    className: "w-full px-1.5 py-1 text-[10px] rounded focus:outline-none",
-    style: {
-      background: 'var(--bg-input)',
-      border: '1px solid var(--border-card)',
-      color: 'var(--text-primary)'
-    },
-    placeholder: "\u7BE9\u9078",
-    value: colFilters.specEnd || '',
-    onChange: e => setColFilters({
-      ...colFilters,
-      specEnd: e.target.value
-    })
-  })), /*#__PURE__*/React.createElement("th", {
-    className: "px-1 py-1",
-    style: {
-      borderRight: '1px solid var(--border-card)',
+      borderRight: compact ? '1px solid var(--border-card)' : '2px solid var(--border-card)',
       background: 'var(--col-msd-bg)'
     }
   }, /*#__PURE__*/React.createElement("input", {
@@ -2882,6 +3755,65 @@ function App() {
     onChange: e => setColFilters({
       ...colFilters,
       msdOwner: e.target.value
+    })
+  })), compact && /*#__PURE__*/React.createElement("th", {
+    className: "px-1 py-1",
+    style: {
+      borderRight: '2px solid var(--border-card)'
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "text",
+    className: "w-full px-1.5 py-1 text-[10px] rounded focus:outline-none",
+    style: {
+      background: 'var(--bg-input)',
+      border: '1px solid var(--border-card)',
+      color: 'var(--text-primary)'
+    },
+    placeholder: "1-5 \u6216\u540D\u7A31",
+    value: colFilters.stageCode || '',
+    onChange: e => setColFilters({
+      ...colFilters,
+      stageCode: e.target.value
+    })
+  })), compact ? /*#__PURE__*/React.createElement("th", {
+    className: "px-1 py-1",
+    style: {
+      borderRight: '2px solid var(--border-card)',
+      background: 'var(--thead-schedule)'
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "text",
+    className: "w-full px-1.5 py-1 text-[10px] rounded focus:outline-none",
+    style: {
+      background: 'var(--bg-input)',
+      border: '1px solid var(--border-card)',
+      color: 'var(--text-primary)'
+    },
+    placeholder: "YYYY-MM-DD",
+    value: colFilters.dueDate || '',
+    onChange: e => setColFilters({
+      ...colFilters,
+      dueDate: e.target.value
+    })
+  })) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("th", {
+    className: "px-1 py-1",
+    style: {
+      borderRight: '1px solid var(--border-card)',
+      background: 'var(--thead-schedule)'
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "text",
+    className: "w-full px-1.5 py-1 text-[10px] rounded focus:outline-none",
+    style: {
+      background: 'var(--bg-input)',
+      border: '1px solid var(--border-card)',
+      color: 'var(--text-primary)'
+    },
+    placeholder: "\u7BE9\u9078",
+    value: colFilters.specEnd || '',
+    onChange: e => setColFilters({
+      ...colFilters,
+      specEnd: e.target.value
     })
   })), /*#__PURE__*/React.createElement("th", {
     className: "px-1 py-1",
@@ -2943,7 +3875,23 @@ function App() {
       ...colFilters,
       uatEnd: e.target.value
     })
-  })), /*#__PURE__*/React.createElement("th", {
+  }))), compact && /*#__PURE__*/React.createElement("th", {
+    className: "px-1 py-1"
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "text",
+    className: "w-full px-1.5 py-1 text-[10px] rounded focus:outline-none",
+    style: {
+      background: 'var(--bg-input)',
+      border: '1px solid var(--border-card)',
+      color: 'var(--text-primary)'
+    },
+    placeholder: "\u7BE9\u9078\u73FE\u6CC1\u63CF\u8FF0",
+    value: colFilters.currentStatus || '',
+    onChange: e => setColFilters({
+      ...colFilters,
+      currentStatus: e.target.value
+    })
+  })), showCol('mpSaving') && /*#__PURE__*/React.createElement("th", {
     className: "px-1 py-1",
     style: {
       borderRight: '1px solid var(--border-card)'
@@ -2962,16 +3910,16 @@ function App() {
       ...colFilters,
       mpSaving: e.target.value
     })
-  })), /*#__PURE__*/React.createElement("th", {
+  })), showCol('actions') && /*#__PURE__*/React.createElement("th", {
     className: "px-1 py-1"
   }))), /*#__PURE__*/React.createElement("tbody", null, isLoading ? /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
-    colSpan: "15",
+    colSpan: colCount,
     className: "px-4 py-12 text-center text-sm",
     style: {
       color: 'var(--text-muted)'
     }
   }, "\u8CC7\u6599\u8F09\u5165\u4E2D\u2026")) : loadError ? /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
-    colSpan: "15",
+    colSpan: colCount,
     className: "px-4 py-12 text-center text-sm"
   }, /*#__PURE__*/React.createElement("div", {
     className: "text-red-500 font-bold mb-2"
@@ -2979,7 +3927,7 @@ function App() {
     onClick: fetchReqs,
     className: "px-3 py-1.5 rounded-lg text-[11px] font-bold bg-indigo-500 text-white hover:bg-indigo-600 transition-colors"
   }, "\u91CD\u65B0\u8F09\u5165"))) : sortedData.length === 0 ? /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("td", {
-    colSpan: "15",
+    colSpan: colCount,
     className: "px-4 py-12 text-center text-sm",
     style: {
       color: 'var(--text-muted)'
@@ -2996,7 +3944,10 @@ function App() {
     // ⚠️ init 是首次填寫，不算異動 —— 算進去的話每一筆都會冤枉地掛上 ⚠1
     const changeOf = ph => rowHist.filter(h => h.phase === ph && h.changeType !== 'init').length;
     const histCount = rowHist.filter(h => h.changeType !== 'init').length;
-    const hasHist = rowHist.length > 0;
+    // 空的首次填寫不進畫面（見 isMeaningfulEntry）。
+    // 全部都被濾掉時要落到「無變更紀錄」，所以 hasHist 看的是過濾後的結果
+    const shownHist = rowHist.filter(isMeaningfulEntry);
+    const hasHist = shownHist.length > 0;
 
     // 各階段的逾期／即將到期狀態，整列取最嚴重的那個當左側色條。
     // Spec 一旦被 MSD 確認就算走完，不再標逾期。
@@ -3008,14 +3959,75 @@ function App() {
     const msdAlert = getPhaseAlert(item.msd?.end, isDone || stageNum >= 4);
     const uatAlert = getPhaseAlert(item.uat?.end, isDone || stageNum >= 5);
     const rowAlert = pickRowAlert(specAlert, msdAlert, uatAlert);
+    // 整列最左的風險色條。No 欄 2026-08-19 起永遠是第一欄，
+    // 色條就固定掛在它上面，不必再跟著模式換位置
+    const stripe = {
+      borderLeft: `3px solid ${rowAlert ? rowAlert.color : 'transparent'}`
+    };
 
     // 稽核表已經明確存了異動前後的值，不必再像舊版那樣
-    // 用「下一筆的原日期」把新日期反推回來
-    const timeline = rowHist;
-    const stBg = dark ? st.darkBg : st.lightBg;
+    // 用「下一筆的原日期」把新日期反推回來。
+    // 真正的異動與「首次填寫」分開呈現：這個面板叫「時程變更軌跡」，
+    // 主管要看的是「改了什麼」，初始值只是對照用的背景資料，所以沉到下面
+    const changeEntries = shownHist.filter(h => h.changeType !== 'init');
+    const initEntries = shownHist.filter(h => h.changeType === 'init');
+    // 四筆 init 通常是同一次匯入寫進去的，時間與來源完全一樣 ——
+    // 那就抽到區塊標題上講一次，不必每行重複。真的不一致時退回逐行顯示
+    const initStamps = [...new Set(initEntries.map(h => `${h.changedAt}${h.changedBy ? ` · ${h.changedBy}` : ''}${h.changedBySource === 'simulated' ? '（模擬）' : ''}`))];
+    const initStamp = initStamps.length === 1 ? initStamps[0] : null;
     // 已結案的列改用淡底色標示，不再整列 opacity:0.5 —— 那會連文字
     // 一起變淡，對比度掉到不易閱讀
-    const rowBg = isExp ? 'var(--bg-table-expanded)' : isDone ? 'var(--bg-row-done)' : 'transparent';
+    // 投影模式加斑馬紋：投出來的對比比螢幕低得多，
+    // 一列橫掃到最右邊很容易跳到別列去。只在投影模式加 ——
+    // 桌機上這條紋會跟「Done 淡底色」互相干擾
+    const rowBg = isExp ? 'var(--bg-table-expanded)' : isDone ? 'var(--bg-row-done)' : present && idx % 2 === 1 ? 'var(--bg-row-zebra)' : 'transparent';
+
+    // StatusID 欄。一般模式在 Status 右邊、精簡模式在 MSD 右邊，
+    // 內容完全一樣，所以只寫一份在下面插兩次（見資料列裡的兩個插入點）
+    const stageIdCell = /*#__PURE__*/React.createElement("td", {
+      className: "px-2 py-2.5",
+      style: {
+        borderRight: compact ? '2px solid var(--border-card)' : '1px solid var(--border-table)'
+      }
+    }, (() => {
+      // B4: Done 列若沒有 stageCode，補顯示 5（結案）
+      const displayCode = stageCode || (isDone ? '5' : '');
+      const displayStage = STAGE_CODES[displayCode];
+      if (!displayCode) return /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: 'var(--text-muted)'
+        }
+      }, "-");
+      // D：原本整顆藥丸都染成階段色，五個階段五種顏色，
+      // 加上 Status 藥丸與逾期紅，一列最多同時出現五種色彩，
+      // 紅色就不再顯眼了。改成中性底 + 一顆階段色圓點：
+      // 階段身分還看得出來，但彩度讓給真正的異常
+      if (displayStage) return /*#__PURE__*/React.createElement("span", {
+        className: "inline-flex items-center gap-1.5 px-1.5 py-0.5 rounded text-[11px] font-bold whitespace-nowrap",
+        style: {
+          color: 'var(--text-secondary)',
+          background: 'var(--bg-input)',
+          border: '1px solid var(--bg-input-border)'
+        },
+        title: `StatusID ${displayStage.label}${!stageCode && isDone ? ' (由 Done 狀態推斷)' : ''}`
+      }, /*#__PURE__*/React.createElement("span", {
+        className: "w-1.5 h-1.5 rounded-full flex-shrink-0",
+        style: {
+          background: displayStage.color
+        }
+      }), /*#__PURE__*/React.createElement("span", {
+        className: "font-black"
+      }, displayCode), displayStage.short);
+      return /*#__PURE__*/React.createElement("span", {
+        className: "inline-flex items-center justify-center w-5 h-5 rounded text-[11px] font-black cursor-help",
+        style: {
+          color: 'var(--tone-alert)',
+          background: 'var(--tone-alert-bg)',
+          border: '1px solid var(--tone-alert)'
+        },
+        title: `StatusID「${displayCode}」超出 1~5 的定義，請修正這筆資料`
+      }, displayCode);
+    })());
     return /*#__PURE__*/React.createElement(Fragment, {
       key: item.id || item.nid || idx
     }, /*#__PURE__*/React.createElement("tr", {
@@ -3032,12 +4044,71 @@ function App() {
       },
       onClick: () => toggleRow(item.id)
     }, /*#__PURE__*/React.createElement("td", {
-      className: "px-2 py-2.5 text-center",
+      className: "px-2 py-2.5 text-xs font-bold tabular-nums",
       style: {
+        color: 'var(--text-muted)',
         borderRight: '1px solid var(--border-table)',
-        borderLeft: `3px solid ${rowAlert ? rowAlert.color : 'transparent'}`
+        ...stripe
       },
       title: rowAlert ? `${rowAlert.label}` : ''
+    }, idx + 1), /*#__PURE__*/React.createElement("td", {
+      className: "px-2 py-2.5 text-sm font-black",
+      style: {
+        color: 'var(--text-primary)',
+        borderRight: '1px solid var(--border-table)'
+      }
+    }, item.nid, /*#__PURE__*/React.createElement(AlertBadges, {
+      delay: item.delayCount || 0,
+      rollback: item.rollbackCount || 0
+    })), showCol('status') && /*#__PURE__*/React.createElement("td", {
+      className: "px-2 py-2.5",
+      style: {
+        borderRight: '1px solid var(--border-table)'
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "inline-flex items-center gap-1.5 text-[11px] font-bold whitespace-nowrap",
+      style: {
+        color: 'var(--text-secondary)'
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "w-1.5 h-1.5 rounded-full flex-shrink-0",
+      style: {
+        background: st.color
+      }
+    }), st.label)), !compact && stageIdCell, showCol('regDate') && /*#__PURE__*/React.createElement("td", {
+      className: "px-2 py-2.5 text-xs font-bold whitespace-nowrap",
+      style: {
+        color: 'var(--text-secondary)',
+        borderRight: '1px solid var(--border-table)'
+      },
+      title: item.createdAt ? `建立於 ${item.createdAt}` : ''
+    }, fmtYmd(item.regDate) || '-'), /*#__PURE__*/React.createElement("td", {
+      className: "px-2 py-2.5 align-top",
+      style: {
+        borderRight: '1px solid var(--border-table)'
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "text-xs font-bold leading-snug break-words",
+      style: {
+        color: 'var(--text-primary)',
+        overflowWrap: 'anywhere'
+      }
+    }, item.mainCat)), /*#__PURE__*/React.createElement("td", {
+      className: "px-2 py-2.5 align-top",
+      style: {
+        borderRight: showCol('notesLink') ? '1px solid var(--border-table)' : '2px solid var(--border-card)'
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "text-xs font-medium leading-snug break-words",
+      style: {
+        color: 'var(--text-tertiary)',
+        overflowWrap: 'anywhere'
+      }
+    }, item.subCat)), showCol('notesLink') && /*#__PURE__*/React.createElement("td", {
+      className: "px-2 py-2.5 text-center",
+      style: {
+        borderRight: '2px solid var(--border-card)'
+      }
     }, item.notesLink ? isLinkVal(item.notesLink) ? /*#__PURE__*/React.createElement("a", {
       href: item.notesLink.trim(),
       target: "_blank",
@@ -3090,113 +4161,32 @@ function App() {
         color: 'var(--text-muted)'
       }
     }, "-")), /*#__PURE__*/React.createElement("td", {
-      className: "px-2 py-2.5 text-sm font-black",
-      style: {
-        color: 'var(--text-primary)',
-        borderRight: '1px solid var(--border-table)'
-      }
-    }, item.nid, /*#__PURE__*/React.createElement(AlertBadges, {
-      delay: item.delayCount || 0,
-      rollback: item.rollbackCount || 0
-    })), /*#__PURE__*/React.createElement("td", {
-      className: "px-2 py-2.5",
-      style: {
-        borderRight: '1px solid var(--border-table)'
-      }
-    }, /*#__PURE__*/React.createElement("span", {
-      className: "inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold whitespace-nowrap",
-      style: {
-        background: stBg,
-        color: st.color,
-        border: `1px solid ${st.border}`
-      }
-    }, st.label)), /*#__PURE__*/React.createElement("td", {
-      className: "px-2 py-2.5",
-      style: {
-        borderRight: '1px solid var(--border-table)'
-      }
-    }, (() => {
-      // B4: Done 列若沒有 stageCode，補顯示 5（結案）
-      const displayCode = stageCode || (isDone ? '5' : '');
-      const displayStage = STAGE_CODES[displayCode];
-      if (!displayCode) return /*#__PURE__*/React.createElement("span", {
-        style: {
-          color: 'var(--text-muted)'
-        }
-      }, "-");
-      if (displayStage) return /*#__PURE__*/React.createElement("span", {
-        className: "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-bold whitespace-nowrap",
-        style: {
-          color: displayStage.color,
-          background: `${displayStage.color}1a`,
-          border: `1px solid ${displayStage.color}33`
-        },
-        title: `StatusID ${displayStage.label}${!stageCode && isDone ? ' (由 Done 狀態推斷)' : ''}`
-      }, /*#__PURE__*/React.createElement("span", {
-        className: "font-black"
-      }, displayCode), displayStage.short);
-      return /*#__PURE__*/React.createElement("span", {
-        className: "inline-flex items-center justify-center w-5 h-5 rounded text-[11px] font-black cursor-help",
-        style: {
-          color: 'var(--tone-alert)',
-          background: 'var(--tone-alert-bg)',
-          border: '1px solid var(--tone-alert)'
-        },
-        title: `StatusID「${displayCode}」超出 1~5 的定義，請修正這筆資料`
-      }, displayCode);
-    })()), /*#__PURE__*/React.createElement("td", {
-      className: "px-2 py-2.5 text-xs font-bold whitespace-nowrap",
-      style: {
-        color: 'var(--text-secondary)',
-        borderRight: '1px solid var(--border-table)'
-      },
-      title: item.createdAt ? `建立於 ${item.createdAt}` : ''
-    }, fmtYmd(item.regDate) || '-'), /*#__PURE__*/React.createElement("td", {
-      className: "px-2 py-2.5",
-      style: {
-        borderRight: '1px solid var(--border-table)'
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      className: "text-xs font-bold truncate",
-      style: {
-        color: 'var(--text-primary)',
-        maxWidth: '140px'
-      },
-      title: item.mainCat
-    }, item.mainCat)), /*#__PURE__*/React.createElement("td", {
-      className: "px-2 py-2.5",
-      style: {
-        borderRight: '2px solid var(--border-card)'
-      }
-    }, /*#__PURE__*/React.createElement("div", {
-      className: "text-xs font-medium truncate",
-      style: {
-        color: 'var(--text-tertiary)',
-        maxWidth: '170px'
-      },
-      title: item.subCat
-    }, item.subCat)), /*#__PURE__*/React.createElement("td", {
       className: "px-2 py-2.5 text-center text-xs font-bold",
       style: {
         color: 'var(--text-secondary)',
         borderRight: '1px solid var(--border-table)',
         background: 'var(--col-ems-bg)'
       }
-    }, item.emsOwner), scheduleCell({
+    }, item.emsOwner), /*#__PURE__*/React.createElement("td", {
+      className: "px-2 py-2.5 text-center text-xs font-bold",
+      style: {
+        color: 'var(--text-secondary)',
+        borderRight: compact ? '1px solid var(--border-table)' : '2px solid var(--border-card)',
+        background: 'var(--col-msd-bg)'
+      }
+    }, item.msdOwner), compact && stageIdCell, compact ? currentStageCell({
+      item,
+      isDone,
+      changeOf,
+      br: '2px solid var(--border-card)'
+    }) : /*#__PURE__*/React.createElement(React.Fragment, null, scheduleCell({
       val: item.spec?.end,
       alert: specAlert,
       changes: changeOf('spec'),
       label: '1_EMS規格確認',
-      br: '2px solid var(--border-card)',
+      br: '1px solid var(--border-table)',
       actual: item.spec?.actualEnd
-    }), /*#__PURE__*/React.createElement("td", {
-      className: "px-2 py-2.5 text-center text-xs font-bold",
-      style: {
-        color: 'var(--text-secondary)',
-        borderRight: '1px solid var(--border-table)',
-        background: 'var(--col-msd-bg)'
-      }
-    }, item.msdOwner), scheduleCell({
+    }), scheduleCell({
       val: item.msd?.confirm,
       alert: null,
       changes: changeOf('confirm'),
@@ -3217,18 +4207,34 @@ function App() {
       label: '4_EMS驗收',
       br: '2px solid var(--border-card)',
       actual: item.uat?.actualEnd
-    }), /*#__PURE__*/React.createElement("td", {
+    })), compact && /*#__PURE__*/React.createElement("td", {
+      className: "px-2 py-2.5 align-top"
+    }, item.currentStatus ? /*#__PURE__*/React.createElement("div", {
+      className: "text-[11px] leading-snug whitespace-pre-wrap break-words",
+      style: {
+        color: 'var(--text-tertiary)',
+        overflowWrap: 'anywhere'
+      }
+    }, item.currentStatus) : /*#__PURE__*/React.createElement("span", {
+      className: "text-xs",
+      style: {
+        color: 'var(--text-muted)'
+      }
+    }, "-")), showCol('mpSaving') && /*#__PURE__*/React.createElement("td", {
       className: "px-2 py-2.5 text-center",
       style: {
         borderRight: '1px solid var(--border-card)'
       }
     }, item.mpSaving ? /*#__PURE__*/React.createElement("span", {
-      className: "inline-flex items-center justify-center px-2 py-0.5 rounded-full text-xs font-black bg-emerald-500/10 text-emerald-500 border border-emerald-500/20 whitespace-nowrap"
+      className: "text-xs font-bold tabular-nums whitespace-nowrap",
+      style: {
+        color: 'var(--text-secondary)'
+      }
     }, item.mpSaving) : /*#__PURE__*/React.createElement("span", {
       style: {
         color: 'var(--text-muted)'
       }
-    }, "-")), /*#__PURE__*/React.createElement("td", {
+    }, "-")), showCol('actions') && /*#__PURE__*/React.createElement("td", {
       className: "px-2 py-2.5 text-center whitespace-nowrap"
     }, /*#__PURE__*/React.createElement("button", {
       onClick: e => {
@@ -3281,7 +4287,7 @@ function App() {
         background: 'var(--bg-table-expanded)'
       }
     }, /*#__PURE__*/React.createElement("td", {
-      colSpan: "15",
+      colSpan: colCount,
       className: "p-0"
     }, /*#__PURE__*/React.createElement("div", {
       className: "p-5 grid grid-cols-1 lg:grid-cols-3 gap-4",
@@ -3455,7 +4461,7 @@ function App() {
       }
     }, "\u7121\u8B8A\u66F4\u7D00\u9304") : /*#__PURE__*/React.createElement("div", {
       className: "space-y-3 max-h-56 overflow-y-auto scrollbar-thin pr-1"
-    }, timeline.map((h, i) => {
+    }, changeEntries.map((h, i) => {
       const ph = PHASES[h.phase] || {};
       const clr = ph.color || 'var(--text-muted)';
       const ct = CHANGE_TYPES[h.changeType] || CHANGE_TYPES['日期異動'];
@@ -3550,7 +4556,57 @@ function App() {
           color: 'var(--text-tertiary)'
         }
       }, "\u8AAA\u660E\uFF1A", h.note)));
-    }))), /*#__PURE__*/React.createElement("div", {
+    }), initEntries.length > 0 && /*#__PURE__*/React.createElement("div", {
+      className: "pt-2",
+      style: {
+        borderTop: changeEntries.length ? '1px solid var(--border-card)' : 'none'
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "flex items-center gap-1.5 flex-wrap text-[11px] mb-1"
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "px-1 py-0.5 rounded font-bold",
+      style: {
+        color: CHANGE_TYPES['init'].color,
+        background: CHANGE_TYPES['init'].bg
+      }
+    }, "\u521D\u59CB\u6642\u7A0B"), initStamp && /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: 'var(--text-muted)'
+      }
+    }, initStamp)), initEntries.map((h, i) => {
+      const ph = PHASES[h.phase] || {};
+      const clr = ph.color || 'var(--text-muted)';
+      return /*#__PURE__*/React.createElement("div", {
+        key: h.id || i,
+        className: "flex items-start gap-2 text-[11px] mt-1"
+      }, /*#__PURE__*/React.createElement("div", {
+        className: "w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0",
+        style: {
+          background: clr
+        }
+      }), /*#__PURE__*/React.createElement("div", {
+        className: "min-w-0 flex-1 flex items-baseline gap-x-2 gap-y-0.5 flex-wrap"
+      }, /*#__PURE__*/React.createElement("span", {
+        className: "font-bold",
+        style: {
+          color: clr
+        }
+      }, ph.timelineLabel || h.phase), initValues(h).map(([f, v]) => /*#__PURE__*/React.createElement("span", {
+        key: f,
+        style: {
+          color: 'var(--text-muted)'
+        }
+      }, PHASE_FIELD_LABEL[f], ' ', /*#__PURE__*/React.createElement("span", {
+        className: "font-bold tabular-nums",
+        style: {
+          color: 'var(--text-secondary)'
+        }
+      }, v))), !initStamp && /*#__PURE__*/React.createElement("span", {
+        style: {
+          color: 'var(--text-muted)'
+        }
+      }, h.changedAt)));
+    })))), /*#__PURE__*/React.createElement("div", {
       className: "p-4 rounded-xl",
       style: {
         background: 'var(--bg-detail-card)',
@@ -3572,7 +4628,7 @@ function App() {
         color: 'var(--text-muted)'
       }
     }, "\u7121\u73FE\u6CC1\u63CF\u8FF0"))))));
-  })))))), editingData && /*#__PURE__*/React.createElement("div", {
+  }))))), editingData && /*#__PURE__*/React.createElement("div", {
     className: "fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
   }, /*#__PURE__*/React.createElement("div", {
     className: "rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col",
@@ -3589,7 +4645,7 @@ function App() {
     className: "text-lg font-bold"
   }, editingData.isNew ? '新增資料列' : '編輯資料列'), /*#__PURE__*/React.createElement("button", {
     onClick: () => setEditingData(null),
-    className: "text-gray-400 hover:text-gray-600 transition-colors",
+    className: "icon-btn transition-colors",
     title: "\u95DC\u9589"
   }, /*#__PURE__*/React.createElement("svg", {
     width: "20",
@@ -3638,10 +4694,11 @@ function App() {
     }
   }, "\u8A3B\u518A\u65E5\u671F (RegDate)"), /*#__PURE__*/React.createElement("input", {
     type: "text",
-    className: "w-full px-3 py-2 rounded-lg text-sm border outline-none cursor-not-allowed text-slate-500 dark:text-slate-400",
+    className: "w-full px-3 py-2 rounded-lg text-sm border outline-none cursor-not-allowed",
     style: {
       background: 'var(--bg-header-border)',
-      borderColor: 'var(--border-table)'
+      borderColor: 'var(--border-table)',
+      color: 'var(--text-secondary)'
     },
     value: fmtYmd(editingData.regDate),
     readOnly: true,
@@ -3842,7 +4899,7 @@ function App() {
   }, "1_EMS\u898F\u683C\u78BA\u8A8D"), hasAnyField('spec') && !unlockedSections.spec && /*#__PURE__*/React.createElement("button", {
     type: "button",
     onClick: () => handleUnlock('spec'),
-    className: "text-gray-400 hover:text-amber-500 transition-colors",
+    className: "icon-btn hover:text-amber-500 transition-colors",
     title: "\u89E3\u9396\u4EE5\u4FEE\u6539\u65E5\u671F"
   }, /*#__PURE__*/React.createElement("svg", {
     width: "14",
@@ -3982,7 +5039,7 @@ function App() {
   }, "2_MSD\u78BA\u8A8D\u4E2D"), hasAnyField('confirm') && !unlockedSections.confirm && /*#__PURE__*/React.createElement("button", {
     type: "button",
     onClick: () => handleUnlock('confirm'),
-    className: "text-gray-400 hover:text-violet-500 transition-colors",
+    className: "icon-btn hover:text-violet-500 transition-colors",
     title: "\u89E3\u9396\u4EE5\u4FEE\u6539\u65E5\u671F"
   }, /*#__PURE__*/React.createElement("svg", {
     width: "14",
@@ -4049,7 +5106,7 @@ function App() {
   }, "3_MSD\u958B\u767C\u4E2D"), hasAnyField('msd') && !unlockedSections.msd && /*#__PURE__*/React.createElement("button", {
     type: "button",
     onClick: () => handleUnlock('msd'),
-    className: "text-gray-400 hover:text-blue-500 transition-colors",
+    className: "icon-btn hover:text-blue-500 transition-colors",
     title: "\u89E3\u9396\u4EE5\u4FEE\u6539\u65E5\u671F"
   }, /*#__PURE__*/React.createElement("svg", {
     width: "14",
@@ -4144,7 +5201,7 @@ function App() {
   }, "4_EMS\u9A57\u6536"), hasAnyField('uat') && !unlockedSections.uat && /*#__PURE__*/React.createElement("button", {
     type: "button",
     onClick: () => handleUnlock('uat'),
-    className: "text-gray-400 hover:text-pink-500 transition-colors",
+    className: "icon-btn hover:text-pink-500 transition-colors",
     title: "\u89E3\u9396\u4EE5\u4FEE\u6539\u65E5\u671F"
   }, /*#__PURE__*/React.createElement("svg", {
     width: "14",

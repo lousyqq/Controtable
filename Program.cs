@@ -26,7 +26,32 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
-app.UseDefaultFiles();
+// ─── 子應用程式路徑 (IIS Virtual Application) 支援 ───
+// 掛在 IIS 子路徑（例如 http://host/Controltable/）時，ANCM 會把 /Controltable 放進
+// Request.PathBase。後端路由本來就是相對 PathBase 所以不受影響，但 index.html 裡
+// 寫死的 "/app.css"、前端 fetch 的 "/api/..." 會被瀏覽器解析到「站台根目錄」而 404。
+// 解法：index.html 不走靜態檔，改由這段中介軟體讀檔後把 __BASE__ 換成實際的 PathBase
+// （根目錄時就是 "/"），前端再以 window.APP_BASE 組出所有 API 網址。
+// 這樣同一份檔案在 dotnet run、IIS 根站台、IIS 子應用程式底下都不用改任何一行。
+app.Use(async (ctx, next) =>
+{
+    var path = ctx.Request.Path.Value ?? "";
+    if (path == "/" || path.Equals("/index.html", StringComparison.OrdinalIgnoreCase))
+    {
+        var file = Path.Combine(app.Environment.WebRootPath, "index.html");
+        if (File.Exists(file))
+        {
+            var pb = ctx.Request.PathBase.HasValue ? ctx.Request.PathBase.Value!.TrimEnd('/') + "/" : "/";
+            var html = (await File.ReadAllTextAsync(file)).Replace("__BASE__", pb);
+            ctx.Response.ContentType = "text/html; charset=utf-8";
+            // index.html 本身永遠不快取，否則舊的 app.js?v= 版本號會被瀏覽器留住
+            ctx.Response.Headers.CacheControl = "no-cache, no-store, must-revalidate";
+            await ctx.Response.WriteAsync(html);
+            return;
+        }
+    }
+    await next();
+});
 app.UseStaticFiles();
 app.UseCors("AllowAll");
 app.UseAuthentication();
