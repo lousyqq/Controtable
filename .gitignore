@@ -1,0 +1,35 @@
+# ─── 建置產物（.NET）───
+# ⚠️ bin/ 與 obj/ 每次 dotnet build 都會重寫，內容包含 Controltable.dll / .exe 這種
+# 二進位檔 —— 追蹤它們的話每一次建置都會在 git status 冒出幾十個變更，
+# 真正改到的原始碼反而被淹掉。
+bin/
+obj/
+
+# ─── Visual Studio 的個人設定與快取 ───
+# .suo / .vsidx 是每個人自己機器上的視窗配置與檔案索引，不屬於專案內容
+.vs/
+*.user
+*.suo
+
+# ─── npm ───
+# node_modules 由 package-lock.json 完整還原（npm ci），不進版控。
+# ⚠️ package.json 與 package-lock.json **要**追蹤，不可一起忽略
+node_modules/
+
+# ─── 前端建置產物 ───
+# ⚠️ 這兩個檔案**刻意保持追蹤**，不要加到這裡：
+#   wwwroot/app.js  ← ClientApp/app.jsx 經 Babel 編譯的結果
+#   wwwroot/app.css ← ClientApp/input.css 經 Tailwind 編譯的結果
+# 本專案沒有 CI／發佈流程，部署就是直接把資料夾複製上 IIS ——
+# 這兩個檔案沒進版控的話，部署的機器上就沒有東西可以給瀏覽器。
+
+# ─── 開發機專屬設定 ───
+# 連線字串等等。appsettings.json 本身要追蹤，只忽略個人覆寫檔
+appsettings.*.local.json
+
+# ─── 暫存與作業系統產生的檔案 ───
+# ._xxx 是在 macOS 上開過的 Office 檔留下的 AppleDouble 資源分支
+._*
+*.tmp
+Thumbs.db
+.DS_Store

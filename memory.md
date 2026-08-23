@@ -1,6 +1,6 @@
 # memory.md — Controltable 專案進度記憶
 
-最後更新：2026-08-20（版面優化：控制項尺寸統一、頁籤改分段控制列、Status 欄改色點）
+最後更新：2026-08-23（**第 25 批：第五輪邏輯總體檢，8 項全部修完**，無 SQL 腳本）
 
 > **欄位定義的權威來源是 `FIELD_SPEC.md`**（使用者親自定義的 22 個 Excel 欄位、
 > 資料列顯示順序、新增／編輯／刪除三種情境）。動到欄位或版面前先讀那份。
@@ -34,7 +34,7 @@ EMS 也可以先壓預設的驗收時間，或等開發完再填。
 | 日期欄位 | 用累加腳本遷移成 `DATE` 型別 |
 | `MsdConfirm` | 拆成 `MsdConfirm DATE` + `MsdConfirmNote NVARCHAR(500)` 兩欄 |
 | 角色權限 (EMS/MSD/主管) | **暫不實作**，之後再說 |
-| `OverallStatus` | **四種**：`Init` / `Ongoing` / `Pending` / `Done`。（2026-08-17 使用者曾說只有三種，隨即更正為要保留 `Pending`） |
+| `OverallStatus` | **三種**：`Init` / `Ongoing` / `Done`。⚠️ `Pending` 於 2026-08-22 依使用者要求**移除**（「暫時不需要此狀態」）。使用者對這欄改過主意兩次（2026-08-17 曾說三種→改回四種→2026-08-22 又拿掉），**不要自作主張加回來**。舊值一律收斂成 `Ongoing` 不是 `Init` |
 | `StatusID` (`StageCode`) | 純數字 `1`~`5`，**不含括號**，且要顯示在資料列上 |
 | 刪除需求 | **軟刪除**。`IsDeleted = 1`，資料庫保留紀錄。已刪除的 NID 可以再被使用 |
 | `NID` 唯一性 | 前後端都檢查，重複時**跳阻擋型視窗**（不是 toast） |
@@ -43,7 +43,8 @@ EMS 也可以先壓預設的驗收時間，或等開發完再填。
 | 資料列不顯示「現況描述」 | 內容常是多行長文，塞進資料列只會被截成「1.因CMS WL…」反而看不出重點。只在明細完整顯示 |
 | `Remark` 是純文字不是網址 | DB 欄位名 `NotesLink` 是早期誤解留下的舊名。**畫面上一律純文字，不可做成 `<a href>`** |
 | ② MSD 確認Spec 沒有備註欄 | 只壓確認日期。DB 的 `MsdConfirmNote` 保留、明細仍顯示既有值，但不提供編輯 |
-| 異動理由的觸發條件 | **只有「日期真的被改掉」才強制**。解鎖但沒動日期、或首次填寫，都不需要理由也不產生軌跡 |
+| ⭐ **Start 不重要，一切以 End 為準** | 2026-08-22 使用者定調：**判斷執行到哪一階段只看 End 有沒有填**；Start 真的沒填就**自動帶成與 End 同一天**（三條寫入路徑都做）；**改 End 才算異動**（要理由、計 ⚠），**改 Start 不算**（只寫 `起日調整` 稽核列）。`1_EMSStart` 因此不再是必填 |
+| 異動理由的觸發條件 | **只有「End 真的被改掉」才強制**（2026-08-22 收斂）。解鎖但沒動 End、只動 Start、或 End 首次填寫，都不需要理由 |
 | `End Date` ≥ `Start Date` | ①③④ 三個區間前後端都擋，同一天允許。② 只有單一日期不受限 |
 | 註冊日期 | 資料列改顯示 `RegDate`（`YYYY/MM/DD`）。`YearMonth` **不刪**，降級為由 `RegDate` 反推的衍生值，只留給 Excel 匯入匯出與趨勢圖分組 |
 | 五階段名稱 | 1.EMS規格確認 / 2.MSD確認中 / 3.MSD開發中 / 4.EMS驗收 / 5.結案。**只改顯示文字，Excel 與 DB 欄名一律不動**（`1_EMSStart`、`2_MSDHistory` 是匯入對應表的 key） |
@@ -52,18 +53,35 @@ EMS 也可以先壓預設的驗收時間，或等開發完再填。
 | 模擬帳號 | 使用者要求要能模擬 Windows 帳號登入。`Auth:AllowSimulation`，開發環境開、正式環境關；模擬寫入的稽核列一定標 `simulated` |
 | 總覽頁 | **保留**。到期預警頁籤移除、統計數字卡搬進明細表，總覽只留圖表分析與人員負載 |
 | 規格回退的清空範圍 | 清空 **≥ 目標階段**的全部日期（含目標階段本身）。計數欄不清，那是既成事實 |
+| 逾期判定（2026-08-23 / 第 23 批） | **只有一份規則 `isPhasePassed()`**：資料列上四格的紅字、與「需關注／逾期篩選／精簡模式的目前階段時程」共用它。`resolveDuePhase()` = 排除走完的階段 → 剩下有日期的裡面取**到期日最早**的那一個。⚠️ 仍**不可**改回「四個日期一起比」（排除走完的階段就是那條禁令的實質）；⚠️ 也**不可**加回「退回最後一個已排定的階段」（那會挑到已走完的階段，做出「沒有紅字卻算一件需關注」） |
 
 ---
 
 ## 待辦（下次接手從這裡開始）
 
-### 🟦 目前環境狀態（2026-08-18 第 17 批結束時）
+### 🟦 目前環境狀態（2026-08-23 實際量測）
+
+| 項目 | 值 |
+|---|---|
+| DB 資料 | `dbo.Controltable` **62 筆**（全部 `IsDeleted=0`，**已無軟刪除的列**——使用者後來重新匯入過）；`dbo.Controltable_History` **222 筆**；三個計數欄總和 **0**（第 23 批測完已完整還原並複驗） |
+| `?v=` | **`20260823044`** |
+| 需關注 | **4 件（逾期 3）**：NID 12 (④ 08-20)、20 (③ 08-28)、61 (① 08-21)、62 (① 08-21)。第 23、24 批兩次動到逾期判定，**新舊規則在這 62 筆上結果都完全相同**，主管看到的數字沒有變（第 25 批沒有動判定邏輯，只補了註解） |
+| 稽核表內容 | 222 筆**全部是 `init`**（`日期異動` 0 筆）—— 所以資料列的 ⚠N 與統計報表「時程異動」本來就該是 0，別當成壞掉 |
+| 伺服器 | `dotnet run` 於 `http://localhost:5146`（`.claude/launch.json` 的 `controltable`，可用 preview_start 啟動） |
+| 連線 | `sqlcmd -S Sariel -d Controltable -U testuser -P test -C -f 65001` |
+
+> ⚠️ **NID 49 又回來了**（重新匯入的關係）：`StageCode=5`、有 `UatEnd` 但 `MsdEnd` 是空的 ——
+> 全表唯一一筆階段跳空的資料。它是「gating 只擋從空白開始填寫」那條規則的活教材，
+> 也是第 22 批兩條新檢查的實測對象，**不要把它當 bug 修掉**。
+
+### 🟦 舊的環境狀態（2026-08-21）
 
 | 項目 | 狀態 |
 |---|---|
-| DB 資料 | `dbo.Controltable` **62 筆**（`IsDeleted=0`）；`dbo.Controltable_History` **222 筆，全部是匯入寫的 `init`**（0 筆真實異動）；三個計數欄與四個 `*ActualEnd` **全部是 0 / NULL** |
-| 已執行腳本 | `01`~`10` 全部已執行（第 14、16、17 批都沒有腳本，`10` 是第 15 批的） |
-| `?v=` | `20260820023` |
+| DB 資料 | `dbo.Controltable` **62 筆**（`IsDeleted=0`；另有 1 筆 `IsDeleted=1` 是使用者 2026-08-22 刪掉的 NID 49）；`dbo.Controltable_History` **227 筆**（224 `init` + 1 `日期異動` + 1 `起日調整` + 1 `手動調整`，**0 筆孤兒**）；三個計數欄與四個 `*ActualEnd` **全部是 0 / NULL**；`dbo.Assignee` **13 筆**（EMS 8 / MSD 5，`EMPO` 全空） |
+| 已執行腳本 | `01`~**`13`** 全部已執行（第 14、16、17、21 批的程式面沒有腳本；`10` 是第 15 批的，`11` 建指派人員主檔、`12` 刪舊的 `dbo.Personnel`、`13` 建 NID 唯一索引） |
+| 索引 | `dbo.Controltable` 只有 PK 與 **`UX_Controltable_NID_Active`**（`UNIQUE (NID) WHERE IsDeleted = 0 AND NID IS NOT NULL`）。`IX_Controltable_Active` 已由 `13` 移除 |
+| `?v=` | `20260822038` |
 | NuGet | 已加 `Microsoft.AspNetCore.Authentication.Negotiate` 9.0.18（使用者已同意） |
 | 伺服器 | `dotnet run` 於 `http://localhost:5146`（launch profile `http`） |
 | 連線 | `sqlcmd -S Sariel -d Controltable -U testuser -P test -C -f 65001` |
@@ -74,9 +92,52 @@ EMS 也可以先壓預設的驗收時間，或等開發完再填。
 2. ~~`NotesLink` 欄 62 筆全空~~ → **已解決**。重新匯入後有 2 筆有連結（來源檔本來就只有 2 筆）
 3. **目前 62 筆沒有任何「階段跳空」的資料**（③④ 有日期但 ② 空的情況為 0）。
    但 gating 的「只擋從空白開始填寫」規則**不可拿掉** —— 匯入的來源 Excel 隨時可能帶進跳空資料
-4. **`Auth:WindowsDomainStripPrefix` 目前是 `UMC`**（沿用 `C:\Gantt` 的設定）。
+4. ~~有 2 筆資料的階段與日期對不起來~~ → **使用者已於 2026-08-22 處理完**：
+   NID 49（`stage=5` 但 ③ 完全沒日期）**軟刪除**（`IsDeleted=1`，DB 仍保留，稽核列 3 筆都是 init）；
+   NID 52 補上 ④ 的開始日。**現在 62 筆全部符合前置規則**（`still_bad=0`）
+5. **`Auth:WindowsDomainStripPrefix` 目前是 `UMC`**（沿用 `C:\Gantt` 的設定）。
    開發機是 `SARIEL\`，程式有 fallback 會剝掉反斜線前的任何網域所以能動；
    **正式部署時要改成實際網域**
+
+### ✅ 第 25 批（第五輪邏輯總體檢）—— **8 項全部完成，無 SQL 腳本**
+
+使用者說「全部 8 項都修」。🟡 四項（`/api/assignees` 靜默失敗、`Status` 讀取側沒 Trim、
+`AssigneeModal` 反模式、`isPhasePassed` 的 ③④ 不對稱＝**只補註解不改行為**）
+＋ 🟢 四項（`handleToggleActive` 靜默、欄位篩選改用 `effStageCode`、`/api/export` 加
+try/catch、gating 註解說反了）。**這一輪一樣沒有 🔴。** 細節與驗證見下方歷史摘要。
+
+### ✅ 第 24 批（第四輪邏輯總體檢）—— **7 項全部完成，無 SQL 腳本**
+
+使用者說「全部 7 項都修」，並選定 Assignee 改名走「回 409，要求改用停用＋新建」。
+🟡 三項（Assignee 改名／改部門把關、稽核表讀取失敗要出聲、bootstrap 半套）
+＋ 🟢 四項（`isPhasePassed` 加 `*ActualEnd`、兩處死碼、兩個 `useEffect` 重訂閱、姓名 trim）。
+**這一輪一樣沒有 🔴。** 細節與驗證見下方歷史摘要。
+
+### ✅ 第 23 批（第三輪邏輯總體檢）—— **8 項全部完成，無 SQL 腳本**
+
+使用者說「全部都修正」。🟡 三項（`Status` 寫入把關／`/done` 的 Done→5 推斷／
+A2 逾期判定統一）＋ 🟢 五項（`init` 分類、列印 colSpan、`changeTypeStyle`、
+`useEffect` 相依、專案衛生）。**這一輪沒有 🔴** —— 第 21、22 批把會弄丟資料的都補完了。
+細節與驗證見下方歷史摘要。
+
+### ✅ 第 22 批（第二輪邏輯總體檢）—— **10 項全部完成，無 SQL 腳本**
+
+🔴 匯入的跨站請求防護、🔴 `/done` 的前置階段與提早完成順序檢查、
+🟡 刪除後重抓稽核表、🟡 軟刪除留稽核（A11）、
+🟢 ORDER BY／StageCode 寫入把關／duplicateNids 死碼／Assignee 硬刪／duePriority 的幽靈開關。
+細節與驗證見下方歷史摘要。
+
+### ✅ 第 21 批（邏輯總體檢）—— **全部完成，含 `13` 腳本已執行**
+
+程式碼與 SQL 腳本都做完了，沒有遺留動作。`13_nid_unique.sql` 於 2026-08-22 執行：
+62 筆 / 62 個相異 NID / 0 筆空值，無重複，`UX_Controltable_NID_Active` 建立成功、
+`IX_Controltable_Active` 已移除，重跑確認 idempotent。
+
+DB 上實測過三條語意（測試包在 `ROLLBACK` 裡）：重複 NID 被擋（**錯誤碼 2601**，
+正是 `IsUniqueViolation()` 捕捉的號碼）／軟刪除不佔用 NID／多筆 `NID IS NULL` 可共存。
+
+⚠️ **刻意不做啟動時的 bootstrap**：有重複資料時建索引會失敗，那會變成 App 起不來。
+沒有這個索引程式仍然能動（`NidExistsAsync()` 照常擋），只是少了併發保護。
 
 ### ✅ 2026-08-18 拍板的 7 批修改計畫 —— **全部完成**
 
@@ -111,6 +172,22 @@ EMS 也可以先壓預設的驗收時間，或等開發完再填。
 
 ### 🔴 待處理
 
+- [x] ~~**第 22 批（2026-08-23）的 10 項**~~ → **全部做完**（🔴 2 + 🟡 2 + 🟢 5，
+      使用者分三次挑；最後一次是「順便做完」）。細節見下方歷史摘要。
+- [ ] **2026-08-22 全面檢視清單剩下的項目**（A8/A3/A1/A11/**A2** 都已完成，其餘待評估）：
+      ~~A2 資料列逾期與「只比目前階段」兩套判定~~ → **第 23 批已完成**，
+      收斂成 `isPhasePassed()` 一支（詳見下方歷史摘要）；
+      只剩 A10 新增視窗沒有註冊日期（`openAdd` 有帶今天當預設，只是不能改）。
+      ~~A4~~ → 已由「Start 不重要，一切以 End 為準」那一批解決；
+      ~~A6 跨階段日期順序~~ / ~~A7 完成／回退會丟掉其他未存欄位~~ →
+      **第 21 批其實都已經做完了**（`PhaseOrderViolations` / `isEditDirty()`），
+      是這份清單一直沒跟著劃掉，第 22 批複查後更正；
+      ~~A11 軟刪除不留稽核~~ → **第 22 批已完成**。
+      （~~A9 Pending 沒有篩選入口~~ → 已隨 `Status` 欄復原自動解掉）
+      **UIUX 的 C1~C7 已於 2026-08-22 做完**（列印樣式、Esc、未存變更提示、展開指示、
+      解鎖鈕文字、空狀態、toast 計時器）；只剩 **C8：把 EMS／MSD／逾期／進度／警示
+      五個下拉收進一顆「篩選 (N)」面板** —— 會犧牲可發現性且動到已寫進 FIELD_SPEC 的
+      工具列規格，要先問過使用者。細節見下方 2026-08-22 的兩則歷史摘要
 - [ ] 確認新結構無誤後，可自行 `DROP TABLE dbo.Controltable_bak_20260816`（遷移前的備份）
 - [x] **9 筆 `StageCode` 空對 Done 的案件 ID 欄顯示 `-`** → **B4 已修正**：
       前端自動對 Done + stageCode 為空的資料列补顯示 `5`（已完成），不再顯示 `-`
@@ -136,13 +213,850 @@ EMS 也可以先壓預設的驗收時間，或等開發完再填。
 
 ### 🟢 專案衛生
 
-- [ ] 根目錄 12 個 `patch_*.js` 一次性腳本 + `code_artifact.tsx` + `dashboard_backup.html` 建議移到 `_archive/`
-- [ ] 專案沒有 git，建議 `git init`
-- [ ] 缺 `系統架構.md`（開發技能要求的核心文件之一）
+- [x] ~~根目錄 12 個 `patch_*.js` + `code_artifact.tsx` + `dashboard_backup.html`~~
+      → 2026-08-23 複查：**這些檔案已經不在了**，這條早就不成立
+- [x] ~~專案沒有 git，建議 `git init`~~ → 複查：**早就有 git 了**（`main` 分支、5 個 commit）
+- [x] ~~缺 `系統架構.md`~~ → **第 23 批已建立**。講的是「東西怎麼組起來、請求怎麼跑」，
+      刻意不重複 `FIELD_SPEC.md`（欄位）／`DB_table.md`（綱要）／`CLAUDE.md`（鐵律）
+- [ ] ⚠️ **`.gitignore` 已於第 23 批建立，但既有的追蹤還沒解除** ——
+      `node_modules/`（**3332 個檔案**）與 `bin/`＋`obj/`＋`.vs/`（117 個）**都還在版控裡**，
+      每次 build 都會在 `git status` 冒出一堆變更。`.gitignore` 只對**未追蹤**的檔案生效，
+      要真的清掉必須執行一次：
+
+      ```
+      git rm -r --cached node_modules bin obj .vs
+      git commit -m "套用 .gitignore：停止追蹤建置產物與 node_modules"
+      ```
+
+      **刻意沒有代為執行** —— 那會一次暫存 3449 個檔案的刪除，是使用者才能決定的動作。
+      工作區的檔案不會被刪，`wwwroot/app.js` 與 `app.css` 也**刻意保持追蹤**
+      （沒有 CI，部署就是複製資料夾，那兩個編譯產物一定要在版控裡）
 
 ---
 
 ## 歷史摘要（已完成，僅存結論）
+
+**2026-08-23 — 第 25 批：第五輪邏輯總體檢（前端 + 後端 + 文件，無 SQL 腳本）**
+
+使用者第五次要求「重新檢查此專案的邏輯是否有不合理須修正的地方」，聽完清單後說
+「全部 8 項都修」。**這一輪一樣沒有 🔴** —— 找到的仍然全是「同一件事兩套規則」與
+「靜默失敗」。清單流程見 auto-memory 的 `review-then-let-user-pick`。
+
+**🟡 1. `GET /api/assignees` 讀取失敗是完全靜默的 —— 新增需求會整個做不下去**
+
+第 24 批立下「查詢端點一律要有 try/catch」時漏了這一支與 `/api/export`，而 `系統架構.md`
+還寫著「`/api/history` 是唯一沒有的查詢端點」—— **那句話當時就不成立**。
+前端 `fetchAssignees()` 更安靜：`if (res.ok) { … }`，非 200 時**連 `console.error` 都沒有**
+（catch 只接得到網路層錯誤）。後果比稽核表那個更硬：`assigneeList` 留在空陣列，
+編輯視窗的 EMS / MSD 下拉一個名字都沒有（`ownerSelectOptions()` 只補得回「這筆目前指到的人」），
+而 **EMS 負責人是必填** —— 新增需求時下拉是空的、那筆需求根本存不進去，
+使用者看到的卻只有一句「必填欄位未完成」。
+
+- 後端補 try/catch（訊息帶「若是 Invalid object name，代表 `11_create_assignee.sql` 沒跑」）。
+- 前端加 `assigneeError` + `<AssigneeErrorHint>`，掛在兩個下拉底下。
+- ⚠️ 失敗時**不清空 `assigneeList`**（與 `historyEntries` 相反）——
+  舊名單過期了還能用，而錯的異動次數會騙人。
+
+**🟡 2. `/done` 與 `/rollback` 判斷 `Status == Done` 沒有 Trim —— 第 23 批只補了寫入側**
+
+原本是 `curStatus.Equals("Done", OrdinalIgnoreCase)`：**大小寫收了、空白沒收**，
+而同一個檔案的 `NormStatusVal` / `IsValidStatus` / `StatusText` 與前端的 `normStatus()`
+全都有 trim。三處統一走新的 **`StatusIs(s, name)`**（先 Trim 再比）。
+
+- `"Done "` 的後果（**已在 DB 上實測**）：前端 `savedStage()` 推成 5、四個階段都顯示
+  「已略過此階段」不給按，**直接打 `/done` 卻整個放行** —— `EarlyCount` +1、
+  `StageCode` 被壓回 2、`Status` 被覆寫；`/rollback` 則回「StatusID 還沒設定」整支失效。
+- 同一支的 `curStatus.Equals("Init")` 也沒 trim → `"Init "` 會讓階段推進了 `Status` 卻停在 `Init`。
+- ⚠️ **讀取側不可以假設寫入側已經收乾淨**：髒值要等下一次 `PUT` 經過 `NormStatusWrite()`
+  才會被收掉，沒被 `PUT` 過的舊資料會一直是髒的。
+
+**🟡 3. `AssigneeModal` 是「在 App 裡定義的元件」—— 這個檔案自己警告過的反模式**
+
+`renderYmRange` 上方早就寫著「在 App 裡用 `const X = () => ...` 定義的元件，每次 render
+都是一個新的型別，React 會整棵重新掛載」，但這個視窗就是那樣寫的（`<AssigneeModal />`）。
+它內部有三個 `useState`（工號／姓名／部門），App 任何一次 render 都會讓它們歸零 ——
+打到一半的名字只要跳個 toast 就沒了。
+
+- 改成普通函式 **`renderAssigneeModal()`**，三個 state 提到 App（`newAssignee*`）。
+- ⚠️ **不能只把它改成普通函式**：函式裡不能呼叫 hooks（條件呼叫），所以 state 一定要先提上去。
+- 入口鈕目前是移除狀態所以現在踩不到，但「日後恢復入口只要把按鈕加回來」是註解自己寫的計畫。
+
+**🟡 4. `isPhasePassed()` 的 ③④ 沒有「下一階段已排日期就算走完」的補救 —— 只補註解，行為不動**
+
+①② 有這個補救（`msd.confirm` / `msd.start|end`），③④ 只看 `stageNum`。這個不對稱以前
+沒有任何解釋，下一個人一定會想「補齊」。**補齊會壞掉**：④ 的驗收日 EMS 可以一開始就先壓
+一個預設值，加上「④ 有日期 → ③ 算走完」之後，那些先填好驗收日的需求**開發階段逾期
+就永遠不會預警** —— 那正是這支函式最該抓到的落後。理由已寫進 `app.jsx` 的註解。
+
+**🟢 5~8**
+
+5. **`handleToggleActive`（停用／啟用人員）失敗完全靜默** —— 原本 `if (res.ok) fetchAssignees();`，
+   失敗時按鈕沒反應也沒訊息。同一個視窗的新增與刪除都有錯誤處理，只有這顆漏了。
+6. **欄位篩選的 StatusID 改用 `effStageCode()`** —— 原本是 `normStageCode()`，少了 B4 的
+   「Done 但 StageCode 空 → 視為 5」推斷。那幾列**畫面上寫著 5**、在篩選框打「5」卻篩不到，
+   而旁邊的 StatusID 統計卡與 `filteredData` 走的都是 `effStageCode`。同一張表兩套。
+7. **`GET /api/export` 補 try/catch** —— 前端是 `window.open`，失敗時看到的是一個沒有訊息的
+   500 分頁，判斷不出「匯出失敗」還是「檔案下載到哪去了」。
+8. **`handleSave` 的 gating 註解說反了** —— 它寫「『先填了 ③ 再把 ② 清掉』這種倒著改的
+   順序會漏過去，所以存檔前再擋一次」，但判定的是「這次新填的欄位」，清掉 ② 根本不會被擋。
+   ⚠️ **而且本來就不該擋**（擋了就是第 14 批的「有值卻永遠改不動」）。改成講清楚它擋的是什麼，
+   並明寫「不要照那句話去補齊」。
+
+**驗證方式**（`dotnet build` 0 warning 0 error；`npm run build`；`?v=` → `20260823044`）
+
+- **`Status` 的 Trim（端對端，造暫時資料，已硬刪除並複驗）**：`POST` 一筆 `__T25A__`（Id 65）
+  → 用 sqlcmd 壓成 `Status = N'Done '`（`DATALENGTH/2 = 5`，確認真的有尾空白）、`StageCode = NULL`
+  → `POST /done {phase:"spec"}` **回 400**，訊息寫「目前 StatusID = 5 結案，**由 Overall Status = Done 推斷**」
+  （舊行為會回 200 並讓 `EarlyCount` +1）→ `POST /rollback {targetStage:1}` **回 200，`fromStage:5`**
+  （舊行為會回 400「StatusID 還沒設定」）→ 事後查該列 `EarlyCount=0 / DelayCount=0`，
+  證明那次 `/done` 真的沒有動到計數。
+- **`assigneeError` 三態**（在頁面裡 patch `window.fetch` 讓 `/api/assignees` 回 500，
+  再把 `App` 掛第二份到暫時的 div 上量測，**完全不碰資料庫**，量完 `root.unmount()`）：
+  失敗時 EMS 下拉只剩「請選擇 + 侑憲」（2 個選項）且兩個下拉底下**各出現一行紅字**（hintCount=2）；
+  **正向對照**：不 patch 時 EMS 下拉 9 個選項、紅字 0 行。
+- **欄位篩選的 `effStageCode`**（同樣 patch fetch，把 62 筆加上一筆合成的
+  「`status:'Done'` + `stageCode:''`」，不碰資料庫）：那一列畫面上顯示 **`5 結案`**，
+  在 StatusID 篩選框打「5」**篩得到**（46 = 45 + 1）。舊規則會漏掉它。
+- 前端 DOM 量測：**62 列、16 欄**、需關注「4 · 逾期 3」、畫面上逾期徽章 3 個、
+  `loadError` / `historyError` / `assigneeError` 皆未出現。（截圖依舊拿不到，這是第七次，**別再試**。）
+- 還原後複驗：**62 筆 / 62 筆有效 / 222 稽核列（全部 `init`）/ 0 筆孤兒 / 三個計數欄總和 0 /
+  13 位指派人員 / 無 T25 殘留**，與測試前完全一致。
+
+**2026-08-23 — 第 24 批：第四輪邏輯總體檢（前端 + 後端 + 文件，無 SQL 腳本）**
+
+使用者第四次要求「重新檢查此專案的邏輯是否有不合理須修正的地方」，聽完清單後說
+「全部 7 項都修」。**這一輪一樣沒有 🔴** —— 找到的全是「同一件事兩條路、一擋一放」
+或「靜默失敗」。清單流程見 auto-memory 的 `review-then-let-user-pick`。
+
+**🟡 1. `dbo.Assignee` 改名／改部門完全沒有把關（第 22 批那個坑的另一扇門）**
+
+第 22 批為「還被指派中的人不可以刪」加了 `409`，理由是控表存姓名字串、沒有外鍵。
+但 `PUT /api/assignees/{id}` 可以自由改 `NAME` 與 `DEPT` —— **後果一字不差**：
+既有需求的負責人欄位不會跟著變，下拉裡再也找不到那個名字。改 `DEPT` 更糟：
+EMS → MSD 之後那個人從 EMS 下拉整個消失，而所有指派他的需求仍掛在 `EmsOwner`，
+連 `ownerSelectOptions()` 的補救都補不到。`DB_table.md` 第 3 條原本只寫
+「要改名請一併 `UPDATE dbo.Controltable`」—— **那句話沒有任何一行程式碼在執行**，
+正是第 21 批「排順序是必要條件不是充分條件」的同一種教訓。
+
+- 抽出 `AssigneeUsageAsync(conn, dept, name)`，`DELETE` 與 `PUT` **共用同一支**
+  （各寫一份 SQL 遲早會再漂移回「一擋一放」）。
+- **使用者選定「回 409、改用停用＋新建」**，⚠️ 刻意**不做**連動 `UPDATE dbo.Controltable`
+  —— 那會靜靜改掉既有需求且沒有稽核列可查。
+- ⚠️ **只在 `NAME` / `DEPT` 真的被改動時才驗**（與 `PUT` 對 `StageCode` / `Status` 同一條界線）：
+  一律驗的話，光是按「停用」（只改 `IsActive`）都會被擋住。比對用的是**舊的**身分。
+- `EMPO` 與 `IsActive` 不受此限，可直接改。
+
+**🟡 2. `fetchHistory()` 失敗是完全靜默的 —— 畫面會顯示「從來沒被改過」**
+
+`fetchReqs` 失敗會設 `loadError` 並顯示錯誤 + 重新載入鈕；`fetchHistory` 只
+`console.error` 然後 `setHistoryEntries([])`。`/api/history` 一掛，⚠N 全部消失、
+統計報表「時程異動」變 **0**、每一列展開都是「無變更紀錄」——
+**主管看到的是「這批需求沒被異動過」，不是「軌跡讀不到」**，而那正是稽核表要防的事。
+
+- 後端 `GET /api/history` 補 try/catch（**在此之前是唯一一支沒有的查詢端點**，回的是
+  沒有訊息的 500）。同時把 `GET /api/requirements` 那句寫死的
+  `"Database connection failed."` 改成印出真正的例外 —— 它接的是**所有**例外，
+  最常見的其實是「腳本沒跑完，Invalid column name」，舊訊息會把人整個帶去查連線字串。
+- 前端新增 `historyError`，三個顯示點：KPI 卡顯示 **`—`**（不是 0）+ 副標「軌跡讀取失敗，
+  數字暫不可用」且不給點、圖例列紅字、展開的軌跡面板寫「軌跡讀取失敗，這不代表沒有變更」。
+
+**🟡 3. 啟動時的 bootstrap 只補了一半，註解卻宣稱「沒跑過腳本也能啟動」**
+
+原本只補 `MsdConfirmHistory` / `IsDeleted` / `DeletedAt` / `RegDate` / `Remark` 五個，
+但 `GET /api/requirements` 還 SELECT `StageCode`、`MsdConfirmNote`、`CreatedAt`、
+`UpdatedAt`、四個 `*ActualEnd`、三個計數欄 —— 只跑過 `schema.sql` 的環境
+**「啟動得起來」但每次查詢都失敗**。半套的 bootstrap 比沒有更難查。
+
+- 補齊**所有純新增欄位**，並在註解與 `DB_table.md` 明列**做不到的三類**：
+  型別遷移（`01`/`02`/`03`）、既有資料正規化（`04`~`07`）、`08` 的 `sp_rename` 與
+  `13` 的唯一索引。⚠️ 刻意不碰那三類 —— 猜錯一次就是整表資料損毀。
+
+**🟢 4~7**
+
+4. **`isPhasePassed()` 加上「有 `*ActualEnd` 就算走完」**。`scheduleCell` 早就有
+   `alert && !actual` 這道抑制，`isPhasePassed()` 沒有 —— 又是同一件事兩套判定
+   （第 23 批才剛收斂過一次）。觸發路徑：某階段「延期完成」後有人用
+   「✎ 手動修正 StatusID」把階段調回去 → 那一格不顯示紅字，
+   **整列左側的紅色風險條卻會亮、也會被算進「需關注」**。
+5. **兩處死碼**：`analytics.byStatus`（每次重算建三個陣列 push 全表，沒有任何地方讀 ——
+   「需求狀態分佈」第 12 批就搬走了）、`isOverdue`（定義後從未被呼叫）。
+6. **兩個 `useEffect` 每次 render 重新訂閱**（與第 23 批修的表頭量測同型）：
+   `Popover` 的 Esc effect 相依 `[open, onClose]`（`onClose` 是 inline arrow）、
+   App 的 Esc effect 相依含 `editingData`（**編輯視窗裡每打一個字就重建一次 listener**）。
+   兩者都改成 **handler 放 ref、listener 只掛一次**。
+   ⚠️ **不可以只把相依換成 `!!editingData` 這種布林** —— `closeEdit()` 的閉包會停在
+   開視窗當下那份 `editingData`，`isEditDirty()` 永遠回 false，Esc 會直接關掉而**不問**
+   「要放棄未儲存的變更嗎」，那是 20 幾個欄位的白工。（已實測會問。）
+7. **前端刪除人員的姓名比對補上 trim**，與後端的 `LTRIM(RTRIM(...))` 一致。
+   附帶：`/done` 與 `/rollback` 寫 `Status` 改為經 `NormStatusWrite()`
+   （`POST`/`PUT` 早就這樣，只有這兩支是原值回寫）。
+
+**驗證方式**（`dotnet build` 0 warning 0 error；`npm run build`；`?v=` → `20260823043`）
+
+- **Assignee 改名把關**（curl 實測，全部**已還原**）：
+  Id 1「侑憲」（被指派 20 筆）改名 → **409**、改部門 EMS→MSD → **409**（訊息分別寫
+  「不能修改姓名（侑憲 → …）」「不能修改部門（EMS → MSD）」）；
+  **只改 `IsActive`（停用）→ 200**（證明沒有被誤擋）；還原 → 200。
+  **正向對照**：新建一個沒被指派過的暫時人員 → 改名 **且**換部門 → **200** → 刪除 → **200**。
+- **`historyError` 三個顯示點**：在頁面裡 patch `window.fetch` 讓 `/api/history` 回 500，
+  再把 App **掛第二份到暫時的 div** 上量測（完全不碰資料庫），量完 `root.unmount()` 還原。
+  結果：KPI 卡 `時程異動 | — | 軌跡讀取失敗，數字暫不可用`（正常狀態是 `| 0 |`，
+  **兩種情況以前長得一模一樣**）、圖例列紅字出現、展開面板寫「軌跡讀取失敗，這不代表沒有變更」。
+- **逾期判定不變量**（用畫面自己的 `isPhasePassed` / `buildDueList` 跑全表）：
+  「有紅字卻不在需關注」**0 筆**、「在需關注卻沒有紅字」**0 筆**；需關注仍是 **4（逾期 3）**。
+  合成資料（`stageCode='3'` + `msd.actualEnd` 有值）證明新規則生效：
+  舊規則判「未走完」、新規則判「已走完」，`resolveDuePhase()` 改挑 ④。
+- **Esc 走真實畫面測**：開編輯視窗 → 改現況說明 → 送 Escape →
+  **確實跳出「放棄未儲存的變更？」**（ref 化沒有讓閉包停在舊值）。
+- 前端 DOM 量測：**62 列、16 欄**、需關注鈕「4 · 逾期 3」。
+  （截圖依舊拿不到，這是第六次，**別再試**。）
+- 還原後複驗：**62 筆 / 222 稽核列（全部 `init`）/ 13 位指派人員 / 三個計數欄總和 0 /
+  無 T24 殘留 / Id 1 回到 `侑憲 · EMS · IsActive=1`**，與測試前完全一致。
+
+**2026-08-23 — 第 23 批：第三輪邏輯總體檢（前端 + 後端 + 文件，無 SQL 腳本）**
+
+使用者第三次要求「重新檢查此專案的邏輯是否有不合理須修正的地方」，聽完清單後說
+「全部都修正」。**這一輪沒有 🔴** —— 第 21、22 批已經把會弄丟資料／產生假資料的都補完了，
+剩下的全是「兩條路規則不一致」。
+
+**🟡 1. `Status`（OverallStatus）是唯一沒有寫入把關的狀態欄**
+
+第 22 批為 `StageCode` 補了 `IsValidStageCode()`，還在 `DB_table.md` 立下
+「同一個壞值走不同的門會得到不同結果」這條規則 —— 但**旁邊那一欄漏了**：
+匯入走 `NormalizeStatus()` 收斂，`POST` / `PUT` 卻是 `AddText(cmd, "@Status", req.status)` 原樣寫入。
+
+- 新增 `IsValidStatus()`（空值或 `Init`/`Ongoing`/`Done`，大小寫不敏感；
+  **`Pending` 是收斂不是拒絕** —— 一律當 `Ongoing`）＋ `NormStatusWrite()`
+  （收大小寫、**認不出來的原樣留著**，與 `NormStage()` 只去雜訊的分工一致）。
+- `PUT` **只在 `statusChanged` 時才驗**（與 StageCode 同一條界線）。
+  為此把 `statusChanged` 的計算從寫稽核列那裡往前搬到 UPDATE 之前，兩處共用同一個值。
+- **漏掉它的實際後果不只是難看**：前端 `normStatus()` 查不到的值一律顯示成 `Init`
+  （**畫面與 DB 不同**），而 `/rollback` 用 `curStatus.Equals("Done")` 判斷，
+  `"done "` 這種帶空白的值會被判成非 Done —— `StageCode` 若剛好是空的就回
+  「StatusID 還沒設定，無法判斷要從哪個階段回退」，怎麼看都看不出原因。
+
+**🟡 2. `/done` 少了「`StageCode` 空 + `Status=Done` → 視為第 5 階」的推斷**
+
+`/rollback`（`Program.cs`）與前端 `savedStage()` 早就這樣推斷了，**只有 `/done` 沒有**。
+後果：那種需求（匯入檔隨時可能帶進來）前端四個階段都顯示「已略過此階段」不給按，
+直接打 API 卻整個放行 —— `EarlyCount`/`DelayCount` 各加一次、`StageCode` 被壓回 2、
+`Status` 被覆寫。**三個計數欄的定義就是稽核表的快取，這一下就灌水了。**
+
+- ⚠️ 順手修了訊息：`StageText(curStage)` 印的是原值，會變成
+  「已經走過的階段（目前 StatusID = **未設定**）」，兩句話自相矛盾。
+  改印 `curStageNum` 並補一句「由 Overall Status = Done 推斷」。
+
+**🟡 3. A2：資料列的逾期判定與「需關注」是兩套規則（清單上掛最久的一項）**
+
+資料列逐階段各判一次、`resolveDuePhase()` 只挑 `StatusID` 對應的那一個。
+抽出共用的 **`isPhasePassed(item, key)`**（「這個階段走完了沒」），兩邊都讀它；
+`resolveDuePhase()` 改成「排除走完的階段 → 剩下有日期的裡面取**到期日最早**的那一個」。
+
+- ⚠️ **這不是 FIELD_SPEC 禁止的「四個日期一起比」**。那條禁令的實質是
+  「走完的階段不可以預警」（否則去年交的 Spec 永遠亮紅燈），第一步原封不動保留；
+  改的只有第二步。**這句話一定要留著**，否則下一個人會以為這批違反了禁令而改回去。
+- 修掉的是**雙向**的落差，兩個方向實測都復現過（用畫面自己的函式跑合成資料）：
+
+  | 症狀 | 舊行為 | 新行為 |
+  |---|---|---|
+  | `stage=3`、③ 很遠但 ④ 已逾期 | 資料列 ④ 紅、左側紅色條，需關注**挑 ③ → 篩不到它** | 挑 ④ ✅ |
+  | `stage=2`、① 逾期但已被 ② 接手、② 未排日期 | 一格紅字都沒有，卻**退回 ① 算成一件**需關注 | 不預警 ✅ |
+
+- 第二種是拿掉「退回 `lastFilledPhase()`」換來的。**沒有可盯的到期日就不預警**，
+  精簡模式那一欄顯示「未排定」，事實仍然看得到。
+- 精簡模式的標籤 `推斷 · 階段名` 改成 **`最急 · 階段名`**（語意變了：
+  現在的意思是「顯示的不是 StatusID 那一階」）。連帶四處 tooltip／圖例文案一起改。
+- ✅ **目前 62 筆上新舊規則結果完全相同**（需關注 4、逾期 3，明細一模一樣）——
+  主管看到的數字沒有變，修的是規則落差。與 FIELD_SPEC 舊註記「0 筆命中」一致。
+
+**🟢 4~8**
+
+4. **`init` 與 `起日調整` 的分界**（`WriteAuditAsync`）：End 沒動時再看一次
+   「這個階段原本有沒有任何日期」—— 原本全空就是 `init`。會走到這裡的是
+   「只填了 Start、End 留空」的階段，舊寫法一律記成 `起日調整`，
+   那一列會被前端歸進軌跡的**異動區**畫成「開始 未填 → 2026-09-01」。不影響計次，分類錯而已。
+5. **列印時 `colSpan` 多一欄**：「操作」欄整欄 `no-print`，但橫跨整列的 td 用的是
+   `colCount`。加 `printing` state（`beforeprint`/`afterprint`）。
+   ⚠️ **一定要 `ReactDOM.flushSync`** —— `beforeprint` 是同步事件，
+   一般的 `setState` 會排到 microtask 才 flush，印出去的還是舊欄數。實測 16 → 15 → 16。
+6. `donePanel()` 還留著 `CHANGE_TYPES[...] || {}`，第 22 批換成 `changeTypeStyle()` 時漏改這一處。
+7. 表頭量測的 `useEffect` **沒有相依陣列**，每次 render 都拆掉重建 listener 與
+   `ResizeObserver`。改成 `[activeView, compact, present]`，並一併 observe 頁首
+   （投影倍率改的是**它的**高度，只盯群組表頭的話 sticky 起點會停在舊位置）。
+8. **專案衛生**：建立 `.gitignore` 與 `系統架構.md`；`memory.md` 那份清單裡
+   「沒有 git」「12 個 patch_*.js」兩條複查後都**早就不成立**；
+   `FIELD_SPEC.md` 的統計卡規格還寫著已移除的 `Pending`（且那排卡第 18 批就改成 StatusID 1~5 了）。
+   ⚠️ **`git rm -r --cached` 刻意沒有代為執行**（見上方「專案衛生」的指令）。
+
+**驗證方式**（`dotnet build` 0 warning 0 error；`npm run build`；`?v=` → `20260823042`）
+
+- 後端造暫時資料端對端測（NID `__T23A__` / `__T23B__`，**已硬刪除並複驗**）：
+  `POST status="XXX"` → **400**；`POST status="ongoing"` → **200 且 DB 存成 `Ongoing`**
+  （證明 `NormStatusWrite` 有收大小寫）；`PUT status="bogus"` → **400**。
+  `Status=Done` + `StageCode` 空的那筆按 ① 完成 → **400**，訊息寫「目前 StatusID = 5 結案，
+  由 Overall Status = Done 推斷」；**正向對照** `stage=1` 的那筆按 ① 完成 → **200**（沒有被誤擋）。
+  只填 `msd.start` → 稽核記 **`init`**；接著再改一次 `msd.start` → 記 **`起日調整`**（兩個分支都對）。
+- 前端以 DOM 量測（**截圖依舊拿不到，這是第五次，別再試**）：62 列、群組 colSpan 16、
+  需關注鈕「4 · 逾期 3」、畫面上的逾期徽章數 **4 = 需關注件數**、0 console error。
+  不變量檢查（用畫面自己的 `isPhasePassed` / `buildDueList` 跑全表）：
+  **「有紅字卻不在需關注」0 筆、「在需關注卻沒有紅字」0 筆**。
+- 還原後複驗：**62 筆 / 222 稽核列 / 0 筆軟刪除 / 0 筆孤兒稽核列 / 三個計數欄總和 0 /
+  無 T23 殘留**，與測試前的環境狀態完全一致。
+- ⚠️ 中文驗證一律不看 sqlcmd 的畫面輸出（console 是 Big5，一定是亂碼）；
+  這次全部用 `COUNT(*)` 這種數字欄位驗。
+
+**2026-08-23 — 第 22 批：第二輪邏輯總體檢（前端 + 後端，無 SQL 腳本）**
+
+使用者再次要求「重新檢查此專案的邏輯是否有不合理須修正的部分」。逐行重讀
+`Program.cs` / `app.jsx` / 13 支腳本後提出 10 項，**分三次做完**：
+先挑 🔴 兩項 → 再「修改 3、4」（🟡 兩項）→ 最後「順便做完」（🟢 五項）。
+清單流程見 auto-memory 的 `review-then-let-user-pick`。
+
+**🔴 1. `/api/import` 可以被任何網頁跨站觸發，一次請求清空整個資料庫**
+
+第 21 批移除 CORS 的 `AllowAnyOrigin` 時，`Program.cs` 的註解寫著「拿掉之後 JSON 寫入
+會因為 preflight 被瀏覽器擋在外面」—— **那句話對匯入不成立**。`/api/import` 收的是
+`multipart/form-data`，那是 CORS 規範裡的 **simple request**：別的網站上一個
+`<form enctype="multipart/form-data" action="…/api/import">` 加一個 `<input type=file>`，
+使用者點一下就送出去了，不會有 preflight。攻擊方讀不到回應，**但 TRUNCATE 已經發生了**，
+而所有寫入端點都是匿名的（`RequireAuthorization` 只掛在 `/api/whoami`）。
+第 21 批的四道前置檢查只擋「檔案內容不對」，擋不了「一份格式正確的檔案被別人送進來」。
+
+- 新增 `IsCrossSiteRequest(HttpContext)`，排在 `/api/import` 的第一行（連檔案都不讀）。
+- **判定原則：只有在能明確判斷「這是跨站來的」時才拒絕** —— `Sec-Fetch-Site` 優先
+  （`same-origin` / `none` 放行），沒有這個標頭的舊瀏覽器才退回比對 `Origin`；
+  兩個標頭都沒有（curl、測試腳本）**一律放行**。誤擋掉自己的測試工具，
+  下一個人就會把整個檢查拔掉。
+- 回 `403`（不是 400），前端 `handleImport` 一併把 403 導進阻擋型 `alertModal` ——
+  使用者剛按下「會清空資料庫」的確認鈕，不能只給一個會自己消失的 toast。
+- ⚠️ **`DELETE` / `POST` / `PUT` 沒有加這道檢查**：它們是 `application/json`，
+  跨站送出時一定會先 preflight，而專案已經沒有任何 CORS 政策 —— 本來就過不來。
+
+**🔴 2. `/done` 完全沒有前置階段檢查（會跳階段，也會做出倒序日期）**
+
+A5 那批寫好的 `StagePrereqViolations()` **只掛在 `POST` / `PUT`**：下拉把 `StatusID`
+拉到 5 會被 `400` 擋下，按「✓ 完成」卻一路放行。同一件事兩條路，一擋一放。
+
+- **跳階段**：一筆 `StageCode=1`、但匯入時就帶了 `UatEnd` 的需求（NID 49 就長這樣），
+  ④ 的完成鈕照樣出現 —— 按下去 `StageCode` 直接 1 → 5、`Status` → `Done`，
+  ②③ 從來沒發生過，`EarlyCount` 還憑空多一次。
+  修法：`/done` 呼叫 `StagePrereqViolations(cur, cols.TargetStage.ToString())`，
+  **傳 `TargetStage` 不是 `-1`**（它驗的是「< n 的階段」，剛好等於「自己與前面的 End 都要有值」，
+  而自己的 End 上一步已經用 `plannedEnd` 驗過）。前端 `donePanel()` 加 `DonePrereqHint`。
+- **倒序日期**：提早完成會把 `End` 更新成今天。前一階段的 End 若還排在今天之後，
+  就會寫出「② 12/1 才要確認、③ 8/23 就開發完」—— `PUT` 有 `PhaseOrderViolations` 擋，
+  `/done` 繞過它，那筆需求存進去之後**再碰到那兩欄就會被整筆擋住，改都改不動**。
+  新增 `PrevPhaseEndOf()`，**只比相鄰的前一階段**（與 `PhaseOrderViolations` 同一條界線；
+  比「前面所有階段的最大值」會把既有的倒序資料一起鎖死）。前端加 `DoneOrderHint`。
+- 完成鈕不出現時的四種灰字，判定順序固定：
+  **已略過此階段 → 前面的階段還缺日期 → 前一階段的日期還在今天之後 → 壓上日期並儲存後…**
+  （先講最根本的原因，否則使用者補完日期才發現「其實這階段早就過了」）。
+
+**🟡 3. 刪除需求之後沒有重抓稽核表，統計報表兩個數字會對不起來**
+
+`handleDelete` 只 `await fetchReqs()`。但「時程異動」KPI 的**主數字**是
+`analytics.totalChanges`（數 `historyEntries` 的筆數）、**副標「涉及 N 件」**走的是
+已過濾的需求清單 —— 刪掉一筆有 `日期異動` 的需求之後，主數字不動、副標少一件，
+直到使用者手動重新整理。後端 `GET /api/history` 早就排除軟刪除的需求了
+（九條規則第 5 條就是在講這件事），漏的是前端這一側，**與已修好的 A8（匯入）同一類**。
+改成 `await Promise.all([fetchReqs(), fetchHistory()])`。
+
+**🟡 4. 軟刪除完全不留稽核（清單上的 A11）**
+
+`DELETE` 原本只有一句 `UPDATE ... SET IsDeleted = 1`：沒有稽核列、沒有交易，
+連 `UpdatedAt` 都不動。刪除是**唯一一個讓整筆資料從清單消失**的動作，
+卻是唯一查不到「誰、什麼時候、為什麼」的動作；而軟刪除的 NID 不佔用唯一索引、
+之後可以被別筆需求重用，事後更難還原現場。
+
+- 刪除原因**必填，後端強制**（沒帶或只有空白 → `400`），作法與 `/rollback` 一致。
+  只有前端擋的話，繞過畫面就會寫出一筆沒有理由的刪除。
+- 稽核列 `ChangeType='刪除'` / `Phase='stage'`（日期欄全空），與 `UPDATE` **同一個交易**。
+  `ChangeType` / `Phase` 都是 NVARCHAR 無 CHECK，**沒有 SQL 腳本**。
+- 前端：`confirmModal` 加一個**選填的 `prompt` 欄位規格**（文字存在 modal 自己身上，
+  與 `rollbackModal` 同一個寫法 —— 那段 JSX 直接寫在 App 裡，不能用 `useState`）。
+  沒填時「確認」鈕 `disabled`。訊息會寫出是哪一筆（NID / MainCat / SubCat）。
+  匯入與刪除人員那兩個呼叫端沒有 `prompt`，完全不受影響。
+- ⚠️ **這筆稽核列查得到、但不會出現在畫面上** —— 第 5 條要求 `GET /api/history`
+  排除軟刪除的需求，兩條規則的交集就是如此。**這是刻意的**（KPI 兩個數字對得起來優先），
+  日後若要做「已刪除需求」檢視，就從這裡撈。
+- 順手修掉一個會靜靜騙人的地方：軌跡的 `CHANGE_TYPES[h.changeType] || CHANGE_TYPES['日期異動']`
+  —— 查不到就退回「日期異動」，等於把任何未知類型印成日期異動而完全看不出來。
+  改成 `changeTypeStyle()`，查不到時用中性樣式**原樣印出 changeType**。
+
+**踩到的坑（會讓整個 App 起不來，下次直接看這裡）**
+
+`DELETE` 要收 body 時，參數**一定要明寫 `[FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)]`**
+（`using Microsoft.AspNetCore.Mvc.ModelBinding;`）。Minimal API 只對 `POST`/`PUT`/`PATCH`
+自動推斷 body，在 `DELETE` 上放一個複雜型別參數會拋
+**`Application startup exception: Body was inferred but the method does not allow inferred
+body parameters`** —— 不是打那一支才失敗，是**連首頁都開不起來**，而 `dotnet build`
+完全不會報錯。`EmptyBodyBehavior.Allow` 則是讓「完全沒帶 body」的呼叫端進得到端點裡
+（`body = null`），由必填檢查回一句看得懂的 400，而不是模型繫結回一個沒有訊息的 400。
+
+**🟢 5~9（「順便做完」那一批）**
+
+5. **`GET /api/requirements` 與 `/api/export` 都補上 `ORDER BY Id`**。前端預設沒有排序鍵，
+   而它的 `sort` 是穩定排序 —— 也就是「畫面上的列序 = 後端回傳的順序」。沒有 `ORDER BY`
+   時順序由 SQL Server 自己決定，同一份資料兩次重新整理就可能換位置，而最左邊還有一個
+   `No` 流水號。匯出檔同理：列序每次不同的話，兩份匯出檔根本沒辦法 diff。
+6. **`StageCode` 的寫入把關統一**。原本匯入用 `NormalizeStageCode()` 收成 NULL、
+   `POST`/`PUT` 原樣寫入 —— 同一個壞值走不同的門結果不同。新增 `IsValidStageCode()`：
+   只接受空值或 `1`~`5`，否則 `400`。
+   - ⚠️ **選「擋下來」而不是「跟著收成 NULL」**：靜靜吃掉使用者選的值，
+     畫面上會變成「我明明改了，存完卻沒有」。
+   - ⚠️ **`PUT` 只在 `stageChanged` 時才驗**。一律驗的話，既有那些超出 1~5 的舊資料
+     會連改個現況描述都存不了（第 14 批的「有值卻永遠改不動」）。實測把某筆壓成 `8`
+     之後改現況描述仍然存得進去，且 `8` 原樣保留。
+   - 匯入維持寬鬆（批次路徑不該因為一格壞值整檔失敗，而且它是暫時的功能）。
+   - `AddSqlParameters()` 一律經 `NormStage()` 去掉括號等雜訊才寫入，
+     確保 `05` 腳本建立的「純數字」不變量不會再髒回去。
+7. **`duplicateNids` 死碼清掉**（後端回應與前端處理一起）。第 21 批起重複的 NID 在
+   動資料庫之前就整檔擋下並回 400，所以 200 的回應裡它永遠是空陣列。
+8. **`dbo.Assignee` 還被指派中的人不可以刪**（`409`）。控表存的是姓名字串、沒有外鍵，
+   刪掉之後那些需求的負責人欄位不會變動、下拉裡卻再也找不到那個人 ——
+   這與那個視窗自己寫的「建議改用停用」自相矛盾。後端先數 `dbo.Controltable`
+   （`IsDeleted=0`，依 `DEPT` 比 `EmsOwner` / `MsdOwner`），前端在按之前也擋一次。
+   **沒被指派過的人仍然刪得掉**（打錯字的錯誤建檔要救得回來）。
+9. **`duePriority` 不再讀精簡模式的 localStorage**。原本是 `useState(readCompactPref)`，
+   兩個不同的偏好共用 `ct.compactMode` 這一個 key —— 使用者把「逾期優先」關掉、
+   重新整理之後它**又自己打開**，而畫面上沒有任何東西解釋列序為什麼變了。
+   改成固定 `false`（不持久化）。**`toggleCompact()` 裡「切進精簡模式時一併打開」的
+   連動保留** —— 那是使用者當下的動作，不是幽靈狀態。
+
+**驗證方式**（`dotnet build` 0 warning 0 error；`npm run build`；`?v=` → `20260823041`）
+
+- 匯入防護五種情境用 curl 實測：`Sec-Fetch-Site: cross-site` → **403**、
+  `Origin: http://evil.example` → **403**、`Sec-Fetch-Site: same-origin` → 400（卡在檔案格式，
+  證明防護沒擋到自己人）、**無標頭的 curl** → 400、同源 `Origin` → 400。
+  全程沒有任何一次碰到資料庫。
+- `/done` 造暫時資料端對端測（NID `__T22__` / `__T22B__`，**已全部刪除並複驗**）：
+  `StageCode=1` + 只有 `UatEnd` 按 ④ 完成 → **400** 並逐條列出缺哪三個日期；
+  `StageCode=3` + `MsdConfirm=2026-12-01`（未來）按 ③ 完成 → **400** 並指名是哪一階段哪一天；
+  把 confirm 改成過去日之後再按 → **200 提早完成 119 天**、`StageCode` 3→4、
+  `EarlyCount` 1、Start 被夾到今天且說明有寫（**正向對照沒有被誤擋**）。
+- 前端以 DOM 量測（截圖依舊拿不到，這是第四次，別再試）：正常的 NID 6 四個階段仍是
+  「已略過／已略過／完成鈕／壓上日期…」**完全沒有回歸**；暫時資料則正確顯示
+  `前面的階段還缺日期`（tooltip 三條）與 `前一階段的日期還在今天之後`（tooltip 有日期）。
+- 刪除（🟡 4）端對端測（暫時需求 `__T22D__` / `__T22U__`，**都已硬刪除並複驗**）：
+  完全不帶 body → **400**「刪除需求必須填寫原因才能執行。」；只帶空白原因 → **400**；
+  兩次都**完全沒動到資料**（`IsDeleted` 仍 0、只有 POST 寫的那 1 筆 init）。
+  帶原因 → **200**，`IsDeleted=1` + `DeletedAt` + `UpdatedAt` 都寫了、稽核列
+  `刪除 / stage / tester / windows` 齊全；再刪一次 → **404**。
+  刪除後 `GET /api/requirements` 查無該筆、`GET /api/history?requirementId=` 回 `[]`
+  （**符合設計**，見上面那條 ⚠）。
+- 刪除（🟡 3）走真實畫面測：確認視窗有「刪除原因 (必填)」、輸入框自動聚焦、
+  **沒填時「確認」是 disabled**；打了中文原因後按確認 → 該列消失、62 筆，
+  網路記錄顯示 `DELETE 200` 之後**同時**發出 `GET /api/requirements` 與 `GET /api/history`
+  （這就是 🟡 3 的修法）。
+  - ⚠️ **中文驗證不要用 sqlcmd 的畫面輸出**：這台機器的 console 是 Big5，
+    印出來一定是亂碼，看起來像資料壞了。用 `UNICODE(SUBSTRING(Note,n,1))` 驗碼位 ——
+    實測首二字 36575/21034（軟刪）、末二字 38656/27714（需求）、`Note LIKE '%?%'` 為
+    clean，**資料是對的**。同理，用 `curl -d '中文'` 送 JSON 也會被 shell 轉成 Big5
+    而讓後端回 400（`Cannot transcode invalid UTF-8 JSON text`），要測中文請寫檔再 `--data-binary @file`。
+- 🟢 5~9 的實測：
+  - `ORDER BY`：連續兩次 `GET /api/requirements` 的 id 序列**完全相同且遞增**（62 筆）。
+  - `StageCode`：`POST stageCode=9` → **400**「只能是 1~5（或留空）」；
+    `POST stageCode="(1)"` → **200 且 DB 存成 `1`**（括號被 `NormStage` 去掉）；
+    `PUT` 改成 `7` → **400**；把某筆壓成 `8` 之後只改現況描述 → **200**，`8` 原樣保留
+    （證明既有壞值沒有被鎖死）。
+  - `dbo.Assignee`：刪還被指派的人（Id 1「侑憲」，20 筆）→ **409** 並附「請改用停用」，
+    人數仍是 13；建一個沒被指派過的暫時人員再刪 → **200**；不存在的 id → **404**。
+    **名單已還原成 13 筆、無殘留。**
+  - `duePriority`：把 `ct.compactMode` 設成 `1` 重新整理 → 精簡模式是開的（9 欄）、
+    但排序面板的「逾期優先」是**關的**（改之前會是開的）。
+    **測完已把 `ct.compactMode` 還原成 `0`**（使用者原本就是非精簡 + 深色）。
+- 還原後複驗：62 筆 / 222 稽核列 / 13 位指派人員 / 三個計數欄總和 0 / 無 `T22` 殘留 /
+  無孤兒稽核列 / 畫面 62 列 16 欄、深色、非精簡。該分頁全部 request 皆 200
+  （console 面板裡的 3 筆 400 是前一場次留下的，網路記錄裡查無對應請求）。
+
+**2026-08-22 — 第 21 批：邏輯總體檢後的修正（前端 + 後端 + SQL 腳本 `13`）**
+
+使用者要求「重新檢查此專案的邏輯是否有不合理須修正的部分」。逐行讀完
+`Program.cs` / `app.jsx` / 12 個 SQL 腳本後找出 14 項，全部修完。
+**匯入相關的只做最小防護** —— 使用者明確表示匯入是暫解、穩定後會整個移除。
+
+**🔴 會弄丟資料或產生假資料的四項**
+
+1. **匯入表頭認不出來仍然會清空整張表**。程式碼裡只有一句註解說「清空刻意排在
+   欄位對應之後」，**但沒有任何一行真的中止流程**：`headerRow` 為 `null` → `colMap` 全空
+   → 每列都被當空行跳過 → 而兩個 `TRUNCATE` 早就跑完並且照樣 `Commit`。
+   選錯一個檔案就整庫沒了，畫面上只有一句會自己消失的「已匯入 0 筆」。
+   **教訓：排順序是必要條件不是充分條件，一定要真的 `return` 才算數。**
+   現在四項前置檢查全部在 `BeginTransaction()` 之前（開檔失敗／找不到表頭／
+   關鍵欄位都對不到／一列資料都沒有／NID 重複），實測三種壞檔案 62 筆一筆沒少。
+2. **規格回退後可以對「沒被清空的階段」重複按完成**。`/done` 重複檢查的基準線
+   `MAX(Id) WHERE ChangeType='規格回退'` 是**跨階段**的，但回退只清 ≥ 目標階段的日期 ——
+   回退到 ③ 之後 ① 的完成紀錄被濾掉、完成鈕重新冒出來，按下去 `DelayCount` 憑空多一次。
+   修法：子查詢加 `AND Phase = @Phase`，前端 `phaseDoneEntry()` 同步。
+3. **`/done`、`/rollback`、`PUT`、`POST` 都沒有交易**（只有匯入有）。四支都補上，
+   各自的失敗後果見 `DB_table.md`「九條不可違反的規則」第 7 條。
+4. **NID 唯一性只有應用層在擋**，`IX_Controltable_Active` 是 `NONCLUSTERED` 不是 `UNIQUE`。
+   新增 `13_nid_unique.sql`（**已執行**）＋ `POST`/`PUT` 捕捉 2601/2627 轉 409。
+
+**🟡 規則不一致或會卡住使用者的五項**
+
+5. **跨階段的 End 完全沒有驗證** —— 可以存出「① 12/31 交規格、④ 1/5 驗收完」。
+   新增 `PhaseOrderViolations()`，只擋這次被動到的那一組（與 gating 同一條界線）。
+6. **回退到 ① 之後那筆需求暫時存不了** —— 回退清掉 `SpecEnd`，但它是必填。
+   改成「新增時，或原本就有值」才必填，系統自己清掉的空值不擋，
+   但使用者手動清空既有的結束日仍然會被擋。
+7. **可以對早就走過的階段按完成** —— `StageCode = 5` 的需求打開視窗時四個完成鈕全可按。
+   前端改顯示「已略過此階段」，後端 `/done` 也擋。實測：stage 5 → 4 個都是灰字；
+   stage 4 → ①②③ 灰字、④ 是完成鈕。
+8. **`PUT` 清掉 `ActualEnd` 卻不回退 `DelayCount`** —— 資料列出現「⏰ 延期 1」但查不到
+   實際完成日。計數是既成事實**不該回退**，改成把這件事寫進該筆稽核列的說明
+   （`WriteAuditAsync()` 的 `extraNotes`，與使用者填的理由以 `｜` 串接）。
+9. **沒有樂觀鎖** —— 兩人同時編輯後存的整批蓋掉前者。`GET` 多回一個帶秒的
+   `updatedAtToken`，`PUT` 對不上回 `409 conflict:true`。
+   ⚠️ **token 一定要帶到秒**，顯示用的 `updatedAt` 只到分，拿它當 token 等於沒有鎖。
+
+**🟢 清理五項**
+
+10. `new XLWorkbook(stream)` 在 `try` 之外 → 非 xlsx 會回未處理的 500。
+11. `Note` 欄 `NVARCHAR(1000)` 沒有長度保護 → 超長時整筆稽核列寫不進去，改為先截斷。
+12. CORS 的 `AllowAnyOrigin` + 所有寫入端點匿名 → 任何網頁都能發 `DELETE`。
+    前後端本來就同源，整個政策移除。
+13. `app.jsx` 的 `_unused_import` 死碼（20 行）刪除。
+14. 統計報表：`yearMonth` 為空的資料會產生一根沒有名字的柱子，改為歸到 `'-'`
+    （`StageCode` 早就這樣做了，這裡漏掉）。
+
+**驗證方式**：`dotnet build` 0 error → 造暫時資料打 API 端對端測 36 項全 PASS
+（樂觀鎖 / 跨階段順序 / 走過的階段 / 回退後重做 / 必填放寬 / ActualEnd 說明 / NID 409）
+→ 三種壞 Excel 匯入皆 400 且筆數維持 62 → 瀏覽器實際開編輯視窗量 DOM 確認完成鈕行為。
+`?v=` 已帶到 `20260822038`。
+
+**2026-08-22 — ⭐ Start 不重要，一切以 End 為準（前端 + 後端，無 SQL 腳本）**
+
+使用者定調：「我不是很看重 start 的日期（真的沒填就預設跟 End 同天而已），
+重點只看 End 的日期是否有填寫，來判斷執行到哪個階段。
+A4 應該不需要修正，若改了 END 日期就是異動日期、但改了 start 沒關係。」
+**這是欄位語意的最高原則，動階段邏輯前先看 `FIELD_SPEC.md` 的「Start 不重要」一節。**
+
+- **階段判斷只看 End**（② 的 End 就是 confirm）：
+  `isPhaseOpen()` / `PhaseGatingViolations()` / `stagePrereqMissing()` / `StagePrereqViolations()`
+  全部改成只驗 End。連「被擋的欄位」也只剩 End —— 先補一個 Start 不該被擋
+- **Start 沒填就補成 End**：`ApplyStartDefaults()`（後端，POST / PUT / **匯入**三條路徑）
+  ＋ `applyStartDefaults()`（前端，送出前）。兩邊都做是為了讓存檔前的驗證看到同一份值
+  - **不可以靜靜發生**：End 有值而 Start 空白時，欄位下方顯示
+    「未填 → 儲存時自動帶入 YYYY-MM-DD」，Start 的標籤也從紅星改成「(可不填)」
+  - `1_EMSStart` 因此從必填名單移除（`REQUIRED_FIELDS` 與 `MissingRequiredFields` 都拿掉）
+- **異動認定改以 End 為準**（`WriteAuditAsync`）：
+  End 沒動只改 Start → **`起日調整`**（新的 ChangeType，不算異動、不必理由、不掛 ⚠、不帶 category/note）；
+  End 首次填寫 → `init`；End 被改掉 → `日期異動`
+  - 前端新增 `isPhaseEndModified()` 專門管「要不要強制填理由」與原因欄的顯示；
+    原本的 `isPhaseModified()`（任一欄）**保留**給「按完成前要先存檔」的檢查用 —— 那裡在意的是
+    「畫面值與 DB 不同」，不分 Start／End
+  - `起日調整` 不需要 SQL 腳本（`ChangeType` 是 NVARCHAR 且無 CHECK）
+- **踩到的編譯坑**：`var oldD = oldReq == null ? ((string?)null,…) : PhaseDatesOf(...)` ——
+  三元運算子兩邊的 tuple 元素名稱不同時 C# 會**把名稱丟掉**，變成無名的
+  `(string?, string?, string?)`，`oldD.end` 就編不過（還會連帶報 CS8422）。把型別明寫出來即可
+- 驗證（動 NID 2，**已還原並複驗**）：
+  - 只改 Start（06-12 → 06-15）：**沒有跳原因欄**、存檔成功、稽核記成 `起日調整`
+    （old 06-12~2027-01-09 → new 06-15~2027-01-09、cat 空）；
+    資料列仍只有 ⚠1、明細徽章仍是「1 次」，但軌跡看得到那一筆
+  - 清空 Start：欄位下方出現「未填 → 儲存時自動帶入 2027-01-09」，且**沒有**觸發原因欄
+  - 接著改 End（2027-01-09 → 2027-02-01）：原因欄立刻出現、必填擋住；填完存檔後
+    DB 的 `SpecStart` 被自動帶成 `2027-02-01`、稽核記成 `日期異動`（cat=其他 + 說明）
+  - 還原：`SpecStart`/`SpecEnd` 回 `2026-06-12`/`2027-01-09`、刪掉 2 筆測試稽核列
+    （回到 226 筆、NID 2 的非 init 稽核仍是 1 筆）、`UpdatedAt` 回填 `2026-08-19 23:21:45`
+  - `dotnet build` 0 warning 0 error；0 console error；`?v=` 為 `20260822034`
+- **舊資料重新歸類（使用者同意後才動）**：新規則只影響之後寫入的紀錄，
+  2026-08-22 之前寫進去的那一筆不會自己變。經使用者同意，把
+  `dbo.Controltable_History` **Id=261**（NID 52 / phase=uat）由 `日期異動` 改為 `起日調整`
+  —— 該列的 `OldEnd` 與 `NewEnd` 都是 `2026-02-11`（End 自始未變、只補了 Start），
+  完全符合新規則的定義
+  - **改之前先把整列 SELECT 印出來留底**（與第 16 批「清空前先寫稽核快照」、
+    `12_drop_personnel.sql`「DROP 前先印內容」同一條原則）
+  - **不是靜靜改掉**：`Note` 補上「（2026-08-22 依「改 Start 不算異動」的新規則，
+    由原本的「日期異動」重新歸類；End 2026-02-11 自始未變）」，軌跡上看得到這件事發生過
+  - 結果：NID 52 的 ⚠1 消失、④ 那格只剩日期；全表只剩 NID 2 有 ⚠1（那是真的改過 End）；
+    KPI「時程異動」2 → **1（涉及 1 件）**；稽核仍是 226 筆（只改型別，沒有刪列）
+  - ⚠️ 這是**唯一一筆**需要重新歸類的舊資料（改完 `日期異動` 全表只剩 1 筆）
+
+**2026-08-22 — A5 完整版：StatusID 預設唯讀 + 手動調整稽核（前端 + 後端，無 SQL 腳本）**
+
+問題：編輯視窗可以直接把 StatusID 從 2 拉到 5、或把 Status 壓成 Done，不寫稽核、不動計數、
+也不檢查該階段有沒有日期 —— 第 15/16 批的「延期 N 次／回退 N 次」就可能只是有人跳過去的結果。
+使用者選了完整版。規格見 `FIELD_SPEC.md` 的「StatusID 預設唯讀，手動修改要留稽核」。
+
+- **StatusID 改唯讀**（顯示彩色 pill），要按「✎ 手動修正 StatusID」才開放下拉。
+  改了值才跳出整列寬的原因面板（分類 + 文字說明**兩者都必填**，前後端都擋）
+  - ⚠️ **刻意不做成完全鎖死**：匯入資料階段填錯一定會發生，鎖死的話第一次遇到
+    就會被要求開一個沒有稽核的後門
+  - 原因面板做成 `col-span-3` 整列寬，不塞在 1/3 欄裡 —— 四顆分類鈕加輸入框
+    在 280px 會擠成三排，而這是「會繞過完成／回退機制」的操作，不該長得像附註
+- **Status（OverallStatus）維持自由編輯、不強制理由** —— `Pending` 本來就只能人工壓，
+  每次暫緩都要打字太吵。但一樣寫稽核列，說明由後端自動組
+- **後端**：`PUT` 的 before 查詢多讀 `Status` / `StageCode`；比對有變就寫一筆
+  `ChangeType='手動調整'` / `Phase='stage'`，說明格式
+  「StatusID 由 1 EMS規格確認 手動改為 3 MSD開發中：<使用者輸入>」（兩欄同時改用 `；` 串接）
+  - 新增 `NormStage()`（只留數字，與前端 `normStageCode` 一致）避免 `"(2)"` vs `"2"` 留假紀錄、
+    `NormStatusVal()` 大小寫不敏感、`StageText()` / `StatusText()` 把空值寫成「未設定」
+  - **`ChangeType` / `Phase` 都是 NVARCHAR 且無 CHECK 限制，所以沒有 SQL 腳本**
+- **前置階段沒填完就不給改**（使用者要求，同一批補上）：目標 StatusID = N 就要求 1~N-1
+  的日期齊全（`stagePrereqMissing()` / `StagePrereqViolations()`，POST + PUT 都擋回 400）
+  - ⚠️ **只在 StatusID 真的被改動時檢查**。實測 63 筆裡本來就有 **2 筆不符合**
+    （NID 49 `stage=5` 但 ③ 完全沒日期、NID 52 的 ④ 只有結束日）——
+    改成一律驗證的話，那兩列連改個現況描述都會存不了（＝第 14 批的「有值卻永遠改不動」）
+  - ⚠️ **只檢查前置，不檢查目標階段自己**。`StatusID=4` 是「正在驗收」，驗收日還沒排很正常
+  - 判定用視窗當下的值 → 同一個視窗裡補完 ③ 再改成 4 可以直接存
+  - 缺什麼在**選了階段的當下**就用紅色面板列出來並蓋掉原因欄；
+    讓人填完理由才說「其實不能改」是最惱人的順序
+- **三個計數欄完全不動** —— 它們的定義就是「真的走過完成／回退流程幾次」
+- 前端另加 `timelineLabelOf()`：`Phase='stage'` 在軌跡顯示成「狀態調整」
+  （`PHASES` 查不到會 fallback 印出原始 key `stage`，那是給程式看的字）
+- **`手動調整` 不算時程異動**（沿用 `isDateChange`），不會讓 ⚠N 或 KPI 增加
+- 驗證（動到 NID 2，**已全部還原並複驗**）：
+  - 唯讀狀態：編輯視窗只剩 3 個 `<select>`（Status／EMS／MSD），StatusID 那格是 pill + 修正鈕
+  - 按修正鈕 → 下拉出現（6 個選項）→ 改成 3 → 整列寬原因面板出現（833px / 視窗 896px）
+  - 不選分類就存 → 擋下「缺少異動原因分類」；選了分類但沒打字 → 擋下「缺少異動說明」
+  - 填完存檔：DB `StageCode=3`、**delay/early/rollback 仍是 0/0/0**、
+    稽核列 `手動調整 / phase=stage / cat=其他 / by=yu-tinglin(windows)`，說明文字完整
+  - 明細軌跡顯示「狀態調整｜手動調整｜…」，而次數徽章仍是「1 次」、
+    資料列仍只有 ⚠1、KPI「時程異動」仍是 1（涉及 1 件）—— 沒有被灌水
+  - Status 單獨改成 `Pending`：**不出現原因面板、不擋存檔**，稽核列
+    `手動調整 / cat=(null) / Note='Status 由 Ongoing 手動改為 Pending'`
+  - 還原：`StageCode='1'`、`Status='Ongoing'`、刪掉 2 筆 `手動調整`、稽核回到 225 筆、
+    **`UpdatedAt` 回填成最後一次真實異動的時間 `2026-08-19 23:21:45`**
+    （否則頁首的「資料更新」會顯示我測試的時間）；需關注回到 5（逾期 4）
+  - 前置檢查：NID 2（stage=1、③ 沒日期）改成 4 → 紅色面板列出「3_MSD開發中（缺 開始日、結束日）」
+    且**不出現原因欄**，按儲存被 alertModal 擋下；在同一個視窗把 ③ 補上 2026-09-01~09-30 →
+    紅色面板消失、原因面板出現（證明「同一次存檔補完再改」走得通）
+  - 後端獨立驗證（直打 API 繞過畫面）：改 stage=4 不補日期 → 400「還缺日期：3_MSD開發中…」；
+    補了日期但不帶理由 → 400「必須選擇異動原因分類並填寫文字說明」；
+    POST 送 `stageCode=5` 但 ②③④ 空 → 400。三次都**完全沒有寫入**
+    （stage 仍 1、MsdStart/End 仍 NULL、`UpdatedAt` 未變、稽核 225 筆、63 筆、無殘留測試列）
+  - `dotnet build` 0 warning 0 error；0 console error；`?v=` 為 `20260822032`
+
+**2026-08-22 — `Status` 欄復原到資料列（推翻 2026-08-21 的併欄）**
+
+使用者：「Status 先回復到資料列顯示。原本有只是被我隱藏。」
+—— 2026-08-21 那批把它**併進 StatusID 並從程式碼移除**（不是隱藏），
+所以是從 `git show HEAD:ClientApp/app.jsx` 把原本的 th／td／篩選框挖回來照原樣復原。
+
+- **⚠️ 不要再自作主張併回去。** 當初的理由（Done 45 筆＝StatusID 5 也 45 筆，兩欄講同一件事）
+  在資料上成立，但使用者要的是**原本就在的那一欄**，不是推導值
+- 一般模式 15 → **16 欄**（`Notes Link` 收起時 15）；群組「專案基本資訊」colSpan 7 → **8**；
+  `COMPACT_HIDDEN` 加回 `'status'`，**精簡模式仍然不顯示**（9 欄不變）
+- 呈現維持 2026-08-20 的「色點 + 文字」，不是藥丸
+- **`⏸ Pending` 標記改成只在 Status 欄被收起來時才出現**（＝精簡模式）。
+  一般模式那一欄已經寫著 Pending，並排是重複；精簡模式沒有那一欄，拿掉就看不出被暫停
+- `StatusID` 欄的 **⚠ 矛盾標記保留** —— 兩欄並排雖然看得出來，但主管不會逐列比對
+- 副作用（好的）：欄位篩選的 Status 輸入框跟著回來，**清單上的 A9「Pending 沒有篩選入口」自動解掉**
+  （`matchExceptStage` 裡那段 `k==='status'` 的死碼也重新活過來）
+- 版面代價：全表 min-content 1215 → **1239px**。1440／1280 無捲動、1152 溢出 127px
+  （併欄前 103px，那個寬度本來就該用精簡模式）
+- 驗證：一般模式 16 欄、群組 colSpan 8+6+1+1=16、每列 16 格；精簡模式仍 9 欄且無 Status；
+  暫時把 NID 2 壓成 `Pending` → 一般模式 Status 欄顯示 Pending 且 StatusID 旁**沒有**重複標記、
+  精簡模式則出現 `⏸ Pending`；欄位篩選打 `pend` → 篩出 1 筆（NID 2）。
+  **測試資料已還原**（NID 2 回 Ongoing、Pending 0 筆、63 筆／稽核 225 筆不變）。
+  0 console error；`?v=` 為 `20260822030`
+
+**2026-08-22 — UIUX 批：列印樣式、未存變更提示、可發現性（純前端，只動 `app.jsx` 與 `input.css`）**
+
+使用者接著說「幫我改 UIUX 的部分」，做了清單上的 C1~C7。
+**沒有動任何欄位語意、資料流或篩選邏輯**，規格細節見 `FIELD_SPEC.md`
+新增的「操作可發現性與列印」一節。
+
+- **列印 / 存成 PDF（C1，最有感的一項）**：`input.css` 最後加一段 `@media print`
+  （刻意寫在所有 `@layer` 之外、放檔案最後 —— 要蓋掉 base 的 `:root`/`.dark` 色盤
+  靠的就是它排在輸出最後）。做四件事：強制白底黑字（深色模式直接印會把整張紙塗黑）、
+  `@page A4 landscape`（15 欄直式印一定切掉右邊）、`thead{display:table-header-group}`
+  讓表頭每頁重複並把 sticky 還原 `static`、`.no-print` 收掉頁首與所有控制項。
+  另加 `.print-only` 的列印抬頭（表名／資料更新時間／列印日期／筆數）
+  - ⚠️ **`操作` 欄要連群組表頭一起藏**。只藏欄名與 63 個資料格的話，群組 colSpan
+    加總 15 會比資料列 14 多一欄，右半邊整個歪掉。實測螢幕 15=15、列印 14=14
+- **未儲存變更提示（C3）**：`closeEdit()` 比對「開窗時的 JSON 快照 vs 現在」，
+  有差異才跳確認。改回原值再關不會問。✕／取消／Esc 三個出口共用同一支
+- **Esc 關閉五個 Modal（C2）**：疊在最上層的先關（alert → confirm → rollback → 模擬帳號 →
+  人員 → 編輯視窗）。編輯視窗走 `closeEdit()`，所以 Esc 一樣會問未存變更。
+  自動聚焦**只給新增** —— 編輯時聚焦在 NID 上，一打字就改到唯一值的編號
+- **展開指示（C4）**：`No` 欄流水號前加 ▸／▾。⚠️ **旋轉掛在外層 `<span>` 不是 `<svg>`** ——
+  對 SVG 元素套 CSS transform 在舊瀏覽器（工廠 PC）不生效
+- **解鎖鈕改為圖示 + 文字「已鎖定，點此修改」（C5）**，並在「已開放但還沒壓日期」的階段
+  補灰字「壓上日期並儲存後，這裡會出現『✓ 完成』」。前置未完成的階段不顯示這行 ——
+  旁邊的 `GateLock` 已經在講同一件事
+- **空狀態（C6）**：篩到 0 筆時寫「條件把 63 筆全部篩掉了」並附「✕ 清除全部篩選」
+- **Toast 計時器（C7）**：換訊息前先 `clearTimeout`，否則第一顆的計時器會把第二顆一起關掉
+- **C8（把五個篩選下拉收進一顆「篩選 (N)」面板）刻意沒做** —— 工具列的排法是第 12／17／18 批
+  逐次調出來的，而且 `FIELD_SPEC.md` 有明文規格；收起來會犧牲可發現性，要先問過使用者
+- **驗證方式**（全部以 DOM／computed style 量測）：
+  - 展開指示：點第一列 → 該列 svg 外層 span 的 inline style 為 `rotate(90deg)`＋`opacity .85`，
+    tooltip 由「可展開」變「可收合」；其他列維持 `none`／`.45`
+  - 版面無回歸：1440 頁面溢出 0（表寬 1375）、1280 溢出 0（表寬 1215，與加徽章前相同）、
+    `No` 欄 44px／42px 沒變寬；精簡模式仍 9 欄且群組 colSpan 加總 9
+  - 編輯視窗四個階段的標題列依序是「已鎖定，點此修改＋完成」「已鎖定，點此修改＋完成」
+    「壓上日期並儲存後…」「請先完成 3_MSD開發中 的日期」（④ 沒有重複提示）
+  - 未存變更：無變更按 Esc 直接關；改了現況說明後按 Esc → 跳「放棄未儲存的變更？」，
+    按該視窗的「取消」→ 編輯視窗留著且 `__DIRTY__` 還在，按編輯視窗的「取消」→ 再問一次，
+    按「確認」→ 關閉。**DB 完全沒被寫入**（`CurrentStatus LIKE '%__DIRTY__%'` 0 筆、
+    63 筆／稽核 225 筆不變）
+  - 空狀態：搜尋 `ZZZ_NO_MATCH_ZZZ` → 顯示「共 63 筆資料被條件全部篩掉了」＋清除鈕，
+    按下去回到 63 筆
+  - 列印：CSSOM 讀到 `@media print` 13 條規則（含 `@page`）全部解析成功；
+    `.no-print` 共 71 個元素，逐一確認都是控制項（頁首／工具列／需關注／精簡／排序／
+    操作欄 1+63 格），**沒有任何一個是資料**
+  - 深淺色都量：解鎖鈕 淺 `#475569`（白底 7.6:1）／深 `#b6c2d2`（`#1e293b` 底 7.8:1）；
+    完成提示 淺 `#64748b`／深 `#94a3b8`（都是 `--text-muted` 的既有基準）
+  - 0 console error。切換過的深淺色與精簡模式**都已還原成使用者原本的設定**（深色、非精簡）
+- ⚠️ **量測時踩到的坑（下次別再懷疑自己改壞了）**：這個 Browser 面板沒有顯示，
+  **頁面不會合成畫格，所以 CSS transition 會卡在起點** —— `getComputedStyle` 讀到的是
+  transition 的起始值（旋轉讀成 identity、切淺色後顏色還停在深色值），inline style 卻是對的。
+  要量真實值就先 `el.style.transition='none'` 再讀。已寫進 auto-memory
+- 沒有動任何 C# 檔，所以沒跑 `dotnet build`；`?v=` 由 `20260822027` 帶到 `20260822029`
+
+**2026-08-22 — 全面檢視後的第一批修正：A8 / A3 / A1（純前端）**
+
+使用者要求「檢查填寫與顯示邏輯有沒有不合理的地方 + UIUX 還能優化什麼」，
+產出一份 A（邏輯）/ B（統計）/ C（UIUX）/ D（衛生）的建議清單，使用者挑了 **A8、A3、A1** 先做。
+**分析時所有數字都是實際下 SQL 量的**（當時 63 筆），不是憑印象講。
+
+- **A8：匯入後沒有重新抓稽核表**（`handleImport` 只 `fetchReqs()`）。匯入會 TRUNCATE
+  主表**與**稽核表、IDENTITY 歸零重編，畫面上留著的舊 `historyEntries` 會用舊的
+  `requirementId` 對上「換人做」的新資料 → ⚠N 與明細軌跡張冠李戴，要手動重新整理才好。
+  這與 `DB_table.md`「匯入時稽核表必須跟著 TRUNCATE」是同一條原則，只是漏在前端這一側。
+  改成 `await Promise.all([fetchReqs(), fetchHistory()])`。
+  ⚠️ **這一項沒有實測** —— 測它要真的跑一次 TRUNCATE 重灌，代價是使用者現有的 63 筆。
+  僅以程式碼確認，日後真的匯入時順手看一眼 ⚠ 徽章對不對
+- **A3：「提早完成 / 延期完成 / 規格回退」原本都被算進「時程異動 ⚠N」**
+  （五處各自寫 `changeType !== 'init'`）。按一次「✓ 完成」（好消息）該階段就冒出琥珀 ⚠1、
+  KPI +1；回退則同時被 🔄 與 ⚠ 各算一次。新增 top-level 的 **`isDateChange()`**，
+  五處（資料列 ⚠N／明細「N 次」／編輯視窗「異動紀錄 (N 次)」／KPI「時程異動」／
+  警示下拉「有時程異動」）**全部改走同一支**。詳見 `FIELD_SPEC.md` 新增的對照表
+  - **完成／回退的紀錄仍完整列在明細軌跡裡**，只是不算次數 —— 藏起事實與誤報警示一樣糟
+- **A1：② MSD確認中 在一般模式永遠不標逾期**（`scheduleCell` 的 `alert` 寫死 `null`、
+  `pickRowAlert` 也不收它），但需關注／風險預警／精簡模式的「目前階段時程」**都算它**。
+  一筆卡在 `StatusID=2` 且確認日已過的需求，數字上是紅的、列表上整列卻沒有顏色。
+  補上 `confirmAlert`（skip 條件 `isDone || msdStarted || stageNum >= 3`，
+  `msdStarted` 與 spec 看 `msdConfirmed` 是同一個寫法，給 StageCode 空的舊資料用）
+  並納入整列風險色條
+- **驗證方式**（動到真實資料，**做完已全部還原並複驗**）：
+  - 基準：63 筆／15 欄／需關注 5（逾期 4·7 日內 1）／時程異動 KPI 1（涉及 1 件）／全表只有 NID 2 掛 ⚠1
+  - A1：把 NID 30（`StatusID=2`）的 `MsdConfirm` 由 `2026-08-31` 暫改為 `2026-08-15`
+    → ② 那格顯示「2026-08-15 ／ 逾期 7 天」紅字粗體（`rgb(248,113,113)`）、
+    整列色條變紅、需關注 5→6（逾期 4→5）
+  - A3：插入兩筆 `Note LIKE '__TEST__%'` 的假稽核列（NID 31 `提早完成`、NID 36 `規格回退`）
+    → 兩列**都沒有** ⚠、KPI「時程異動」仍是 1（涉及 1 件）、警示下拉「有時程異動」仍是 1；
+    展開 NID 31 的明細，`提早完成` 那筆**仍完整列在軌跡上**、標題旁沒有次數徽章
+  - 還原後複驗：`MsdConfirm` 回 `2026-08-31`、`__TEST__` 稽核列 0 筆、
+    稽核表回到 225 筆、63 筆／15 欄、NID 30 無色條、需關注回到 5、三個計數欄總和仍為 0
+  - 該頁載入的 request 全 200，0 console error（面板裡另有前一場次留下的 409/400/404，
+    是 assignee API 的舊測試，不是這次的）
+  - ⚠️ **截圖依舊拿不到**（Browser 面板未顯示 → 5 秒 timeout），全程以 computed style 與
+    DOM 量測驗證。這已是第三次，別再浪費時間試
+- 沒有動任何 C# 檔，所以**沒有跑 `dotnet build`**；`npm run build` 已跑，`?v=` 由
+  `20260821026` 帶到 `20260822027`
+- **清單上還沒做的**（使用者評估後再決定）：A2 兩套逾期判定、A4 半填階段補日期被記成
+  「日期異動」且不需理由、A5 手動改 StatusID/Status 可繞過完成與回退機制、
+  A6 跨階段日期順序無驗證（實測 confirm 早於 SpecEnd 4 筆／MsdStart 早於 confirm 2 筆／
+  UatStart 早於 MsdEnd 5 筆，後者可能是刻意的平行驗收，建議軟提示不要硬擋）、
+  A7 完成／回退會丟掉其他未存欄位、A9 Pending 沒有篩選入口、A10 新增視窗沒有註冊日期、
+  A11 軟刪除不留稽核、B/C/D 各項
+
+**2026-08-21 — 資料列瘦身：Status 併入 StatusID、Notes Link 空欄自動收起（純前端）**
+
+使用者問「淺色模式下這樣的 UI 給高階主管看漂亮嗎」。**先在頁面上量過 62 列再回答**，
+不是憑印象講。量到的四件事：兩欄重複、兩欄疑似全空、列高 7 種（47~120px）、
+一列 6 種前景色 6 種底色 4 種字重。使用者選了 A+B+C 這批。
+
+- **A：`Status` 欄移除，併進 `StatusID`**。實測 `Status=Done` 45 筆、
+  `StatusID=5 結案` 也是 45 筆 —— 兩欄是同一個事實，並排卻只傳達一件事。
+  - **`Pending` 是唯一推導不出來的**（人工壓的），改成藥丸右邊的 `⏸ Pending` 標記
+  - **併欄會把「資料自相矛盾」藏起來，所以矛盾時反而要主動標 `⚠`**
+    （`Done` 但 `StatusID≠5`）。目前 62 筆矛盾數為 0
+  - 依 Status 篩選的入口沒消失 —— 狀態統計卡本來就是可點篩選
+  - **意外的收穫**：省下的 96px 讓給 Sub Cat 之後，**列高從 7 種收成 5 種、
+    最高列 120px→87px、最矮的 48px 從 20 列變 40 列**。長文字換行的規則一行都沒改
+- **B：`Notes Link` 整欄無資料時自動收起**（判斷資料、不是寫死隱藏）
+- **⚠️ 我在分析時說錯了兩件事，都是量測方法的問題，記下來避免再犯**：
+  1. 我說 `Notes Link` 62 筆全空 —— **錯**。有 2 筆（NID 15 / 34）是真的有連結，
+     只是那兩格渲染成 icon 沒有文字，我用 `innerText` 判斷空值就漏掉了。
+     **含 icon 的欄位不能用 innerText 判斷有無資料**
+  2. 我說「日期全部染成藍色、紅色被稀釋」（C 項）—— **錯**。藍色只在**表頭**
+     (`--col-schedule-text`)，`scheduleCell` 的日期本來就是
+     `alert ? alert.color : var(--text-secondary)`，**早就只有異常才上色**。
+     C 因此沒有東西要做
+- 驗證方式：一般模式 15 欄、群組 colSpan 7+6+1+1=15、資料列每列都是 15 格；
+  精簡模式仍 9 欄、colSpan 加總 9；暫時把 NID 15/34 的 `NotesLink` 清空 →
+  欄位自動收起成 14 欄、群組變 6、Sub Cat 接手 2px 框線、每列 14 格；
+  暫時把 NID 2 壓成 `Pending` → 該列顯示「1 EMS規格確認 ⏸ Pending」；
+  一列的底色種類 6→5（藍色的 Status 色點消失）；1920 下表寬 1228→1215、頁面溢出 0。
+  **測試資料已還原**（NID 2 回 `Ongoing`、NID 15/34 的連結原字串回填，重新確認 62 筆、
+  欄數回到 15、Pending 標記消失）。0 console error；`?v=` 為 `20260821026`
+
+**2026-08-21 — 下拉選項「看起來像被停用」：兩個 CSS 靜默失效（純前端，只動 `input.css`）**
+
+換完 `dbo.Assignee` 之後使用者仍回報「還是不能指定人員」，並附了下拉展開的截圖。
+**選項其實是對的**（8 位 EMS、`IsActive=1`，與 SSMS 查到的逐筆相同），
+`option.disabled` 實測也是 `false` —— 問題是它們**看起來**是灰的。
+
+兩個各自都不會報錯的原因疊在一起：
+
+1. **`--bg-main` 從來沒有被定義過**。編輯視窗裡 26 個 `<input>` / `<select>` 全都寫
+   `style={{background:'var(--bg-main)'}}`，但 `:root` / `.dark` 兩組色盤都沒有這個變數。
+   未定義的 `var()` 不會報錯，只會讓底色**變透明** —— 剛好透出視窗的深色底，
+   所以「看起來是對的」，一直沒被發現。已補進兩組色盤（值與 `--bg-input` 一致，
+   它們本來就是同一種東西）。**這與 2026-08-18 的 `${color}1a` 是同一類坑**
+2. **整份 CSS 沒有宣告 `color-scheme`**。沒宣告時瀏覽器一律把原生控制項當淺色渲染，
+   於是 `<select>` 展開的 popup 是**白底**，但 `<option>` 的文字色是從 `<select>`
+   **繼承**來的淺灰（深色模式的 `--text-primary`）→ 白底淺灰字，整排像 disabled。
+   已在 `:root` 加 `color-scheme: light`、`.dark` 加 `color-scheme: dark`
+
+- **兩件事要一起做，缺一不可**：只設 `color-scheme`，Firefox 仍會繼承文字色；
+  只設 `select option` 的顏色，Chrome 的 popup 外框與捲軸還是淺色的。
+  所以另外加了 `select option { background-color: var(--bg-card); color: var(--text-primary); }`
+- ⚠️ `.dark` 是掛在 **`document.body`** 上（不是 `html`），`color-scheme` 會繼承下去所以有效；
+  body 本來就有明確的 `background: var(--bg-body)`，不靠 canvas 底色
+- 驗證方式：深色 —— `<select>` 底 `rgb(15,23,42)`（**改前是透明**）、
+  文字 `#f1f5f9`、`colorScheme: "dark"`、`option` 底 `rgb(30,41,59)` 文字 `#f1f5f9`；
+  淺色（暫時移除 body 的 `.dark` 再量）—— select 底 `#f8fafc`、文字 `#0f172a`、
+  `colorScheme: "light"`、`option` 白底深字；`option.disabled` 全為 `false`
+  （證明「不能選」是視覺假象）。0 console error；`?v=` 為 `20260821025`
+- ⚠️ 截圖依舊拿不到（Browser 面板未顯示 → 5 秒 timeout），全程以 computed style 量測
+
+**2026-08-21 — 指派人員主檔 `dbo.Assignee`（新 SQL 腳本 `11`）**
+
+使用者回報：編輯視窗要指定 EMS / MSD 人員時選不到正確的人。
+**根因不是下拉壞了，是名單本身是壞的** —— 舊 `dbo.Personnel` 只有 3 筆
+（`宥憲/EMS`、`宸詳/EMS`、`玉婷/MSD`），而控表實際指派的是 **13 個人**（EMS 8 / MSD 5）。
+`宸詳` 在名單裡掛 EMS、控表裡卻是 MSD，所以他會冒出在 **EMS** 的下拉裡（圖二那個畫面）；
+`侑憲` 根本不在名單上，只是因為「目前值一定補回選項」才看得到。
+
+- **`11_create_assignee.sql`** 建 `dbo.Assignee`（`EMPO` 工號可空 / `NAME` / `DEPT` / `IsActive`）
+  ＋ 唯一索引 `UX_Assignee_Dept_Name (DEPT, NAME)`，並**由控表現有指派回填 13 筆**。
+  重跑確認 idempotent（第二次回填 0 筆）
+- **舊 `dbo.Personnel` 的人不自動搬**。`宥憲` 極可能是 `侑憲` 的錯字，
+  自動搬過去只會讓下拉多一個永遠對不到資料的名字 —— 腳本改成把這種人「列出來」等人工確認。
+  `Program.cs` 的 Personnel 建表 bootstrap 與四個 `/api/personnel` 端點已移除
+- **`12_drop_personnel.sql`：舊表已刪除**（使用者當天確認後要求刪掉）。
+  刪除前確認過三件事：程式端 0 處讀寫、`wwwroot/app.js` 0 處、
+  `sys.sql_modules` 查無 view / procedure / function 相依。
+  **腳本會先 SELECT 印出全部 3 筆再 DROP**，且那 3 筆內容已抄進 `DB_table.md`
+  的「已刪除的 dbo.Personnel」一節 —— 刪掉就拿不回來了，
+  這與第 16 批「清空前先寫稽核快照」是同一條原則
+- **`GET /api/assignees` 刻意回傳全部（含 `IsActive = 0`）**。
+  `ownerSelectOptions(dept, current)` 會**把目前這筆已指到的人補回選項尾端**，
+  就算他已停用 —— 選項裡沒有那個值時 `<select>` 顯示空白，
+  使用者一按儲存就把指派**靜靜清掉**了。實測：停用 `宸詳` 後，
+  指到他的那筆下拉仍是 `玉婷,政翰,詠裕,裕隆,宸詳`，其他筆是 `玉婷,政翰,詠裕,裕隆`
+- **「指派」與「篩選」是兩份清單，沒有合併**。工具列的篩選下拉維持第 12 批的做法
+  （從資料裡取，名單上有但資料裡沒有的人選了只會得到空清單）；
+  編輯視窗的指派下拉才讀主檔。兩者問的問題不同
+- **沒有做外鍵**。控表存的是姓名字串，改 `NAME` 不會連動既有需求（已寫進 `DB_table.md`）
+- 順手：模擬帳號的挑選鈕改讀主檔，**有工號就送工號**（稽核欄位本來就是存工號），沒有才退回姓名
+- ⚠️ **維護視窗（`PersonnelModal` → `AssigneeModal`）目前在 UI 上進不去** ——
+  入口鈕 2026-08-18 已依使用者要求移除。這次仍把它補齊（工號欄、顯示/隱藏切換、
+  刪除前提示還有幾筆需求指著這個人），日後要恢復入口只要把按鈕加回來
+  （`setIsAssigneeModalOpen(true)`）。**使用者目前是直接進 SSMS 維護這張表**
+- 驗證方式：`/api/assignees` 回 13 筆且 dept/isActive 正確；
+  開編輯視窗實測 **EMS 下拉 8 人（不再混進 MSD 的宸詳）、MSD 下拉 5 人**，
+  兩個 `<select>` 的 value 都正確落在選項上；停用測試如上；
+  API 逐一測 POST 200 / 同部門同名 409 / 部門非 EMS·MSD 400 / 姓名空白 400 /
+  PUT 200 / PUT 不存在 404 / DELETE 200 / DELETE 不存在 404。
+  **測試資料已還原**（測試員那筆已刪、`宸詳` 的 `IsActive` 與 `侑憲` 的 `EMPO` 已復原，
+  重新確認 13 筆 / 全部 Active / `EMPO` 全空，控表仍 62 筆）。
+  `dotnet build` 0 warning 0 error；`?v=` 為 `20260821024`
+- ⚠️ 截圖依舊拿不到（Browser 面板未顯示 → 5 秒 timeout），全程以 DOM 讀值驗證
 
 **2026-08-20 — 版面優化（使用者：「現在也太醜了」）**
 

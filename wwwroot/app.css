@@ -573,6 +573,11 @@ body {
 }
 
 :root {
+  /* ⚠️ color-scheme 一定要宣告。沒宣告時瀏覽器一律把原生控制項當淺色渲染，
+       深色模式下 <select> 的下拉清單會變成「白底 + 繼承來的淺灰字」，
+       整排選項看起來像被 disabled（2026-08-21 使用者實際回報「不能指定人員」的原因）。
+       它也連帶決定捲軸與日期選擇器的配色。 */
+  color-scheme: light;
   --bg-body:#f1f5f9;
   --bg-header:#ffffff;
   --bg-header-border:#e2e8f0;
@@ -581,6 +586,12 @@ body {
   --bg-card-shadow:rgba(0,0,0,0.04);
   --bg-input:#f8fafc;
   --bg-input-border:#e2e8f0;
+  /* ⚠️ --bg-main 是編輯視窗裡 26 個 <input> / <select> 的底色（app.jsx 全部寫
+       style={{background:'var(--bg-main)'}}），但它**從來沒有被定義過** ——
+       未定義的 var() 不會報錯，只會靜靜地讓底色變透明，看起來剛好「像是」
+       視窗底色所以一直沒被發現。與 2026-08-18 的 `${color}1a` 是同一類坑。
+       值刻意與 --bg-input 一致：它們是同一種東西（表單控制項的底）。 */
+  --bg-main:#f8fafc;
   --bg-table-hover:rgba(99,102,241,0.04);
   --bg-table-expanded:#f8fafc;
   --bg-detail-card:#f1f5f9;
@@ -643,6 +654,7 @@ body {
 }
 
 .\!dark {
+  color-scheme: dark !important;
   --bg-body:#0f172a !important;
   --bg-header:rgba(15,23,42,0.85) !important;
   --bg-header-border:#1e293b !important;
@@ -651,6 +663,7 @@ body {
   --bg-card-shadow:rgba(0,0,0,0.2) !important;
   --bg-input:#0f172a !important;
   --bg-input-border:#334155 !important;
+  --bg-main:#0f172a !important;
   --bg-table-hover:rgba(255,255,255,0.03) !important;
   --bg-table-expanded:rgba(30,41,59,0.5) !important;
   --bg-detail-card:rgba(15,23,42,0.5) !important;
@@ -698,6 +711,7 @@ body {
 }
 
 .dark {
+  color-scheme: dark;
   --bg-body:#0f172a;
   --bg-header:rgba(15,23,42,0.85);
   --bg-header-border:#1e293b;
@@ -706,6 +720,7 @@ body {
   --bg-card-shadow:rgba(0,0,0,0.2);
   --bg-input:#0f172a;
   --bg-input-border:#334155;
+  --bg-main:#0f172a;
   --bg-table-hover:rgba(255,255,255,0.03);
   --bg-table-expanded:rgba(30,41,59,0.5);
   --bg-detail-card:rgba(15,23,42,0.5);
@@ -750,6 +765,17 @@ body {
   --tone-warn-bg:  rgba(251,191,36,0.12);
   --tone-warn-border:  rgba(251,191,36,0.3);
   --tone-good:  #2dd4bf;
+}
+
+/* 原生 <select> 展開後的選項清單。上面的 color-scheme 已經讓 Chrome 用對配色，
+     這裡再明確指定一次是因為 popup 的文字色本來是從 <select> 繼承的 ——
+     編輯視窗把 color 設成淺色（深色底用），繼承下去就會變成白底淺灰字。
+     ⚠️ 兩者要一起做：只設 color-scheme，Firefox 仍會繼承文字色；
+        只設 option 顏色，Chrome 的 popup 外框與捲軸還是淺色的。 */
+
+select option {
+  background-color: var(--bg-card);
+  color: var(--text-primary);
 }
 
 /* 給高階主管瀏覽的介面，刻意收斂裝飾性：小圓角、淡陰影。
@@ -1148,6 +1174,10 @@ select.ctl {
   margin-bottom: 0.5rem;
 }
 
+.mb-2\.5 {
+  margin-bottom: 0.625rem;
+}
+
 .mb-3 {
   margin-bottom: 0.75rem;
 }
@@ -1166,6 +1196,10 @@ select.ctl {
 
 .ml-1\.5 {
   margin-left: 0.375rem;
+}
+
+.ml-3 {
+  margin-left: 0.75rem;
 }
 
 .ml-auto {
@@ -1320,6 +1354,10 @@ select.ctl {
   width: 0.625rem;
 }
 
+.w-28 {
+  width: 7rem;
+}
+
 .w-5 {
   width: 1.25rem;
 }
@@ -1380,6 +1418,10 @@ select.ctl {
   max-width: 28rem;
 }
 
+.max-w-xl {
+  max-width: 36rem;
+}
+
 .flex-1 {
   flex: 1 1 0%;
 }
@@ -1429,6 +1471,10 @@ select.ctl {
 
 .resize {
   resize: both;
+}
+
+.list-disc {
+  list-style-type: disc;
 }
 
 .appearance-none {
@@ -1539,6 +1585,12 @@ select.ctl {
   row-gap: 0.25rem;
 }
 
+.space-y-0\.5 > :not([hidden]) ~ :not([hidden]) {
+  --tw-space-y-reverse: 0;
+  margin-top: calc(0.125rem * calc(1 - var(--tw-space-y-reverse)));
+  margin-bottom: calc(0.125rem * var(--tw-space-y-reverse));
+}
+
 .space-y-1\.5 > :not([hidden]) ~ :not([hidden]) {
   --tw-space-y-reverse: 0;
   margin-top: calc(0.375rem * calc(1 - var(--tw-space-y-reverse)));
@@ -1641,6 +1693,10 @@ select.ctl {
   background-color: rgb(0 0 0 / 0.6);
 }
 
+.bg-emerald-500\/10 {
+  background-color: rgb(16 185 129 / 0.1);
+}
+
 .bg-indigo-500 {
   --tw-bg-opacity: 1;
   background-color: rgb(99 102 241 / var(--tw-bg-opacity, 1));
@@ -1658,6 +1714,10 @@ select.ctl {
 
 .bg-red-500\/10 {
   background-color: rgb(239 68 68 / 0.1);
+}
+
+.bg-slate-500\/10 {
+  background-color: rgb(100 116 139 / 0.1);
 }
 
 .bg-white {
@@ -1805,8 +1865,16 @@ select.ctl {
   padding-bottom: 0.375rem;
 }
 
+.pb-2 {
+  padding-bottom: 0.5rem;
+}
+
 .pl-1 {
   padding-left: 0.25rem;
+}
+
+.pl-4 {
+  padding-left: 1rem;
 }
 
 .pl-9 {
@@ -1976,6 +2044,11 @@ select.ctl {
   color: rgb(59 130 246 / var(--tw-text-opacity, 1));
 }
 
+.text-emerald-500 {
+  --tw-text-opacity: 1;
+  color: rgb(16 185 129 / var(--tw-text-opacity, 1));
+}
+
 .text-indigo-500 {
   --tw-text-opacity: 1;
   color: rgb(99 102 241 / var(--tw-text-opacity, 1));
@@ -1994,6 +2067,11 @@ select.ctl {
 .text-red-600 {
   --tw-text-opacity: 1;
   color: rgb(220 38 38 / var(--tw-text-opacity, 1));
+}
+
+.text-slate-400 {
+  --tw-text-opacity: 1;
+  color: rgb(148 163 184 / var(--tw-text-opacity, 1));
 }
 
 .text-violet-500 {
@@ -2135,6 +2213,149 @@ select.ctl {
   opacity: 0.3;
 }
 
+/* ════════════════════════════════════════════════════════════════
+   列印 / 存成 PDF（2026-08-22）
+   ════════════════════════════════════════════════════════════════
+   主管會把需求列表印出來帶進會議。沒有這一段時印出來的是：
+     · 深色模式直接把整張紙塗黑（碳粉吃滿，而且淡色文字全部消失）
+     · 頁首與工具列佔掉第一頁上半，而且那些按鈕在紙上根本不能按
+     · 表頭只有第一頁有 —— 第二頁以後 15 欄沒有欄名，等於讀不懂
+     · sticky 表頭在部分瀏覽器會壓在第一列資料上面
+   ⚠️ 這一段**只作用在 print media**，螢幕上的任何一個像素都不受影響。
+   ⚠️ 刻意寫在所有 @layer 之外並放在檔案最後：要蓋掉 @layer base 的 :root/.dark
+      色盤，靠的就是它排在輸出的最後面。 */
+
+/* 只在紙上出現的元素（列印抬頭）。螢幕上一律隱藏 */
+
+.print-only {
+  display: none;
+}
+
+@media print {
+  /* ── 1. 紙上一律白底黑字 ──
+     深淺色兩組色盤同時覆寫（`.dark` 掛在 body 上，選擇器要一起收）。
+     這裡把對比拉到最大是**為了紙**，與螢幕上「不可把 muted 調淡」是同一個目的
+     的兩個方向：輸出裝置不同，看得見才是重點。 */
+
+  :root, .dark {
+    color-scheme: light;
+    --bg-body:#ffffff;
+    --bg-header:#ffffff;
+    --bg-header-border:#999999;
+    --bg-card:#ffffff;
+    --bg-card-shadow:transparent;
+    --bg-input:#ffffff;
+    --bg-input-border:#999999;
+    --bg-main:#ffffff;
+    --bg-table-hover:transparent;
+    --bg-table-expanded:#ffffff;
+    --bg-row-done:#ffffff;
+    --bg-row-zebra:#f2f2f2;
+    --bg-detail-card:#ffffff;
+    --bg-detail-border:#999999;
+    --bg-bar-track:#e0e0e0;
+    --text-primary:#000000;
+    --text-secondary:#1a1a1a;
+    --text-tertiary:#333333;
+    --text-muted:#4d4d4d;
+    --border-table:#9a9a9a;
+    --border-card:#4d4d4d;
+    --border-soft:#9a9a9a;
+    --thead-group:#ffffff;
+    --thead-col:#ffffff;
+    --thead-schedule:transparent;
+    --col-ems-bg:transparent;
+    --col-msd-bg:transparent;
+    --col-schedule-text:#000000;
+    --thead-group-schedule:#ffffff;
+    --thead-col-ems:#ffffff;
+    --thead-col-msd:#ffffff;
+    --thead-col-schedule:#ffffff;
+    /* 異常語意色留著 —— 紙本大多是黑白印，但存成 PDF 或彩色印時，
+       紅色的逾期仍然是這張表最重要的資訊。底色改透明避免整格糊成一團 */
+    --tone-alert:#b91c1c;
+    --tone-alert-bg:transparent;
+    --tone-alert-border:#b91c1c;
+    --tone-warn:#8a4b00;
+    --tone-warn-bg:transparent;
+    --tone-warn-border:#8a4b00;
+    --tone-good:#0f766e;
+  }
+
+  /* 15 欄橫式才放得下；直式印會被切掉右邊三四欄 */
+
+  @page {
+    size: A4 landscape;
+
+    margin: 8mm;
+  }
+
+  html, body {
+    background:#ffffff !important;
+  }
+
+  /* 版面寬度限制與左右留白交給 @page，不要再吃掉紙的寬度 */
+
+  main {
+    max-width: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+
+  .print-only {
+    display: block !important;
+  }
+
+  /* 卡片在紙上不需要陰影與圓角（雷射印表機的淡陰影只會變成一圈髒點） */
+
+  .t-card, .t-table-card {
+    box-shadow: none !important;
+    border-radius: 0 !important;
+  }
+
+  /* 投影模式的放大在紙上要拿掉，否則右邊直接被裁掉 */
+
+  .present-zoom {
+    zoom: 1 !important;
+  }
+
+  /* ── 2. 表頭每一頁重複 ──
+     ⚠️ sticky 一定要還原成 static：印表機沒有捲軸，position:sticky 在部分
+     瀏覽器會把兩層表頭疊印在第一列資料上面。
+     改吃 table-header-group，瀏覽器就會在每一頁自動重印欄名 */
+
+  .sticky-table thead {
+    display: table-header-group;
+  }
+
+  .sticky-table thead th {
+    position: static !important;
+  }
+
+  .sticky-table tbody tr, .sticky-table td {
+    -moz-column-break-inside: avoid;
+         break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  /* 展開的明細在紙上改成單欄（三張卡並排會被頁面邊界切斷） */
+
+  .lg\:grid-cols-3 {
+    grid-template-columns: 1fr !important;
+  }
+
+  /* 明細裡的捲動區在紙上要全部攤開，否則只印得到看得見的那一小段 */
+
+  .overflow-y-auto, .overflow-x-auto {
+    overflow: visible !important;
+    max-height: none !important;
+  }
+}
+
 .last\:mb-0:last-child {
   margin-bottom: 0px;
 }
@@ -2229,8 +2450,17 @@ select.ctl {
   opacity: 0.3;
 }
 
+.disabled\:opacity-40:disabled {
+  opacity: 0.4;
+}
+
 .disabled\:opacity-60:disabled {
   opacity: 0.6;
+}
+
+.disabled\:hover\:bg-red-500:hover:disabled {
+  --tw-bg-opacity: 1;
+  background-color: rgb(239 68 68 / var(--tw-bg-opacity, 1));
 }
 
 .group:hover .group-hover\:opacity-100 {
