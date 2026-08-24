@@ -1,3 +1,4 @@
+function _extends() { return _extends = Object.assign ? Object.assign.bind() : function (n) { for (var e = 1; e < arguments.length; e++) { var t = arguments[e]; for (var r in t) ({}).hasOwnProperty.call(t, r) && (n[r] = t[r]); } return n; }, _extends.apply(null, arguments); }
 const {
   useState,
   useMemo,
@@ -12,6 +13,31 @@ const {
 const APP_BASE = window.APP_BASE && window.APP_BASE.indexOf('__') !== 0 ? window.APP_BASE : '/';
 const api = p => APP_BASE + String(p).replace(/^\/+/, '');
 
+// ─── 網址狀態（第 28 批，2026-08-24）───
+// 篩選與排序寫進 query string，這樣「這份篩過的清單」才貼得給同事，F5 也不會全丟。
+// ⚠️ 只在**載入當下**讀一次（`app.js` 是一般 <script>，整份只跑一次）——
+// 之後一律以 React state 為準，網址由 replaceState 單向跟著寫。
+// 反過來做（每次 render 都讀網址）會與 state 兩邊互相蓋，打字打到一半就被回捲。
+// ⚠️ 不可以改用 pushState：搜尋框每打一個字就是一次狀態變更，
+// 用 push 的話按一次「上一頁」只退掉一個字元，等於把瀏覽器的返回鍵廢掉。
+const URL_PARAMS = (() => {
+  try {
+    return new URLSearchParams(window.location.search);
+  } catch (e) {
+    return new URLSearchParams('');
+  }
+})();
+// 取值一律過白名單（`allow`）。網址是使用者可以隨手改的東西，
+// 收到不認得的值就退回預設 —— 讓它進到 state 只會做出一個永遠 0 筆、
+// 而且畫面上找不到原因的清單。
+const urlOne = (key, allow, fallback = 'All') => {
+  const v = URL_PARAMS.get(key);
+  if (!v) return fallback;
+  return allow.includes(v) ? v : fallback;
+};
+const urlText = key => (URL_PARAMS.get(key) || '').slice(0, 200); // 截斷：網址是外面來的
+const urlList = (key, allow) => (URL_PARAMS.get(key) || '').split(',').map(s => s.trim()).filter(s => s && allow.includes(s));
+
 // 以「今天」為基準計算逾期／即將到期，時分秒歸零避免比較誤差
 const TODAY = (() => {
   const d = new Date();
@@ -21,6 +47,15 @@ const TODAY = (() => {
 const formatToday = `${TODAY.getFullYear()}/${String(TODAY.getMonth() + 1).padStart(2, '0')}/${String(TODAY.getDate()).padStart(2, '0')}`;
 // 與 API 傳輸格式一致的今天（"YYYY-MM-DD"）。日期都是這個格式，字串比較即時間比較
 const TODAY_ISO = formatToday.replace(/\//g, '-');
+
+// 「畫面最後抓取」的時鐘（HH:mm）。跨過午夜就補上日期 —— 分頁開一整晚的話，
+// 只寫 08:31 會被讀成「今天早上剛抓的」，實際上那是昨天的畫面
+const formatClock = d => {
+  if (!d) return '—';
+  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const sameDay = d.getFullYear() === TODAY.getFullYear() && d.getMonth() === TODAY.getMonth() && d.getDate() === TODAY.getDate();
+  return sameDay ? hm : `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${hm}`;
+};
 
 // ─── 三種狀態定義 (Init / Ongoing / Done) ───
 // ⚠️ `Pending`（暫緩）已於 2026-08-22 依使用者要求**移除**（「暫時不需要此狀態」）。
@@ -364,6 +399,25 @@ const readPresentZoom = () => {
   }
 };
 
+// ─── 字級（2026-08-24 / 第 29 批）───
+// 資料列上有 48 處 text-[10px] 與 73 處 text-[11px]。投影模式解了會議室，
+// **沒解主管自己的桌機** —— 而他每天看的就是這張表。
+// ⚠️ 刻意沿用投影模式那套 CSS zoom，不去動那 121 個字級 class：
+//   1. 一個一個調會動到欄寬、換行、以及量測出來的表頭吸附位置
+//   2. zoom 連圖示、色點、徽章、間距一起放大，改 font-size 只放大文字，
+//      10px 的字配沒變大的 8px 三角形只會更難看
+// 只掛在 <main> 上（頁首維持原尺寸）—— 要放大的是資料，不是工具列與標題。
+// 投影模式開著時不套（那邊有自己的倍率，兩個 zoom 疊起來會相乘）。
+const UI_SCALES = [1, 1.15, 1.3];
+const readUiScale = () => {
+  try {
+    const v = parseFloat(localStorage.getItem('ct.uiScale'));
+    return UI_SCALES.includes(v) ? v : 1;
+  } catch (e) {
+    return 1;
+  }
+};
+
 // ─── 到期預警：只盯「還沒走完」的階段，取其中最急的那一個 ───
 // 四個階段各有一個關鍵日期。若四個日期一起比，早就走完的階段（例如去年交的 Spec）
 // 會永遠亮紅燈，反而把真正該關注的項目淹掉 —— 所以先排除走完的階段（isPhasePassed）。
@@ -497,6 +551,100 @@ const buildDueList = (rows, windowDays) => rows.map(it => getDueEntry(it, window
 const dueLabel = n => n < 0 ? `逾期 ${Math.abs(n)} 天` : n === 0 ? '今天到期' : `剩 ${n} 天`;
 const DUE_WINDOW_DEFAULT = 7; // 每週會議固定看 7 日內
 
+// ─── 生效中的篩選：欄位定義（第 28 批，2026-08-24）───
+// 用途有兩個，兩個都必須用同一份定義，否則又是「同一件事兩套規則」：
+//   1. 條件晶片上的欄位名稱
+//   2. 網址參數的白名單（`f_<key>`）
+// `compactOnly` / `normalOnly` 說的是「這個欄位的篩選輸入框在哪個模式看得到」——
+// ⚠️ 看不到**不代表失效**：`colFilters` 裡的值照樣在過濾（`filteredData` 不分模式），
+// 所以看不到的那些一定要在晶片上標出來。這正是這一批要解決的問題本身
+// （在此之前唯一的線索是漏斗鈕上的數字，而它連是哪一欄都不會說）。
+const COL_FILTER_META = {
+  nid: {
+    label: 'NID'
+  },
+  status: {
+    label: 'Status',
+    hideInCompact: true
+  },
+  stageCode: {
+    label: 'StatusID'
+  },
+  // 兩個模式都有，只是位置不同
+  regDate: {
+    label: '註冊日期',
+    hideInCompact: true
+  },
+  mainCat: {
+    label: 'Main Cat'
+  },
+  subCat: {
+    label: 'Sub Cat'
+  },
+  emsOwner: {
+    label: 'EMS 負責人'
+  },
+  msdOwner: {
+    label: 'MSD 負責人'
+  },
+  dueDate: {
+    label: '目前階段時程',
+    compactOnly: true
+  },
+  // 精簡模式才有這一欄
+  specEnd: {
+    label: '①EMS規格確認',
+    hideInCompact: true
+  },
+  msdConfirm: {
+    label: '②MSD確認中',
+    hideInCompact: true
+  },
+  msdEnd: {
+    label: '③MSD開發中',
+    hideInCompact: true
+  },
+  uatEnd: {
+    label: '④EMS驗收',
+    hideInCompact: true
+  },
+  currentStatus: {
+    label: '現況描述',
+    compactOnly: true
+  },
+  mpSaving: {
+    label: 'MP Saving',
+    hideInCompact: true
+  }
+};
+const COL_FILTER_KEYS = Object.keys(COL_FILTER_META);
+// 這個欄位的篩選輸入框現在看不看得到（與篩選列實際 render 的條件一一對應）
+const colFilterHidden = (key, compact) => {
+  const m = COL_FILTER_META[key];
+  if (!m) return false;
+  return compact ? !!m.hideInCompact : !!m.compactOnly;
+};
+
+// 工具列四個下拉的值 → 晶片上的文字。⚠️ 與 FilterSelect 的 options 是同一組值，
+// 改一邊就要改兩邊（那邊的 label 還帶著筆數，晶片上不帶）
+const DUE_FILTER_LABEL = {
+  attention: '需關注',
+  overdue: '已逾期',
+  soon: `${DUE_WINDOW_DEFAULT} 日內到期`
+};
+const PROG_FILTER_LABEL = {
+  ongoing: '進行中',
+  done: '已完成'
+};
+const ALERT_FILTER_LABEL = {
+  changed: '有時程異動',
+  delay: '有執行延期',
+  delay2: '延期 2 次以上',
+  rollback: '有規格回退'
+};
+// 表頭可以點的排序鍵（requestSort 的呼叫點）＋ 排序面板的兩個次數鍵。
+// 網址的 `sort` 參數過這份白名單
+const SORT_KEYS = [...COL_FILTER_KEYS, 'delayCount', 'rollbackCount'];
 const dayDiff = (a, b) => {
   const da = parseDateStr(a),
     db = parseDateStr(b);
@@ -956,6 +1104,20 @@ const AssigneeErrorHint = ({
   }, "\u26A0 ", error);
 };
 
+// 儲存前驗證沒過的欄位，就地標紅（2026-08-23 / 第 26 批）。
+// 在此之前六段檢查各自 return、一次只講一個問題，而且訊息只活在彈窗裡 ——
+// 關掉之後畫面上沒有任何一格是紅的，使用者得自己回想剛剛那句話講的是哪一欄。
+// ⚠️ 這是**模組層**的元件（不是寫在 App 裡）：在 App 裡用 const 定義的元件
+// 每次 render 都是新的型別，React 會整棵重新掛載（見 renderYmRange 上方的說明）
+const FieldErrorHint = ({
+  msg
+}) => msg ? /*#__PURE__*/React.createElement("div", {
+  className: "text-[10px] mt-1 font-bold",
+  style: {
+    color: 'var(--tone-alert)'
+  }
+}, "\u26A0 ", msg) : null;
+
 // 還沒壓結束日時，完成鈕不會出現 —— 但畫面上什麼都不說的話，
 // 使用者只會覺得「為什麼有的階段有完成鈕、有的沒有」。補一行灰字說明。
 // ⚠️ 只在「這個階段已經開放填寫」時顯示：前置還沒完成的階段旁邊已經有
@@ -1043,10 +1205,13 @@ const ReasonFields = ({
   categories,
   setCategories,
   reasons,
-  setReasons
+  setReasons,
+  error
 }) => /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("label", {
   className: "block text-xs font-bold text-red-600 dark:text-red-400 mb-1.5"
-}, "\u26A0\uFE0F \u8ACB\u586B\u5BEB\u7570\u52D5\u539F\u56E0 (\u5FC5\u586B)"), /*#__PURE__*/React.createElement("div", {
+}, "\u26A0\uFE0F \u8ACB\u586B\u5BEB\u7570\u52D5\u539F\u56E0 (\u5FC5\u586B)"), /*#__PURE__*/React.createElement(FieldErrorHint, {
+  msg: error
+}), /*#__PURE__*/React.createElement("div", {
   className: "flex flex-wrap gap-1.5 mb-2"
 }, REASON_CATEGORIES.map(c => {
   const on = categories[phaseKey] === c;
@@ -1084,19 +1249,23 @@ const ReasonFields = ({
 }));
 
 // 開／關兩態的小按鈕（排序選項用）。full=true 是放在下拉面板裡的整寬版本
+// disabled：目前只有「精簡模式」在投影模式／窄螢幕下會用到（第 32 批）——
+// 那兩種情況它是被鎖住的前置條件，按了不該有反應，但仍要看得出目前是開著的
 const ToggleChip = ({
   on,
   onClick,
   title,
   tone,
   full,
+  disabled,
   children
 }) => {
   const clr = tone === 'alert' ? 'var(--tone-alert)' : 'var(--color-indigo-500, #6366f1)';
   return /*#__PURE__*/React.createElement("button", {
     onClick: onClick,
     title: title,
-    className: `ctl gap-1.5 ${full ? 'w-full justify-start' : ''}`,
+    disabled: disabled,
+    className: `ctl gap-1.5 ${full ? 'w-full justify-start' : ''} disabled:opacity-50 disabled:cursor-default`,
     style: on ? {
       background: `${tone === 'alert' ? 'var(--tone-alert-bg)' : 'rgba(99,102,241,0.12)'}`,
       color: clr,
@@ -1247,6 +1416,9 @@ const ThemeToggle = ({
   className: "ctl-sm flex-shrink-0",
   title: dark ? '切換至淺色模式' : '切換至深色模式'
 }, dark ? '☀ 淺色' : '☾ 深色');
+
+// 排序方向的箭頭。⚠️ 一律 aria-hidden —— 方向已經由 <th> 的 aria-sort 講過了
+// （見 sortProps），圖示再念一次只會變成「上箭頭 上箭頭」
 const SortIcon = ({
   active,
   dir
@@ -1261,7 +1433,8 @@ const SortIcon = ({
     strokeWidth: "2",
     style: {
       opacity: 0.3
-    }
+    },
+    "aria-hidden": "true"
   }, /*#__PURE__*/React.createElement("path", {
     d: "m21 16-4 4-4-4"
   }), /*#__PURE__*/React.createElement("path", {
@@ -1278,7 +1451,8 @@ const SortIcon = ({
     viewBox: "0 0 24 24",
     fill: "none",
     stroke: "#3b82f6",
-    strokeWidth: "2.5"
+    strokeWidth: "2.5",
+    "aria-hidden": "true"
   }, /*#__PURE__*/React.createElement("path", {
     d: "m5 12 7-7 7 7"
   }), /*#__PURE__*/React.createElement("path", {
@@ -1291,7 +1465,8 @@ const SortIcon = ({
     viewBox: "0 0 24 24",
     fill: "none",
     stroke: "#3b82f6",
-    strokeWidth: "2.5"
+    strokeWidth: "2.5",
+    "aria-hidden": "true"
   }, /*#__PURE__*/React.createElement("path", {
     d: "m19 12-7 7-7-7"
   }), /*#__PURE__*/React.createElement("path", {
@@ -1302,8 +1477,40 @@ const SortIcon = ({
 // ─── Main App ───
 function App() {
   const [requirementsData, setRequirementsData] = useState([]);
+  // isLoading = **首次**載入（tbody 會整個換成「資料載入中…」）。
+  // refreshing = 之後的重抓（儲存／刪除／完成／回退／匯入後）—— 只淡化表格並在
+  // 頁首標「更新中…」，不可以再把 tbody 換掉（2026-08-23 / 第 26 批）。
+  // 在此之前 fetchReqs() 一律 setIsLoading(true)：每存一次檔，62 列就整片消失
+  // 再長回來，捲動位置與「我剛剛展開的那幾列」的視覺連續性全斷掉
   const [isLoading, setIsLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const loadedOnceRef = React.useRef(false);
   const [loadError, setLoadError] = useState('');
+  // 「這個畫面是什麼時候抓的」（2026-08-24 / 第 27 批）。
+  // ⚠️ 與頁首那個「資料更新」是**兩件不同的事**：那個是全部資料列裡最晚的
+  // UpdatedAt（資料本身何時被改），這個是這份畫面何時從後端載回來。
+  // 多人共用的表，別人存了檔而你的分頁開著一整個下午時，前者不會變、
+  // 後者才看得出「我手上這份已經舊了」
+  const [lastFetchedAt, setLastFetchedAt] = useState(null);
+  // ─── 寫入類操作的「送出中」旗標（2026-08-23 / 第 26 批）───
+  // 在此之前「儲存變更」「確認回退」「確認」都沒有送出中狀態，手快點兩下就會
+  // 送出兩次：新增時第二次會被後端的 NID 唯一索引擋成 409「NID 重複」——
+  // 使用者剛剛明明是第一次建這筆，畫面卻在說謊。/done 連點同理。
+  // ⚠️ 一定要有 ref：兩次點擊落在同一個 tick 時，第二次讀到的 isSubmitting
+  // 還是舊值（setState 是非同步的），只靠 state 擋不住真正的連點
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const submittingRef = React.useRef(false);
+  const runExclusive = async fn => {
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    setIsSubmitting(true);
+    try {
+      await fn();
+    } finally {
+      submittingRef.current = false;
+      setIsSubmitting(false);
+    }
+  };
   const [toast, setToast] = useState(null);
   // 深淺色模式記在 localStorage（作法與精簡模式一致）。
   // 沒設定過就跟隨作業系統，不要一律給淺色 —— 工廠有些看板機是深色桌面
@@ -1317,18 +1524,48 @@ function App() {
       return false;
     }
   });
-  const [activeView, setActiveView] = useState('table');
+  // ⚠️ 以下所有篩選／排序的初始值都從網址讀（第 28 批）。
+  // 全部走白名單，認不得的值一律退回預設 —— 見 urlOne / urlList 的說明
+  const [activeView, setActiveView] = useState(() => urlOne('view', ['table', 'dashboard'], 'table'));
   const [expandedRows, setExpandedRows] = useState(new Set());
-  const [searchTerm, setSearchTerm] = useState('');
+  const [searchTerm, setSearchTerm] = useState(() => urlText('q'));
+  // ─── 搜尋防抖（2026-08-24 / 第 29 批）───
+  // searchTerm  = 輸入框的值（每個按鍵都變，一定要即時，否則游標會跳）
+  // searchQuery = 真正拿去過濾的值，慢 200ms
+  // 在此之前打一個字就重跑一次 filter + 五個 useMemo（62 筆 × 六個欄位比對
+  // ＋ dueInfo／stageFacets／analytics／sortedData 全部重算），
+  // 打「侑憲」四個字就是四輪。⚠️ 網址也吃 searchQuery ——
+  // 不然 replaceState 會被打字節奏推著跑，每個字元覆寫一次網址
+  const [searchQuery, setSearchQuery] = useState(searchTerm);
+  useEffect(() => {
+    const t = setTimeout(() => setSearchQuery(searchTerm), 200);
+    return () => clearTimeout(t);
+  }, [searchTerm]);
   // StatusID 篩選（第 18 批）：改為多選，空陣列 = ALL。
   // 用陣列而不是 Set，是為了讓 useMemo 的相依陣列能靠參考變更觸發重算
-  const [stageFilter, setStageFilter] = useState([]);
-  const [sortConfig, setSortConfig] = useState({
-    key: null,
-    direction: 'asc'
+  const [stageFilter, setStageFilter] = useState(() => urlList('stage', Object.keys(STAGE_CODES)));
+  const [sortConfig, setSortConfig] = useState(() => {
+    // `sort=key:dir`。key 過 SORT_KEYS 白名單，方向只認 asc / desc
+    const [k, d] = (URL_PARAMS.get('sort') || '').split(':');
+    return SORT_KEYS.includes(k) ? {
+      key: k,
+      direction: d === 'desc' ? 'desc' : 'asc'
+    } : {
+      key: null,
+      direction: 'asc'
+    };
   });
-  const [colFilters, setColFilters] = useState({});
-  const [showColFilters, setShowColFilters] = useState(false);
+  const [colFilters, setColFilters] = useState(() => {
+    const o = {};
+    COL_FILTER_KEYS.forEach(k => {
+      const v = urlText('f_' + k);
+      if (v) o[k] = v;
+    });
+    return o;
+  });
+  // 網址帶了欄位篩選就直接把面板打開 —— 同事點進來時輸入框裡有值卻收在
+  // 漏斗鈕底下的話，第一眼看到的是「筆數對不上」而不是「有條件在生效」
+  const [showColFilters, setShowColFilters] = useState(() => COL_FILTER_KEYS.some(k => !!urlText('f_' + k)));
   const [editingData, setEditingData] = useState(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   // 指派人員主檔 dbo.Assignee（工號／姓名／部門／是否啟用），
@@ -1371,6 +1608,9 @@ function App() {
   // StatusID 預設唯讀（第 19 批 / A5）。正常推進只能靠「✓ 完成」與「🔄 規格回退」，
   // 手動改是繞過那套機制，所以要先按「手動修正」才開放下拉，而且一定要留原因
   const [stageUnlocked, setStageUnlocked] = useState(false);
+  // 按過一次「儲存」之後才把驗證結果畫到欄位上（第 26 批）。
+  // 一開視窗就滿江紅是在罵人 —— 新增時本來就每一欄都還沒填
+  const [showSaveErrors, setShowSaveErrors] = useState(false);
   // ─── 時程異動稽核（第 13 批）───
   // historyEntries 是 dbo.Controltable_History 的全部紀錄，
   // historyMap 依 requirementId 分組供資料列與明細查用
@@ -1397,19 +1637,23 @@ function App() {
   // 到期提醒橫幅已移除（改為需求列表工具列的「需關注」鈕 + 可點的 KPI 卡），
   // 連帶不再需要 noticeDismissed 這個關閉狀態
   // ─── 需求列表的篩選與排序（第 12 批：統計、人員、逾期全部收進同一頁）───
-  const [emsFilter, setEmsFilter] = useState('All');
-  const [msdFilter, setMsdFilter] = useState('All');
+  // ⚠️ EMS / MSD 兩個沒有白名單可過（選項來自資料，而資料是非同步載入的）。
+  // 網址帶了一個不存在的人名時**刻意不吃掉**：清單會是 0 筆，但晶片上寫著
+  // 「EMS：某某」—— 看得到原因才改得掉，靜靜退回 All 反而會讓人以為網址壞了
+  const [emsFilter, setEmsFilter] = useState(() => urlText('ems') || 'All');
+  const [msdFilter, setMsdFilter] = useState(() => urlText('msd') || 'All');
   // 'All' | 'attention'(逾期+7日內) | 'overdue' | 'soon'
-  const [dueFilter, setDueFilter] = useState('All');
+  const [dueFilter, setDueFilter] = useState(() => urlOne('due', ['attention', 'overdue', 'soon']));
   // 警示徽章篩選（第 17 批）：'All' | 'delay' | 'delay2' | 'rollback' | 'changed'
-  const [alertFilter, setAlertFilter] = useState('All');
+  const [alertFilter, setAlertFilter] = useState(() => urlOne('alert', ['changed', 'delay', 'delay2', 'rollback']));
   // 進度篩選：'All' | 'ongoing' | 'done'。定義與統計報表的 KPI 卡完全一致 ——
   // ongoing = 非 Done（含 Init），不是 OverallStatus 剛好等於 Ongoing 的那些。
   // 兩邊若各算各的，主管點了「進行中 17」卻看到 9 筆會直接不信任這張表
-  const [progressFilter, setProgressFilter] = useState('All');
+  const [progressFilter, setProgressFilter] = useState(() => urlOne('prog', ['ongoing', 'done']));
   // Done 一律沉到最下面。做成可關閉的 toggle，否則使用者點欄位排序時
   // 會覺得「排序壞掉了」——Done 列永遠不動
-  const [doneLast, setDoneLast] = useState(true);
+  // 網址用 `dl=0` 表示關掉（預設開著，所以只有關掉時才需要帶）
+  const [doneLast, setDoneLast] = useState(() => URL_PARAMS.get('dl') !== '0');
   // 依剩餘天數由少到多排序（逾期最久的在最上面）。
   // ⚠️ 2026-08-23：初始值原本是 `useState(readCompactPref)` —— 讀的是**精簡模式**的
   // localStorage（`ct.compactMode`）。理由寫的是「精簡模式＝主管檢視，預設就該這樣排」，
@@ -1417,7 +1661,10 @@ function App() {
   // 而畫面上沒有任何東西解釋為什麼列序變了。兩個不同的偏好共用一個 key 遲早會踩到。
   // 改成單純的 false（不持久化）—— 它也會被「需關注」KPI 卡以程式設成 true，
   // 那種程式設定的狀態更不該被記起來帶到下一次開啟。
-  const [duePriority, setDuePriority] = useState(false);
+  // ⚠️ 網址（`dp=1`）是**另一回事**，不違反上面那條：網址永遠等於「現在畫面的狀態」
+  // （每次變更都 replaceState 覆蓋），關掉它網址上的 dp 就跟著不見，
+  // 不會有「明明關掉了，重新整理又自己回來」那種現象
+  const [duePriority, setDuePriority] = useState(() => URL_PARAMS.get('dp') === '1');
   // 各年月案件數要顯示幾個年月（0 = 全部）。資料一路累積下去，19 個月全部攤開時
   // 每根柱子只剩幾 px、月份標籤還撐著不縮，整張卡會把版面推爆。
   // 預設只看最近 12 個年月 —— 主管要看的是「最近的走勢」，兩年前的細節可以自己切
@@ -1436,12 +1683,58 @@ function App() {
   // 「不再維護第二套格式」把到期預警頁籤拿掉過，這裡不要再開一份出來。
   // 預設 false：不點它，畫面就跟以前一模一樣。
   // 主管每次開都要重按一次的話這個開關等於沒用，所以記在 localStorage
-  const [compact, setCompact] = useState(readCompactPref);
+  const [compactPref, setCompactPref] = useState(readCompactPref);
+  // ─── 窄螢幕自動套精簡模式（2026-08-24 / 第 29 批：唯一的 RWD）───
+  // 一般模式 16 欄的自然寬度約 1524px，1024px 以下等於整張表都在橫捲，
+  // 左側凍結的兩欄再怎麼幫忙也只剩 NID 看得到。
+  // ⚠️ 刻意**不做**第二套卡片版 —— 第 12 批已經因為「不再維護第二套格式」
+  // 拿掉過到期預警頁，精簡模式（9 欄）本來就是為了「看不下 16 欄」而存在的。
+  // ⚠️ 斷點取 1024（平板橫放以下），**不是** 1440：1366/1440 的筆電是主要工作機，
+  // 那裡要看的是完整 16 欄（第 27 批的左側凍結就是為它做的），
+  // 在那個寬度自作主張收成 9 欄會把欄位藏掉。
+  // ⚠️ 用 `compactPref || narrow` 這種衍生值，**不要**去 setCompactPref(true)：
+  // 直接改狀態會把「使用者自己的偏好」蓋掉並寫進 localStorage，
+  // 視窗拉寬之後回不去（而且與投影模式的存／還原邏輯會打架）。
+  const [narrow, setNarrow] = useState(() => {
+    try {
+      return window.matchMedia('(max-width: 1024px)').matches;
+    } catch (e) {
+      return false;
+    }
+  });
+  useEffect(() => {
+    let mq;
+    try {
+      mq = window.matchMedia('(max-width: 1024px)');
+    } catch (e) {
+      return;
+    }
+    // ⚠️ 一律重新查 mq.matches，不要相信 event.matches 以外沒有的東西 ——
+    // 兩個來源（change 事件與 resize）最後都走同一句判斷
+    const sync = () => setNarrow(mq.matches);
+    sync();
+    // addListener 是舊介面，工廠 PC 的舊瀏覽器只有它
+    if (mq.addEventListener) mq.addEventListener('change', sync);else mq.addListener(sync);
+    // ⚠️ resize 是**必要的備援**，不是重複掛：實測有環境（背景分頁／內嵌瀏覽器）
+    // 視窗寬度確實變了、`matchMedia().matches` 也已經翻成 false，
+    // 但 change 事件從頭到尾沒有送出來 —— 只靠 change 的話畫面會卡在
+    // 「已自動套用精簡模式」，把視窗拉寬也回不去。
+    window.addEventListener('resize', sync);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener('change', sync);else mq.removeListener(sync);
+      window.removeEventListener('resize', sync);
+    };
+  }, []);
+  const compact = compactPref || narrow;
   // 切進精簡模式時一併套上「到期日近的在上面」。切出去不動它 ——
   // 使用者在一般模式自己開的排序不該被這顆開關收走
   const toggleCompact = () => {
+    // ⚠️ 投影模式中不給關（第 32 批）：精簡模式是投影模式的前置條件，
+    // 關掉就會做出「投影 + 16 欄」那個一定橫捲的組合。按鈕本身也是 disabled，
+    // 這裡是最後一道（窄螢幕強制的那個由衍生值 compact 自己擋，不必在這裡處理）
+    if (present) return;
     const next = !compact;
-    setCompact(next);
+    setCompactPref(next);
     if (next) {
       setDuePriority(true);
       setSortConfig({
@@ -1451,10 +1744,12 @@ function App() {
     }
   };
   useEffect(() => {
+    // ⚠️ 存的是**偏好**不是實際值：窄螢幕強制的那次不可以寫進去，
+    // 否則在小螢幕開過一次，回到大螢幕就永遠是精簡模式了
     try {
-      localStorage.setItem('ct.compactMode', compact ? '1' : '0');
+      localStorage.setItem('ct.compactMode', compactPref ? '1' : '0');
     } catch (e) {/* 鎖了就算了 */}
-  }, [compact]);
+  }, [compactPref]);
   // ─── 投影模式（2026-08-19）───
   // 刻意**不做第二套版面**（第 12 批已經因為「不再維護第二套格式」拿掉過到期預警頁）。
   // 它只做四件事，全部是把既有畫面調到會議室看得見的程度：
@@ -1467,36 +1762,118 @@ function App() {
   // 深色底在開著燈的會議室會糊成一片。**離開時還原成進來之前的值**，不是接管。
   const [present, setPresent] = useState(readPresentPref);
   const [presentZoom, setPresentZoom] = useState(readPresentZoom);
+  // 字級（見 UI_SCALES 上方的說明）。點一下換下一級，繞回 100%
+  const [uiScale, setUiScale] = useState(readUiScale);
+  const cycleUiScale = () => setUiScale(prev => {
+    const i = UI_SCALES.indexOf(prev);
+    return UI_SCALES[(i + 1) % UI_SCALES.length];
+  });
+  // 降一級（不繞回）。給「⚠ 右邊被切掉」那顆用 —— 它要的是「變小」，
+  // 用 cycleUiScale 的話在 130% 按下去會繞回 100%（碰巧對），但在 115% 會跳到 130%（更糟）
+  const stepUiScaleDown = () => setUiScale(prev => {
+    const i = UI_SCALES.indexOf(prev);
+    return UI_SCALES[Math.max(0, (i < 0 ? 0 : i) - 1)];
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem('ct.uiScale', String(uiScale));
+    } catch (e) {/* 鎖了就算了 */}
+  }, [uiScale]);
+  // ─── 投影模式的前置條件：必須先在精簡模式（2026-08-24 / 第 32 批，使用者要求）───
+  // 在此之前是「按下投影就順手幫你把精簡模式打開」（借用），但那個借用製造了
+  // 兩次「版面跑掉」的回報（第 30、31 批）：只要有任何一條路徑讓
+  // 「投影 + 16 欄」同時成立，可用寬度（視窗 ÷ 倍率）就一定小於 16 欄的 1237px，
+  // 整頁橫捲、頁首與工具列跟著滑走。
+  // 改成**硬性前置條件**：不是精簡模式就不給開投影，投影中也不給關精簡模式。
+  // 這樣「投影 + 16 欄」在畫面上根本組不出來，不必再靠事後偵測去補救。
+  // ⚠️ 淺色底仍然是「借用」（投影機黑階是灰的、會議室還開著燈），離開時還原。
   const beforePresent = React.useRef(null);
-  const togglePresent = () => {
-    if (!present) {
-      beforePresent.current = {
-        dark,
-        compact,
-        duePriority
-      };
-      setDark(false);
-      if (!compact) {
-        setCompact(true);
-        setDuePriority(true);
-        setSortConfig({
-          key: null,
-          direction: 'asc'
-        });
-      }
-      setPresent(true);
-    } else {
-      // 重新整理過的話 ref 是空的（狀態本來就各自記在 localStorage），
-      // 那就維持現狀不亂還原
-      const b = beforePresent.current;
-      if (b) {
-        setDark(b.dark);
-        setCompact(b.compact);
-        setDuePriority(b.duePriority);
-      }
-      setPresent(false);
-    }
+  const exitPresent = () => {
+    const b = beforePresent.current;
+    beforePresent.current = null;
+    if (b) setDark(b.dark); // 重新整理過的話 ref 是空的，那就維持現狀不亂還原
+    setPresent(false);
   };
+  const togglePresent = () => {
+    if (present) {
+      exitPresent();
+      return;
+    }
+    // ⚠️ 按鈕在非精簡模式下本來就 disabled，這裡是最後一道 ——
+    // 少了它，日後有人從別的地方呼叫這支就又會做出「投影 + 16 欄」
+    if (!compact) return;
+    beforePresent.current = {
+      dark
+    };
+    setDark(false);
+    setPresent(true);
+  };
+  // 切到統計報表就退出投影，回到正常版面（使用者要求）。
+  // 統計報表是圖表與交叉表，放大 1.5 倍之後圖會被擠爆，而且那一頁沒有精簡模式的概念。
+  // ⚠️ 相依只有 activeView：切回需求列表**不會**自動再開投影
+  //（「回復成正常版面」是終點，不是暫時借走）
+  useEffect(() => {
+    if (activeView !== 'table' && present) exitPresent();
+  }, [activeView]);
+  // ─── 載入時把 present 收斂到合法狀態（第 30 批建立，第 32 批改成「不合法就退出」）───
+  // `present` 與 `compact` 各自記在 localStorage，兩者是**分開**復原的，
+  // 所以「投影模式開著時按 F5／隔天再打開」可能組出 `present && !compact`
+  // —— 那正是使用者回報的「投影的情況下版面會跑掉」（實測 1440 螢幕 × 150%：
+  // 可用寬度只剩 950px，而 16 欄的表格最小 1238px → 整頁橫捲 470px，
+  // 頁首與工具列跟著滑出畫面左邊，只有表格左側凍結欄留在原地）。
+  // 第 30 批的做法是「補開精簡模式」；第 32 批起精簡模式改成**前置條件**，
+  // 所以這裡改成**直接退出投影**，回到正常版面 —— 與「切到其他頁面就回復」同一個語意：
+  // 條件不成立就不該停在投影模式，而不是反過來改掉使用者的欄位設定。
+  const presentBootRef = React.useRef(false);
+  useEffect(() => {
+    if (presentBootRef.current) return;
+    presentBootRef.current = true;
+    if (!present) return;
+    if (!compact || activeView !== 'table') {
+      setPresent(false);
+      return;
+    }
+    // 合法：淺色底仍然是借用，離開投影時還原
+    beforePresent.current = {
+      dark
+    };
+    if (dark) setDark(false);
+  }, []);
+
+  // ─── 「右邊被切掉」偵測（第 30 批起，第 31 批推廣到整個需求列表）───
+  // 表格是整頁唯一會超出視窗的東西，而**整頁捲動**是 2026-08-19 拍板的
+  // （表格不可再包 overflow，否則兩層 sticky 表頭失效）——
+  // 所以一旦超出，頁首與工具列會跟著一起滑出畫面左邊，看起來就是「版面跑掉」。
+  //
+  // 兩條會踩到的路徑，**都是把可用寬度變小**（可用寬度 = 視窗寬 ÷ zoom 倍率）：
+  //   1. 投影模式的倍率（第 30 批）
+  //   2. 字級（第 29 批加的，**使用者實際回報的第二次「跑掉」就是它**）
+  // 實測 1440 螢幕 / 16 欄：表格壓到極限是 **1237px**，
+  //   100% → 可用 1425，overflow 0
+  //   115% → 可用 1239，overflow 30
+  //   130% → 可用 1096，overflow **216**
+  // 9 欄（901px）在同樣條件下全部塞得下。
+  //
+  // ⚠️ 不自動幫使用者改設定 —— 放大字級是他自己按的，靜靜把欄位收起來更難理解。
+  // 改成講清楚 + 一鍵修正（依情境給最有效的那一個）。
+  const [clipPx, setClipPx] = useState(0);
+  useEffect(() => {
+    if (activeView !== 'table') {
+      setClipPx(0);
+      return;
+    }
+    // ⚠️ 直接同步量，**不要包 requestAnimationFrame**：useEffect 跑的時候
+    // DOM 已經 commit 了，讀 scrollWidth 本來就會強制排版一次，rAF 是多的；
+    // 而且分頁在背景時 rAF 根本不會被呼叫 —— 實測就是這樣讓警告永遠不出現
+    // （overflow 明明是 710px），而且它「靜靜地」不出現，最難查。
+    const check = () => {
+      const d = document.documentElement;
+      setClipPx(Math.max(0, d.scrollWidth - d.clientWidth));
+    };
+    check();
+    window.addEventListener('resize', check);
+    return () => window.removeEventListener('resize', check);
+  }, [activeView, present, presentZoom, uiScale, compact, showColFilters, requirementsData.length]);
   const stepZoom = d => setPresentZoom(z => {
     const i = PRESENT_ZOOMS.indexOf(z);
     const next = (i < 0 ? PRESENT_ZOOMS.indexOf(PRESENT_ZOOM_DEFAULT) : i) + d;
@@ -1522,6 +1899,13 @@ function App() {
     group: 56,
     col: 90
   });
+  // ─── 左側凍結欄的水平位移（2026-08-24 / 第 27 批）───
+  // 第二個凍結欄（NID）的 left = 第一個凍結欄（No）的實際寬度。
+  // ⚠️ 與表頭的 top 同一條理由，一律實測不可寫死：th 上的 width:44px 只是
+  // 「建議」寬度，投影倍率、字級、以及 No 欄那條 3px 風險色條都會改變它，
+  // 差幾 px 就會在兩個凍結欄中間漏出一條會捲動的縫
+  const noHeadRef = React.useRef(null);
+  const [frzLeft, setFrzLeft] = useState(44);
   useEffect(() => {
     const measure = () => {
       const h = appHeaderRef.current?.offsetHeight || 56;
@@ -1530,6 +1914,8 @@ function App() {
         group: h,
         col: h + g
       });
+      const w = noHeadRef.current?.offsetWidth || 44;
+      setFrzLeft(prev => prev === w ? prev : w);
     };
     measure();
     // 欄寬／字級變化都會改變列高，換頁與切換精簡模式後也要重量一次
@@ -1540,17 +1926,43 @@ function App() {
     if (ro) {
       if (groupHeadRef.current) ro.observe(groupHeadRef.current);
       if (appHeaderRef.current) ro.observe(appHeaderRef.current);
+      // No 欄的寬度會隨資料列數（1 位數 → 3 位數）與字級變動
+      if (noHeadRef.current) ro.observe(noHeadRef.current);
     }
     return () => {
       window.removeEventListener('resize', measure);
       if (ro) ro.disconnect();
     };
+    // ⚠️ requirementsData.length 與 showColFilters 一定要在相依裡（2026-08-24 / 第 27 批）。
+    // 首次量測是在「資料載入中…」那一格還占著 tbody 的時候跑的，那時 No 欄只有
+    // 表頭一格在撐 —— **實測量到 37px，資料進來後真實寬度是 42px**，
+    // 而 ResizeObserver 對 <th> 這種 table-cell 不會回報這次變化。
+    // 差那 5px 的後果：NID 欄的 left 停在 37，橫捲時它會蓋掉 No 欄右邊 5px
+    // （吃掉那條分隔線、兩位數的流水號被切一角）。
+    // ⚠️ 這裡**不可以**改用 sortedData.length —— 它宣告在這個 effect 底下幾百行，
+    // 相依陣列是 render 當下就求值的，會直接踩到 TDZ（整頁白畫面）
+    //
     // ⚠️ 相依陣列不可再留空（2026-08-23 / 第 23 批）。原本整個 effect **沒有**相依陣列，
     // 於是每一次 render（篩選、hover、展開任何一列）都會拆掉再重建 resize listener
     // 與 ResizeObserver。行為是對的（measure 有 guard 會回傳 prev，不會無限迴圈），
-    // 純粹是白做工。這裡列的是「會讓那兩個 ref 換成別的元素」的狀態 ——
-    // 尺寸變化本來就由 ResizeObserver 接手，不必靠 render 去重量
-  }, [activeView, compact, present]);
+    // 純粹是白做工。這裡列的是「會讓那三個 ref 換成別的元素」的狀態 ——
+    // 高度變化本來就由 ResizeObserver 接手，不必靠 render 去重量
+    // uiScale 也要在裡面（2026-08-24 / 第 29 批）：它與投影倍率是同一個 zoom 機制，
+    // 改了之後表頭高度與 No 欄寬度都會變
+  }, [activeView, compact, present, requirementsData.length, showColFilters, uiScale]);
+
+  // ─── 版面寬度（2026-08-24 / 第 27 批）───
+  // 需求列表一般模式 16 欄的自然寬度約 1524px，卡在 max-w-[1440px] 裡等於
+  // **永遠**橫捲，而 1920／2560 的螢幕兩側各留一大條白 —— 空間就在旁邊卻不給用。
+  // 放寬到 1600：1920 的螢幕上整張表一次看完（不必捲），2560 也不會寬到
+  // 一列橫跨整個螢幕（那會讓左右兩端的欄位對不上同一列）。
+  // 統計報表維持 1440：它是圖表與交叉表，拉寬只會把圖拉扁。
+  // ⚠️ 兩個值都必須是**完整的字面量**，不可以拼成 `max-w-[${w}px]` ——
+  // 拼出來的 class Tailwind 掃不到、不會產生，而且是靜靜地不生效（沒有錯誤）
+  // ⚠️ 投影模式下不套上限（2026-08-24 / 第 30 批）：那時候的可用寬度是
+  // 「視窗寬 ÷ 倍率」，1600 這個上限只有在大會議室的寬螢幕（例如 2560 ÷ 1.25 = 2048）
+  // 才會真的生效 —— 而那正是最需要把表格攤開的場合，卻反而被切成 1600 並置中留白。
+  const pageWidth = present ? 'max-w-none' : activeView === 'table' ? 'max-w-[1600px]' : 'max-w-[1440px]';
 
   // 工具列下拉面板：同時只開一個（'sort' | 'data' | null）
   const [openMenu, setOpenMenu] = useState(null);
@@ -1625,32 +2037,51 @@ function App() {
   // 第一顆 toast 的 timeout 還在跑，時間到會把第二顆一起關掉 ——
   // 使用者看到的是「訊息閃一下就不見」，還以為第二個操作沒成功
   const toastTimer = React.useRef(null);
+  // 停留時間看字數（2026-08-24 / 第 29 批）。在此之前一律 3 秒 ——
+  // 匯入回傳的「有 N 個欄位對應不到：…」是一整串欄名，3 秒讀不完就沒了，
+  // 而那正是使用者最需要抄下來的訊息。約每字 90ms，夾在 3~12 秒之間；
+  // 錯誤訊息再往上抬（下限 5 秒），它通常還要照著訊息去改東西。
+  // 讀不完還可以按 ✕ 手動關（見 toast 的 render）
+  const TOAST_MS = (message, type) => {
+    const base = 3000 + String(message || '').length * 90;
+    return Math.min(12000, Math.max(type === 'error' ? 5000 : 3000, base));
+  };
   const showToast = (message, type = 'success') => {
     setToast({
       message,
       type
     });
     if (toastTimer.current) clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(null), 3000);
+    toastTimer.current = setTimeout(() => setToast(null), TOAST_MS(message, type));
   };
   useEffect(() => () => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
   }, []);
   const fetchReqs = async () => {
-    setIsLoading(true);
+    // 首次（或前一次失敗、手上根本沒有資料）才換掉 tbody；之後的重抓只淡化表格。
+    // ⚠️ 不要退回「一律 setIsLoading(true)」——那會讓每一次儲存都閃一次
+    // 「資料載入中…」，看起來像整張表被清空了
+    const first = !loadedOnceRef.current;
+    if (first) setIsLoading(true);else setRefreshing(true);
     try {
       const res = await fetch(api('/api/requirements'));
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setRequirementsData(Array.isArray(data) ? data : []);
       setLoadError('');
+      loadedOnceRef.current = true;
+      // 「畫面上這份資料是什麼時候抓的」。⚠️ 只在成功時更新 ——
+      // 失敗還往前帶的話，畫面顯示的會是一個從來沒發生過的抓取時間
+      setLastFetchedAt(new Date());
     } catch (err) {
       console.error(err);
       // 不再退回假資料，明確告知讀取失敗
       setRequirementsData([]);
       setLoadError('無法讀取需求資料，請確認後端服務與資料庫連線是否正常。');
+      // 手上已經沒有資料了，下一次重試要走回「首次載入」的完整提示
+      loadedOnceRef.current = false;
     } finally {
-      setIsLoading(false);
+      if (first) setIsLoading(false);else setRefreshing(false);
     }
   };
 
@@ -1706,6 +2137,20 @@ function App() {
     fetchHistory();
     detectActor();
   }, []);
+
+  // ─── 手動重新整理（2026-08-24 / 第 27 批）───
+  // 在此之前想看別人剛存的資料只能按 F5，而 F5 會把篩選、排序、展開的列
+  // 全部清掉 —— 主管好不容易篩出「李四 · 已逾期」那幾筆，重整一次就要從頭再來。
+  // 這一支只重抓資料，畫面狀態一律不動。
+  // ⚠️ 稽核表一定要一起抓（與刪除／匯入同一條理由）：只抓需求的話，
+  // 資料列的 ⚠N 與統計報表的「時程異動」會停在舊的數字，兩邊對不起來。
+  // ⚠️ 不包 runExclusive —— 那支是給**寫入**用的互斥鎖，把唯讀的重抓也擋進去
+  // 會變成「存檔中不能重整」「重整中不能存檔」，而且 refreshing 本來就擋得住連點。
+  const handleRefresh = () => {
+    if (refreshing || isLoading) return;
+    fetchReqs();
+    fetchHistory();
+  };
   const historyMap = useMemo(() => {
     const m = new Map();
     historyEntries.forEach(h => {
@@ -1739,7 +2184,7 @@ function App() {
     setConfirmModal({
       title: '確認匯入',
       message: '匯入會清空資料庫現有的所有需求並以此檔案重建，確定要繼續嗎？',
-      onConfirm: async () => {
+      onConfirm: () => runExclusive(async () => {
         const fd = new FormData();
         fd.append('file', fileRef);
         try {
@@ -1778,7 +2223,7 @@ function App() {
           console.error(err);
           showToast('匯入失敗：' + err.message, 'error');
         }
-      }
+      })
     });
     return; // 後續邏輯移到 onConfirm
   };
@@ -1927,7 +2372,7 @@ function App() {
     setConfirmModal({
       title: `標記「${ph.label}」完成`,
       message: `今天是 ${TODAY_ISO}，原訂${dateLabel}是 ${planned}。\n\n將記為：${verdict}${clampNote}\n\nStatusID 會推進到 ${ph.doneStage}，並寫入一筆稽核紀錄。確定嗎？`,
-      onConfirm: async () => {
+      onConfirm: () => runExclusive(async () => {
         try {
           const res = await fetch(api(`/api/requirements/${editingData.id}/done`), {
             method: 'POST',
@@ -1956,7 +2401,7 @@ function App() {
           console.error(err);
           showToast('標記完成失敗：' + err.message, 'error');
         }
-      }
+      })
     });
   };
 
@@ -2040,36 +2485,38 @@ function App() {
       });
       return;
     }
-    try {
-      const res = await fetch(api(`/api/requirements/${m.id}/rollback`), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          targetStage: m.target,
-          note: m.note,
-          actorEmpId: actor.empId || '',
-          actorSource: actor.source
-        })
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setAlertModal({
-          title: '無法回退',
-          message: body.message || `HTTP ${res.status}`
+    await runExclusive(async () => {
+      try {
+        const res = await fetch(api(`/api/requirements/${m.id}/rollback`), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            targetStage: m.target,
+            note: m.note,
+            actorEmpId: actor.empId || '',
+            actorSource: actor.source
+          })
         });
-        return;
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setAlertModal({
+            title: '無法回退',
+            message: body.message || `HTTP ${res.status}`
+          });
+          return;
+        }
+        setRollbackModal(null);
+        setEditingData(null);
+        setIsModalOpen(false);
+        await Promise.all([fetchReqs(), fetchHistory()]);
+        showToast(body.message || '已回退');
+      } catch (err) {
+        console.error(err);
+        showToast('回退失敗：' + err.message, 'error');
       }
-      setRollbackModal(null);
-      setEditingData(null);
-      setIsModalOpen(false);
-      await Promise.all([fetchReqs(), fetchHistory()]);
-      showToast(body.message || '已回退');
-    } catch (err) {
-      console.error(err);
-      showToast('回退失敗：' + err.message, 'error');
-    }
+    });
   };
 
   // 新增/編輯的必填欄位 (見 FIELD_SPEC.md「情況一」)，後端也會再擋一次。
@@ -2078,22 +2525,28 @@ function App() {
   // 規格回退到 ① 會把它清成 NULL，照舊一律必填的話那筆需求連改個現況描述
   // 都會被擋，非得先重壓一個 Spec 結束日不可。寫成「原本有值」而不是直接不驗，
   // 是為了仍然擋住「手動把既有的 Spec 結束日清空」。後端 MissingRequiredFields 同一套
+  // key = 這個欄位在畫面上的識別（用來就地標紅，見 validateEdit / errOf）
   const requiredFieldsFor = orig => [{
+    key: 'nid',
     label: 'NID',
     get: d => d.nid
   }, {
+    key: 'mainCat',
     label: 'Main Cat',
     get: d => d.mainCat
   }, {
+    key: 'subCat',
     label: 'Sub Cat',
     get: d => d.subCat
   }, {
+    key: 'emsOwner',
     label: 'EMS 負責人',
     get: d => d.emsOwner
   },
   // ⚠️ 開始日**不再是必填**（2026-08-22 使用者定調：Start 不重要，
   // 沒填就等同 End 同一天，存檔時由 applyStartDefaults 自動補）
   ...(!orig || isDateVal(orig?.spec?.end) ? [{
+    key: 'spec.end',
     label: '1_EMS規格確認 結束日',
     get: d => d.spec?.end
   }] : [])];
@@ -2112,37 +2565,64 @@ function App() {
       uat: fix(d.uat)
     };
   };
-  const handleSave = async e => {
-    if (e) e.preventDefault();
 
+  // ─── 儲存前驗證：一次算出**全部**問題（2026-08-23 / 第 26 批）───
+  // 在此之前這些檢查是六段各自 `return` 的：缺兩個必填、日期又倒序時，
+  // 使用者要按四次儲存、看四次彈窗才知道全部要改什麼。而且訊息只活在彈窗裡，
+  // 關掉之後畫面上沒有任何一格是紅的 —— 得自己回想剛剛那句話講的是哪一欄。
+  //
+  // 改成「每次 render 都重算、按過儲存才顯示」（showSaveErrors）：
+  // 使用者改好一欄，那一欄的紅字就自己消失，不必再按一次儲存才知道有沒有修對。
+  // ⚠️ 每一條規則的**界線**（誰該驗、什麼時候才驗）一律照舊，不要順手收緊 ——
+  //    那些界線各自都是為了避開「既有資料有值卻永遠改不動」而寫的，
+  //    後端 MissingRequiredFields / PhaseOrderViolations / PhaseGatingViolations
+  //    / StagePrereqViolations 是同一套，改了要兩邊一起改。
+  // 回傳 { fields, groups }：fields 給欄位標紅，groups 給彈窗一次列出
+  const validateEdit = () => {
+    const fields = {},
+      groups = [];
+    if (!editingData) return {
+      fields,
+      groups
+    };
+    const mark = (k, msg) => {
+      if (k && !fields[k]) fields[k] = msg;
+    };
     // 這筆資料已儲存的值。必填、跨階段順序、gating 都要跟它比對
     const saved = editingData.id ? requirementsData.find(d => d.id === editingData.id) : null;
 
     // 必填欄位
-    const missing = requiredFieldsFor(saved).filter(f => !String(f.get(editingData) || '').trim()).map(f => f.label);
+    const missing = requiredFieldsFor(saved).filter(f => !String(f.get(editingData) || '').trim());
     if (missing.length > 0) {
-      setAlertModal({
+      missing.forEach(f => mark(f.key, '必填'));
+      groups.push({
         title: '必填欄位未完成',
-        message: `請先填寫以下欄位才能儲存：\n\n${missing.map(m => '・' + m).join('\n')}`
+        items: missing.map(f => f.label)
       });
-      return;
     }
 
     // 每個區間的結束日不可早於開始日。日期是 "YYYY-MM-DD"，字串比較即等於時間比較
     const badRanges = ['spec', 'msd', 'uat'].map(k => ({
+      k,
       label: PHASES[k].label,
+      obj: PHASES[k].obj,
       p: editingData[PHASES[k].obj] || {}
     })).filter(({
       p
-    }) => p.start && p.end && p.start > p.end).map(({
-      label
-    }) => label);
+    }) => p.start && p.end && p.start > p.end);
     if (badRanges.length > 0) {
-      setAlertModal({
-        title: '日期區間不合理',
-        message: `以下區塊的 End Date 早於 Start Date：\n\n${badRanges.map(m => '・' + m).join('\n')}\n\nEnd Date 必須等於或晚於 Start Date。`
+      badRanges.forEach(({
+        obj
+      }) => {
+        mark(`${obj}.start`, '開始日晚於結束日');
+        mark(`${obj}.end`, '結束日早於開始日');
       });
-      return;
+      groups.push({
+        title: '日期區間不合理（End Date 早於 Start Date）',
+        items: badRanges.map(({
+          label
+        }) => label)
+      });
     }
 
     // ─── 跨階段的 End 必須遞增（2026-08-22 / 第 21 批）───
@@ -2178,14 +2658,16 @@ function App() {
       if (!isDateVal(prev.now) || !isDateVal(cur.now)) continue;
       if (cur.now >= prev.now) continue;
       const touched = !saved || prev.now !== prev.was || cur.now !== cur.was;
-      if (touched) badOrder.push(`${cur.label} ${cur.now} 早於 ${prev.label} ${prev.now}`);
+      if (touched) {
+        mark(`${cur.obj}.${cur.field}`, `不可早於${prev.label} ${prev.now}`);
+        badOrder.push(`${cur.label} ${cur.now} 早於 ${prev.label} ${prev.now}`);
+      }
     }
     if (badOrder.length > 0) {
-      setAlertModal({
-        title: '階段日期的先後順序不合理',
-        message: `${badOrder.map(m => '・' + m).join('\n')}\n\n四個階段是依序進行的，後面階段的日期不可早於前面階段。`
+      groups.push({
+        title: '階段日期的先後順序不合理（四個階段是依序進行的）',
+        items: badOrder
       });
-      return;
     }
 
     // 階段順序 gating（第 14 批）。日期欄本身已經 disable，正常操作走不到這裡，
@@ -2204,75 +2686,108 @@ function App() {
       return !isValidVal(saved?.[ph.obj]?.[ph.endKey]) && isValidVal(editingData?.[ph.obj]?.[ph.endKey]);
     });
     if (gateBad.length > 0) {
-      setAlertModal({
-        title: '階段順序不正確',
-        message: `以下階段的前置階段還沒填完，不能先壓日期：\n\n${gateBad.map(k => `・${PHASES[k].label}（${gateHint(k)}）`).join('\n')}`
+      gateBad.forEach(k => mark(`${PHASES[k].obj}.${PHASES[k].endKey}`, gateHint(k)));
+      groups.push({
+        title: '階段順序不正確（前置階段還沒填完，不能先壓日期）',
+        items: gateBad.map(k => `${PHASES[k].label}（${gateHint(k)}）`)
       });
-      return;
     }
 
     // NID 唯一。後端也會擋，這裡先擋是為了不用等 request 就給回饋
     const nidVal = String(editingData.nid || '').trim();
-    const dup = requirementsData.find(d => String(d.nid || '').trim() === nidVal && d.id !== editingData.id);
+    const dup = nidVal && requirementsData.find(d => String(d.nid || '').trim() === nidVal && d.id !== editingData.id);
     if (dup) {
-      setAlertModal({
-        title: 'NID 重複',
-        message: `NID「${nidVal}」已被「${dup.mainCat || ''} / ${dup.subCat || ''}」使用。\n\nNID 必須是唯一值，請改用其他編號。`
+      mark('nid', '這個編號已被使用');
+      groups.push({
+        title: 'NID 重複（NID 必須是唯一值）',
+        items: [`NID「${nidVal}」已被「${dup.mainCat || ''} / ${dup.subCat || ''}」使用`]
       });
-      return;
     }
 
     // 解鎖後**改了 End** 才必須留下理由（2026-08-22：改 Start 不算異動）
+    const noReason = [];
     for (const key of PHASE_KEYS) {
       if (unlockedSections[key] && isPhaseEndModified(key)) {
         if (!unlockCategories[key]) {
-          setAlertModal({
-            title: '缺少異動原因分類',
-            message: `「${PHASES[key].label}」的日期被修改了。\n\n請先選擇異動原因分類（${REASON_CATEGORIES.join(' / ')}）。`
-          });
-          return;
-        }
-        if (!unlockReasons[key] || !unlockReasons[key].trim()) {
-          setAlertModal({
-            title: '缺少異動說明',
-            message: `「${PHASES[key].label}」的日期被修改了。\n\n變更時程必須填寫文字說明才能儲存。`
-          });
-          return;
+          mark(`reason.${key}`, `請選擇異動原因分類（${REASON_CATEGORIES.join(' / ')}）`);
+          noReason.push(`${PHASES[key].label}：缺原因分類`);
+        } else if (!unlockReasons[key] || !unlockReasons[key].trim()) {
+          mark(`reason.${key}`, '請填寫文字說明');
+          noReason.push(`${PHASES[key].label}：缺文字說明`);
         }
       }
+    }
+    if (noReason.length > 0) {
+      groups.push({
+        title: '日期被修改了，必須填寫異動原因',
+        items: noReason
+      });
     }
 
     // 手動改 StatusID 一定要留原因（第 19 批 / A5）。後端也擋一次。
     // Status（OverallStatus）不強制 —— 它是人工壓的旗標，每次都要寫理由太吵；
     // 它仍然會被寫進稽核列（後端組的說明文字），只是不必打字
     const stageChanged = !!saved && normStageCode(saved.stageCode) !== normStageCode(editingData.stageCode);
-    const statusChanged = !!saved && normStatus(saved.status) !== normStatus(editingData.status);
     if (stageChanged) {
+      const toLabel = STAGE_CODES[normStageCode(editingData.stageCode)]?.label || '未設定';
       // 前面的階段沒填完就不給改（後端也擋）。排在原因檢查之前 ——
       // 先要求填理由、按下去才說「其實不能改」是最惱人的順序
       const lacking = stagePrereqMissing(editingData.stageCode, editingData);
       if (lacking.length > 0) {
-        setAlertModal({
-          title: '前面的階段還沒填完',
-          message: `把 StatusID 改成「${STAGE_CODES[normStageCode(editingData.stageCode)]?.label || '未設定'}」` + `代表前面的階段都已經走完，但以下階段還缺日期：\n\n` + lacking.map(m => '・' + m).join('\n') + `\n\n請先在下面補上這些日期（可以在同一個視窗裡補完再存），或改選其他階段。`
+        mark('stage', `不能改成「${toLabel}」，前面的階段還沒填完`);
+        groups.push({
+          title: `StatusID 改成「${toLabel}」代表前面都已走完，但這些階段還缺日期`,
+          items: lacking
         });
-        return;
-      }
-      if (!unlockCategories.stage) {
-        setAlertModal({
-          title: '缺少異動原因分類',
-          message: `StatusID 被手動改為「${STAGE_CODES[normStageCode(editingData.stageCode)]?.label || '未設定'}」。\n\n請先選擇異動原因分類（${REASON_CATEGORIES.join(' / ')}）。`
+      } else if (!unlockCategories.stage) {
+        mark('reason.stage', `請選擇異動原因分類（${REASON_CATEGORIES.join(' / ')}）`);
+        groups.push({
+          title: '手動調整 StatusID 必須填寫異動原因',
+          items: [`改為「${toLabel}」：缺原因分類`]
         });
-        return;
-      }
-      if (!unlockReasons.stage || !unlockReasons.stage.trim()) {
-        setAlertModal({
-          title: '缺少異動說明',
-          message: 'StatusID 正常是由「✓ 完成」與「🔄 規格回退」推進的。\n\n手動修改會繞過那套機制（也不會計入延期／提早／回退次數），必須填寫文字說明才能儲存。'
+      } else if (!unlockReasons.stage || !unlockReasons.stage.trim()) {
+        mark('reason.stage', '請填寫文字說明');
+        groups.push({
+          title: '手動調整 StatusID 必須填寫異動原因',
+          items: [`改為「${toLabel}」：缺文字說明`]
         });
-        return;
       }
     }
+    return {
+      fields,
+      groups
+    };
+  };
+  // 每次 render 重算（成本只有數十次字串比較，而且只在編輯視窗開著時）。
+  // 不用 useMemo：相依項有 editingData / requirementsData / 三組解鎖 state，
+  // 漏一個就會變成「改好了紅字還在」，那比多算幾次糟得多
+  const editProblems = validateEdit();
+  // 按過一次儲存之後才顯示 —— 一開視窗就滿江紅是在罵人
+  const errOf = k => showSaveErrors ? editProblems.fields[k] || '' : '';
+  const errBorder = k => errOf(k) ? 'var(--tone-alert)' : 'var(--border-table)';
+  const handleSave = async e => {
+    if (e) e.preventDefault();
+
+    // ─── 驗證一次算完（見 validateEdit）───
+    // 全部問題一起列出，並在對應欄位就地標紅。
+    // ⚠️ 不要退回「一段一個 return」—— 那會變成缺三個必填就要按三次儲存、
+    //    看三次彈窗，而且關掉彈窗之後畫面上沒有任何一格是紅的，
+    //    使用者得自己回想剛剛那句話講的是哪一欄
+    if (editProblems.groups.length > 0) {
+      setShowSaveErrors(true);
+      const g = editProblems.groups;
+      setAlertModal({
+        title: g.length === 1 ? g[0].title : `有 ${g.length} 類問題需要修正`,
+        message: (g.length === 1 ? g[0].items.map(i => '・' + i).join('\n') : g.map(x => `【${x.title}】\n` + x.items.map(i => '・' + i).join('\n')).join('\n\n')) + '\n\n有問題的欄位已在編輯視窗中標紅，改好之後紅字會自己消失。'
+      });
+      return;
+    }
+    setShowSaveErrors(false);
+
+    // 這筆資料已儲存的值。下面組稽核用的 changeMeta 要跟它比對
+    const saved = editingData.id ? requirementsData.find(d => d.id === editingData.id) : null;
+    const stageChanged = !!saved && normStageCode(saved.stageCode) !== normStageCode(editingData.stageCode);
+    const statusChanged = !!saved && normStatus(saved.status) !== normStatus(editingData.status);
 
     // 軌跡改由後端比對新舊日期寫進 dbo.Controltable_History（第 13 批）。
     // 前端只負責帶上「這次異動的原因分類與說明」與操作者是誰，
@@ -2302,36 +2817,41 @@ function App() {
     };
     const method = payload.id ? 'PUT' : 'POST';
     const url = api('/api/requirements') + (payload.id ? '/' + payload.id : '');
-    try {
-      const res = await fetch(url, {
-        method,
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(payload)
-      });
-      // 400 = 必填欄位／日期區間／階段順序，
-      // 409 = NID 重複，或**這筆在編輯期間被別人改過**（body.conflict，第 21 批）。
-      // 後端會回帶中文訊息，標題保持中性讓訊息自己說明是哪一種
-      if (res.status === 400 || res.status === 409) {
-        const body = await res.json().catch(() => ({}));
-        setAlertModal({
-          title: res.status !== 409 ? '無法儲存' : body.conflict ? '這筆資料已被其他人修改' : 'NID 重複',
-          message: body.message || `儲存被拒絕 (HTTP ${res.status})`
+    // ⚠️ 包在 runExclusive 裡（第 26 批）：連點兩下「確認新增」會送出兩筆，
+    // 第二筆被後端的 NID 唯一索引擋成 409「NID 重複」—— 使用者剛剛明明是
+    // 第一次建這筆。按鈕本身也會 disable，這裡是最後一道
+    await runExclusive(async () => {
+      try {
+        const res = await fetch(url, {
+          method,
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(payload)
         });
-        // 衝突時把清單抓新的回來，使用者關掉視窗重開就會看到最新內容
-        if (body.conflict) fetchReqs();
-        return;
+        // 400 = 必填欄位／日期區間／階段順序，
+        // 409 = NID 重複，或**這筆在編輯期間被別人改過**（body.conflict，第 21 批）。
+        // 後端會回帶中文訊息，標題保持中性讓訊息自己說明是哪一種
+        if (res.status === 400 || res.status === 409) {
+          const body = await res.json().catch(() => ({}));
+          setAlertModal({
+            title: res.status !== 409 ? '無法儲存' : body.conflict ? '這筆資料已被其他人修改' : 'NID 重複',
+            message: body.message || `儲存被拒絕 (HTTP ${res.status})`
+          });
+          // 衝突時把清單抓新的回來，使用者關掉視窗重開就會看到最新內容
+          if (body.conflict) fetchReqs();
+          return;
+        }
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        setEditingData(null);
+        setIsModalOpen(false);
+        await Promise.all([fetchReqs(), fetchHistory()]);
+        showToast(payload.id ? '已儲存變更' : '已新增需求');
+      } catch (err) {
+        console.error(err);
+        showToast('儲存失敗：' + err.message, 'error');
       }
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      setEditingData(null);
-      setIsModalOpen(false);
-      await Promise.all([fetchReqs(), fetchHistory()]);
-      showToast(payload.id ? '已儲存變更' : '已新增需求');
-    } catch (err) {
-      console.error(err);
-      showToast('儲存失敗：' + err.message, 'error');
-    }
+    });
   };
   const handleDelete = async item => {
     // 軟刪除：改用 confirmModal 取代原生 confirm()，避免在工廠 PC 被安全設定封鎖。
@@ -2347,7 +2867,7 @@ function App() {
         placeholder: '例如: 重複建單、需求取消'
       },
       value: '',
-      onConfirm: async note => {
+      onConfirm: note => runExclusive(async () => {
         try {
           const res = await fetch(api('/api/requirements/' + item.id), {
             method: 'DELETE',
@@ -2380,7 +2900,7 @@ function App() {
           console.error(err);
           showToast('刪除失敗：' + err.message, 'error');
         }
-      }
+      })
     });
   };
   // ─── 未儲存變更的判定（2026-08-22）───
@@ -2430,6 +2950,7 @@ function App() {
       stage: ''
     });
     setStageUnlocked(false);
+    setShowSaveErrors(false);
     setIsModalOpen(true);
   };
   const openAdd = () => {
@@ -2494,6 +3015,7 @@ function App() {
       stage: ''
     });
     setStageUnlocked(false);
+    setShowSaveErrors(false);
     setIsModalOpen(true);
   };
 
@@ -2540,6 +3062,89 @@ function App() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
+
+  // ─── Modal 的焦點管理（2026-08-24 / 第 29 批）───
+  // 在此之前六個視窗都沒有 focus trap：Tab 會一路跑到**視窗後面**那張表格上，
+  // 使用者看不到焦點在哪、卻還按得動底下的按鈕；關閉之後焦點掉到 <body>，
+  // 只用鍵盤的人要從頭 Tab 一遍才回得到剛剛那顆鈕。
+  // 只寫一份共用的（每個視窗各自寫一次遲早會漂移成「有的有、有的沒有」）：
+  // 視窗的最外層都標了 data-ct-modal，DOM 裡的最後一個就是疊在最上面的那個。
+  const openModalCount = [isAssigneeModalOpen, !!editingData, isActorModalOpen, !!alertModal, !!rollbackModal, !!confirmModal].filter(Boolean).length;
+  const topModalEl = () => {
+    const all = document.querySelectorAll('[data-ct-modal]');
+    return all.length ? all[all.length - 1] : null;
+  };
+  // ⚠️ 「開窗前的焦點」不可以在視窗開起來之後才讀 `document.activeElement`（實測過）：
+  // React 的 autoFocus 是在 commit 階段套用的，**比 useEffect 早**，
+  // 所以那時候讀到的已經是視窗裡的 NID 輸入框 —— 記下來的是一個等一下就會被
+  // 卸載的元素，關窗時 `document.contains()` 是 false，焦點於是掉回 <body>，
+  // 「還原焦點」等於整條沒有作用（而且失敗得很安靜）。
+  // 改成一直記錄「最後一個**不在**視窗裡的焦點」，開窗前那顆鈕自然就是它。
+  const lastOuterFocusRef = React.useRef(null);
+  useEffect(() => {
+    const on = e => {
+      const t = e.target;
+      if (t && t.closest && !t.closest('[data-ct-modal]')) lastOuterFocusRef.current = t;
+    };
+    document.addEventListener('focusin', on, true);
+    return () => document.removeEventListener('focusin', on, true);
+  }, []);
+  useEffect(() => {
+    if (openModalCount === 0) {
+      // 全部關完了才把焦點還回去（中間關掉疊在上面的那個不算）
+      const el = lastOuterFocusRef.current;
+      // 元素可能已經不在了（例如剛把那一列刪掉），contains 擋住就好
+      if (el && document.contains(el)) {
+        try {
+          el.focus();
+        } catch (e) {/* noop */}
+      }
+      return;
+    }
+    const top = topModalEl();
+    // ⚠️ 已經有 autoFocus 把焦點放進來的（新增時的 NID、回退說明、確認輸入框…）
+    // 一律不動它 —— 硬搶會踩掉 FIELD_SPEC 那條「編輯時不可聚焦 NID」
+    // （游標停在唯一值的編號上，使用者一打字就改到它）。
+    // 沒有人接手時聚焦視窗容器本身（tabIndex=-1），不是「第一個可聚焦元素」：
+    // 那同樣會把游標塞進某個輸入框裡
+    if (top && !top.contains(document.activeElement)) {
+      try {
+        top.focus();
+      } catch (e) {/* noop */}
+    }
+  }, [openModalCount]);
+  useEffect(() => {
+    if (openModalCount === 0) return;
+    const onKey = e => {
+      if (e.key !== 'Tab') return;
+      const top = topModalEl();
+      if (!top) return;
+      const items = Array.from(top.querySelectorAll('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')).filter(el => el.offsetWidth > 0 || el.offsetHeight > 0);
+      if (!items.length) {
+        e.preventDefault();
+        top.focus();
+        return;
+      }
+      const first = items[0],
+        last = items[items.length - 1];
+      const cur = document.activeElement;
+      if (!top.contains(cur)) {
+        e.preventDefault();
+        (e.shiftKey ? last : first).focus();
+        return;
+      }
+      if (!e.shiftKey && cur === last) {
+        e.preventDefault();
+        first.focus();
+      } else if (e.shiftKey && cur === first) {
+        e.preventDefault();
+        last.focus();
+      }
+    };
+    // capture：要在元素自己的 keydown 之前決定要不要攔下來
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [openModalCount]);
   useEffect(() => {
     document.body.classList.toggle('dark', dark);
     try {
@@ -2558,6 +3163,23 @@ function App() {
       direction: prev.key === key && prev.direction === 'asc' ? 'desc' : 'asc'
     }));
   };
+  // 可排序表頭的共用 props（2026-08-24 / 第 29 批）。
+  // 在此之前 15 個 <th> 各自寫 onClick，**只有滑鼠點得動**：鍵盤 Tab 根本停不下來，
+  // 而且讀螢幕的人完全不知道現在照哪一欄排。
+  // ⚠️ 刻意**不加** role="button"：<th> 在無障礙樹上是 columnheader，
+  // 換成 button 會讓整張表失去欄位結構（與資料列那顆展開鈕同一條理由）。
+  // 給 tabIndex + Enter/Space + aria-sort 就夠了。
+  // ⚠️ Space 一定要 preventDefault，否則按下去會順便把整頁往下捲一頁。
+  const sortProps = key => ({
+    onClick: () => requestSort(key),
+    onKeyDown: e => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      requestSort(key);
+    },
+    tabIndex: 0,
+    'aria-sort': sortConfig.key === key ? sortConfig.direction === 'asc' ? 'ascending' : 'descending' : 'none'
+  });
 
   // ─── Analytics ───
   const analytics = useMemo(() => {
@@ -2857,7 +3479,7 @@ function App() {
   // 「套用其他條件後」的分佈 —— 否則點了 EMS=王小明，上面的統計還是全域數字，
   // 兩邊對不起來會讓人以為篩選沒生效
   const matchExceptStage = item => {
-    const ms = !searchTerm || [item.nid, item.mainCat, item.subCat, item.emsOwner, item.msdOwner, item.currentStatus].some(v => v?.toLowerCase().includes(searchTerm.toLowerCase()));
+    const ms = !searchQuery || [item.nid, item.mainCat, item.subCat, item.emsOwner, item.msdOwner, item.currentStatus].some(v => v?.toLowerCase().includes(searchQuery.toLowerCase()));
     if (!ms) return false;
     if (!matchOwner(item.emsOwner, emsFilter)) return false;
     if (!matchOwner(item.msdOwner, msdFilter)) return false;
@@ -2905,8 +3527,8 @@ function App() {
       if (counts[c] !== undefined) counts[c]++;
     });
     return counts;
-  }, [requirementsData, searchTerm, emsFilter, msdFilter, dueFilter, alertFilter, progressFilter, colFilters, dueInfo, changedIdSet]);
-  const filteredData = useMemo(() => requirementsData.filter(item => matchExceptStage(item) && (stageFilter.length === 0 || stageFilter.includes(effStageCode(item)))), [requirementsData, searchTerm, stageFilter, emsFilter, msdFilter, dueFilter, alertFilter, progressFilter, colFilters, dueInfo, changedIdSet]);
+  }, [requirementsData, searchQuery, emsFilter, msdFilter, dueFilter, alertFilter, progressFilter, colFilters, dueInfo, changedIdSet]);
+  const filteredData = useMemo(() => requirementsData.filter(item => matchExceptStage(item) && (stageFilter.length === 0 || stageFilter.includes(effStageCode(item)))), [requirementsData, searchQuery, stageFilter, emsFilter, msdFilter, dueFilter, alertFilter, progressFilter, colFilters, dueInfo, changedIdSet]);
 
   // 欄位篩選收成圖示鈕之後，用這個數字在鈕上掛徽章 —— 面板收起來時
   // 使用者仍要看得出「我還開著幾個欄位篩選」，否則會以為資料不見了
@@ -2922,6 +3544,112 @@ function App() {
     setProgressFilter('All');
     setColFilters({});
   };
+
+  // ─── 生效中的條件晶片（第 28 批，2026-08-24）───
+  // 在此之前畫面上只有一顆「✕ 清除全部」：使用者知道「有東西在篩」，
+  // 但不知道是哪幾條，也不能只拿掉其中一條 —— 想改一個條件就得全部重來。
+  // ⚠️ 最實際的坑是 colFilters：精簡模式收起來的欄位，它的輸入框跟著不見，
+  // 但值照樣在過濾（filteredData 不分模式）。那些一律標成 hidden（⚠ + 警示色），
+  // 因為它是**唯一**看得到那個條件的地方。
+  const activeChips = useMemo(() => {
+    const out = [];
+    if (searchTerm) out.push({
+      id: 'q',
+      label: '搜尋',
+      value: searchTerm,
+      onRemove: () => setSearchTerm('')
+    });
+    stageFilter.forEach(k => out.push({
+      id: 'stage:' + k,
+      label: 'StatusID',
+      value: `${k} ${STAGE_CODES[k]?.short || ''}`.trim(),
+      color: STAGE_CODES[k]?.color,
+      onRemove: () => setStageFilter(prev => prev.filter(x => x !== k))
+    }));
+    if (emsFilter !== 'All') out.push({
+      id: 'ems',
+      label: 'EMS',
+      value: emsFilter,
+      onRemove: () => setEmsFilter('All')
+    });
+    if (msdFilter !== 'All') out.push({
+      id: 'msd',
+      label: 'MSD',
+      value: msdFilter,
+      onRemove: () => setMsdFilter('All')
+    });
+    if (dueFilter !== 'All') out.push({
+      id: 'due',
+      label: '到期',
+      value: DUE_FILTER_LABEL[dueFilter] || dueFilter,
+      // 「需關注」是連著「逾期優先」排序一起被打開的（見那顆鈕），拿掉時要一起還原
+      onRemove: () => {
+        setDueFilter('All');
+        if (dueFilter === 'attention') setDuePriority(false);
+      }
+    });
+    if (progressFilter !== 'All') out.push({
+      id: 'prog',
+      label: '進度',
+      value: PROG_FILTER_LABEL[progressFilter] || progressFilter,
+      onRemove: () => setProgressFilter('All')
+    });
+    if (alertFilter !== 'All') out.push({
+      id: 'alert',
+      label: '警示',
+      value: ALERT_FILTER_LABEL[alertFilter] || alertFilter,
+      onRemove: () => setAlertFilter('All')
+    });
+    COL_FILTER_KEYS.forEach(k => {
+      const v = colFilters[k];
+      if (!v) return;
+      out.push({
+        id: 'f_' + k,
+        label: COL_FILTER_META[k].label,
+        value: v,
+        hidden: colFilterHidden(k, compact),
+        onRemove: () => setColFilters(prev => {
+          const n = {
+            ...prev
+          };
+          delete n[k];
+          return n;
+        })
+      });
+    });
+    return out;
+  }, [searchTerm, stageFilter, emsFilter, msdFilter, dueFilter, progressFilter, alertFilter, colFilters, compact]);
+  const hiddenChipCount = activeChips.filter(c => c.hidden).length;
+
+  // ─── 篩選與排序 → 網址（第 28 批，2026-08-24）───
+  // 單向：state 變了就把網址覆蓋掉。⚠️ replaceState 不是 pushState
+  // （搜尋框每打一個字就是一次變更，用 push 會把上一頁鍵洗成一個字一個字退）。
+  // ⚠️ 路徑用 window.location.pathname，不要自己組 '/' 開頭的字串 ——
+  // 這個 App 會掛在 IIS 子應用程式底下（見 CLAUDE.md 的絕對路徑禁用）。
+  // 只寫「非預設值」，所以沒篩任何東西時網址是乾淨的。
+  useEffect(() => {
+    const p = new URLSearchParams();
+    if (activeView !== 'table') p.set('view', activeView);
+    if (searchQuery) p.set('q', searchQuery);
+    if (stageFilter.length) p.set('stage', stageFilter.join(','));
+    if (emsFilter !== 'All') p.set('ems', emsFilter);
+    if (msdFilter !== 'All') p.set('msd', msdFilter);
+    if (dueFilter !== 'All') p.set('due', dueFilter);
+    if (progressFilter !== 'All') p.set('prog', progressFilter);
+    if (alertFilter !== 'All') p.set('alert', alertFilter);
+    COL_FILTER_KEYS.forEach(k => {
+      if (colFilters[k]) p.set('f_' + k, colFilters[k]);
+    });
+    if (sortConfig.key) p.set('sort', `${sortConfig.key}:${sortConfig.direction}`);
+    if (!doneLast) p.set('dl', '0');
+    if (duePriority) p.set('dp', '1');
+    const qs = p.toString();
+    const next = window.location.pathname + (qs ? '?' + qs : '') + window.location.hash;
+    if (next === window.location.pathname + window.location.search + window.location.hash) return;
+    try {
+      window.history.replaceState(null, '', next);
+    } catch (e) {/* 檔案協定等情況會擋，不影響功能 */}
+  }, [activeView, searchQuery, stageFilter, emsFilter, msdFilter, dueFilter, progressFilter, alertFilter, colFilters, sortConfig, doneLast, duePriority]);
 
   // 統計報表的 KPI 卡 → 需求列表。每張卡都先把畫面上的篩選清乾淨再套自己那一條，
   // 否則上一張卡留下的條件會疊上來，列表筆數與卡片數字對不起來。
@@ -3120,7 +3848,12 @@ function App() {
     };
     if (!isAssigneeModalOpen) return null;
     return /*#__PURE__*/React.createElement("div", {
-      className: "fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4"
+      className: "fixed inset-0 z-[60] flex items-center justify-center bg-black/50 p-4",
+      "data-ct-modal": true,
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-label": "\u7DAD\u8B77\u6307\u6D3E\u4EBA\u54E1\u540D\u55AE",
+      tabIndex: -1
     }, /*#__PURE__*/React.createElement("div", {
       className: "rounded-xl shadow-2xl w-full max-w-xl max-h-[90vh] flex flex-col bg-white",
       style: {
@@ -3136,7 +3869,8 @@ function App() {
       className: "text-lg font-bold"
     }, "\u7DAD\u8B77\u6307\u6D3E\u4EBA\u54E1\u540D\u55AE"), /*#__PURE__*/React.createElement("button", {
       onClick: () => setIsAssigneeModalOpen(false),
-      className: "icon-btn transition-colors font-bold"
+      className: "icon-btn transition-colors font-bold",
+      "aria-label": "\u95DC\u9589\u6307\u6D3E\u4EBA\u54E1\u540D\u55AE"
     }, "\u2715")), /*#__PURE__*/React.createElement("div", {
       className: "p-4 border-b flex gap-2",
       style: {
@@ -3244,12 +3978,25 @@ function App() {
       '--present-zoom': presentZoom
     }
   }, renderAssigneeModal(), toast && /*#__PURE__*/React.createElement("div", {
-    className: "fixed top-20 right-6 z-[70] px-4 py-3 rounded-xl shadow-2xl text-sm font-bold max-w-md",
+    className: `fixed top-20 right-6 z-[70] px-4 py-3 rounded-xl shadow-2xl text-sm font-bold max-w-md flex items-start gap-3${present ? ' present-zoom' : ''}`,
+    role: "status",
+    "aria-live": toast.type === 'error' ? 'assertive' : 'polite',
     style: {
       background: toast.type === 'error' ? '#ef4444' : toast.type === 'warn' ? '#f59e0b' : '#10b981',
       color: '#fff'
     }
-  }, toast.type === 'error' ? '✕ ' : toast.type === 'warn' ? '⚠ ' : '✓ ', toast.message), /*#__PURE__*/React.createElement("header", {
+  }, /*#__PURE__*/React.createElement("span", null, toast.type === 'error' ? '✕ ' : toast.type === 'warn' ? '⚠ ' : '✓ ', toast.message), /*#__PURE__*/React.createElement("button", {
+    onClick: () => {
+      if (toastTimer.current) clearTimeout(toastTimer.current);
+      setToast(null);
+    },
+    className: "shrink-0 w-5 h-5 rounded flex items-center justify-center text-[13px] leading-none hover:bg-black/20",
+    style: {
+      color: '#fff'
+    },
+    "aria-label": "\u95DC\u9589\u9019\u5247\u8A0A\u606F",
+    title: "\u95DC\u9589"
+  }, "\u2715")), /*#__PURE__*/React.createElement("header", {
     ref: appHeaderRef,
     className: `sticky top-0 z-50 no-print${present ? ' present-zoom' : ''}`,
     style: {
@@ -3258,7 +4005,7 @@ function App() {
       backdropFilter: 'blur(16px)'
     }
   }, /*#__PURE__*/React.createElement("div", {
-    className: "max-w-[1440px] mx-auto px-6 h-16 flex items-center justify-between gap-4"
+    className: `${pageWidth} mx-auto px-6 h-16 flex items-center justify-between gap-4`
   }, /*#__PURE__*/React.createElement("div", {
     className: "flex items-center gap-2.5 min-w-0"
   }, /*#__PURE__*/React.createElement("div", {
@@ -3312,12 +4059,33 @@ function App() {
       borderColor: 'var(--tone-warn-border)'
     },
     title: actor.empId ? `異動人員：${actor.empId}（${actor.source === 'simulated' ? '模擬帳號' : 'Windows 登入'}）${actor.allowSimulation ? '\n點擊可切換模擬帳號' : ''}` : '無法取得 Windows 帳號，稽核紀錄的異動人員會留空' + (actor.allowSimulation ? '\n點擊可設定模擬帳號' : '')
-  }, "\uD83D\uDDA5\uFE0F ", actor.empId || '未識別', actor.source === 'simulated' && ' (模擬)'), present && /*#__PURE__*/React.createElement("div", {
+  }, "\uD83D\uDDA5\uFE0F ", actor.empId || '未識別', actor.source === 'simulated' && ' (模擬)'), clipPx > 0 && (() => {
+    const atMinZoom = presentZoom <= PRESENT_ZOOMS[0];
+    // ⚠️ 第 32 批起投影模式一定是精簡模式，所以投影中沒有「切精簡」這個選項；
+    // 倍率也降到底時就真的沒有可按的了 → 'none'（純提示，不給點）
+    const mode = present ? atMinZoom ? 'none' : 'zoom' : uiScale > 1 ? 'font' : !compact ? 'compact' : 'none';
+    const head = `畫面右邊有 ${clipPx}px 在視窗外（要橫向捲才看得到）` + (present ? '，台下會看不到最右邊那幾欄' : '，往右捲時頁首與工具列會跟著滑走');
+    const tip = mode === 'zoom' ? `${head}。\n點一下降一級投影倍率` : mode === 'font' ? `${head}。\n原因是字級放大後可用寬度變成「視窗寬 ÷ ${Math.round(uiScale * 100)}%」，16 欄的表格放不下。\n點一下降一級字級（或改用精簡模式，9 欄在任何字級都塞得下）` : mode === 'compact' ? `${head}。\n點一下切換精簡模式（收起次要欄位，只留 9 欄）` : `${head}。\n${present && atMinZoom ? '投影倍率已經是最低、而且已經是精簡模式了' : '已經是精簡模式了'}，請把瀏覽器視窗拉寬`;
+    const act = mode === 'zoom' ? () => stepZoom(-1) : mode === 'font' ? stepUiScaleDown : mode === 'compact' ? toggleCompact : undefined;
+    return /*#__PURE__*/React.createElement("button", {
+      onClick: act,
+      disabled: !act,
+      className: "ctl-sm flex-shrink-0 disabled:cursor-default",
+      style: {
+        color: 'var(--tone-alert)',
+        background: 'var(--tone-alert-bg)',
+        borderColor: 'var(--tone-alert-border)'
+      },
+      "aria-label": act ? `畫面右邊有 ${clipPx} 像素在視窗外，點擊修正` : `畫面右邊有 ${clipPx} 像素在視窗外，請把視窗拉寬`,
+      title: tip
+    }, "\u26A0 \u53F3\u908A\u88AB\u5207\u6389");
+  })(), present && /*#__PURE__*/React.createElement("div", {
     className: "ctl-sm flex-shrink-0 gap-0.5 px-1",
     title: "\u6295\u5F71\u500D\u7387\uFF1A\u5F8C\u6392\u770B\u4E0D\u6E05\u5C31\u5F80\u4E0A\u52A0\uFF0C\u53F3\u908A\u88AB\u5207\u6389\u5C31\u5F80\u4E0B\u964D"
   }, /*#__PURE__*/React.createElement("button", {
     onClick: () => stepZoom(-1),
     disabled: presentZoom <= PRESENT_ZOOMS[0],
+    "aria-label": "\u6295\u5F71\u500D\u7387\u7E2E\u5C0F",
     className: "w-5 h-5 rounded text-[13px] font-black leading-none disabled:opacity-30",
     style: {
       color: 'var(--text-tertiary)'
@@ -3330,32 +4098,77 @@ function App() {
   }, Math.round(presentZoom * 100), "%"), /*#__PURE__*/React.createElement("button", {
     onClick: () => stepZoom(1),
     disabled: presentZoom >= PRESENT_ZOOMS[PRESENT_ZOOMS.length - 1],
+    "aria-label": "\u6295\u5F71\u500D\u7387\u653E\u5927",
     className: "w-5 h-5 rounded text-[13px] font-black leading-none disabled:opacity-30",
     style: {
       color: 'var(--text-tertiary)'
     }
   }, "\uFF0B")), /*#__PURE__*/React.createElement("button", {
     onClick: togglePresent,
-    className: `ctl-sm flex-shrink-0${present ? ' ctl-on' : ''}`,
-    title: present ? '離開投影模式：字級、對比與被收起的操作鈕都會回到原本的樣子（含進入前的深淺色與精簡模式設定）' : '投影模式：整體放大、提高對比、加上斑馬紋，並收起新增／Excel 這類寫入型操作。同時會切到淺色底與精簡模式（投影機黑階偏灰、16 欄投出來會橫向捲），離開時自動還原'
-  }, "\uD83D\uDCFD \u6295\u5F71"), /*#__PURE__*/React.createElement(ThemeToggle, {
+    disabled: !present && (!compact || activeView !== 'table'),
+    className: `ctl-sm flex-shrink-0 disabled:opacity-40 disabled:cursor-default${present ? ' ctl-on' : ''}`,
+    title: present ? '離開投影模式：字級、對比與被收起的操作鈕都會回到原本的樣子（含進入前的深淺色設定）' : activeView !== 'table' ? '投影模式只用於需求列表。\n統計報表是圖表與交叉表，放大後圖會被擠扁 —— 請先切回「需求列表」' : compact ? '投影模式：整體放大、提高對比、加上斑馬紋，並收起新增／Excel 這類寫入型操作。同時切到淺色底（投影機黑階偏灰），離開時自動還原。\n切到統計報表會自動回到正常版面' : '投影模式只能在精簡模式下使用。\n一般模式的 16 欄放大後一定會超出畫面（可用寬度＝視窗寬 ÷ 倍率），頁首與工具列會跟著橫向捲走。\n請先按下左邊的「精簡模式」'
+  }, "\uD83D\uDCFD \u6295\u5F71"), !present && /*#__PURE__*/React.createElement("button", {
+    onClick: cycleUiScale,
+    className: `ctl-sm flex-shrink-0 tabular-nums${uiScale !== 1 ? ' ctl-on' : ''}`,
+    "aria-label": `字級 ${Math.round(uiScale * 100)}%，點擊切換下一級`,
+    title: '資料列的字很小（10~11px），這裡可以整片放大。\n' + UI_SCALES.map(s => `${Math.round(s * 100)}%`).join(' → ') + ' → 循環。\n' + '⚠️ 放大的是需求列表本身（頁首不變）；投影模式有自己的倍率。\n' + '放大後可用寬度會變成「視窗寬 ÷ 倍率」，16 欄可能放不下而需要橫向捲 ——\n' + '真的塞不下時頁首會出現「⚠ 右邊被切掉」，點它可以一鍵修正'
+  }, "\uFF21 ", Math.round(uiScale * 100), "%"), /*#__PURE__*/React.createElement(ThemeToggle, {
     dark: dark,
     onToggle: () => setDark(!dark)
-  }), /*#__PURE__*/React.createElement("div", {
+  }), /*#__PURE__*/React.createElement("button", {
+    onClick: handleRefresh,
+    disabled: refreshing || isLoading,
+    "aria-label": refreshing ? '重新整理中' : '重新整理',
+    className: "ctl-sm flex-shrink-0 disabled:opacity-40 disabled:cursor-default",
+    title: `重新整理：重新讀取需求與異動軌跡。\n目前的篩選、排序與展開的列都會保留（按 F5 則會全部清掉）。\n畫面最後抓取：${lastFetchedAt ? formatClock(lastFetchedAt) : '尚未載入'}`
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "inline-flex",
+    style: {
+      // 轉圈只在重抓時跑。CSS 的 .spin 定義在 input.css
+      animation: refreshing ? 'ctSpin 0.9s linear infinite' : 'none'
+    }
+  }, /*#__PURE__*/React.createElement("svg", {
+    width: "13",
+    height: "13",
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: "2",
+    strokeLinecap: "round",
+    "aria-hidden": "true"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: "M21 12a9 9 0 1 1-2.64-6.36"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M21 3v6h-6"
+  })))), /*#__PURE__*/React.createElement("div", {
     className: "ctl-div ml-1"
   }), /*#__PURE__*/React.createElement("div", {
     className: "text-[10px] leading-tight text-right pl-1",
     style: {
       color: 'var(--text-muted)'
     },
-    title: `逾期／到期一律以今天 ${formatToday} 為基準計算`
-  }, /*#__PURE__*/React.createElement("div", null, "\u8CC7\u6599\u66F4\u65B0"), /*#__PURE__*/React.createElement("div", {
+    title: `「資料更新」＝所有需求裡最後一次被異動的時間（資料本身多新）。\n「畫面」＝這份畫面從後端抓回來的時間（你手上這份多新）。\n逾期／到期一律以今天 ${formatToday} 為基準計算`
+  }, /*#__PURE__*/React.createElement("div", null, "\u8CC7\u6599\u66F4\u65B0", refreshing && /*#__PURE__*/React.createElement("span", {
+    className: "ml-1 font-bold",
+    style: {
+      color: 'var(--tone-warn)'
+    }
+  }, "\xB7 \u66F4\u65B0\u4E2D\u2026")), /*#__PURE__*/React.createElement("div", {
     className: "font-mono font-semibold",
     style: {
       color: 'var(--text-tertiary)'
     }
-  }, lastDataUpdate ? lastDataUpdate.slice(0, 16) : '—'))))), /*#__PURE__*/React.createElement("main", {
-    className: `max-w-[1440px] mx-auto px-6 py-6${present ? ' present-zoom' : ''}`
+  }, lastDataUpdate ? lastDataUpdate.slice(0, 16) : '—', /*#__PURE__*/React.createElement("span", {
+    className: "ml-1.5 font-sans font-normal",
+    style: {
+      color: 'var(--text-muted)'
+    }
+  }, "\u756B\u9762 ", lastFetchedAt ? formatClock(lastFetchedAt) : '—')))))), /*#__PURE__*/React.createElement("main", {
+    className: `${pageWidth} mx-auto px-6 py-6${present ? ' present-zoom' : uiScale !== 1 ? ' ui-zoom' : ''}`,
+    style: present ? undefined : {
+      '--ui-zoom': uiScale
+    }
   }, /*#__PURE__*/React.createElement("div", {
     className: "print-only mb-2 pb-2",
     style: {
@@ -3753,6 +4566,8 @@ function App() {
   })), /*#__PURE__*/React.createElement("button", {
     onClick: () => setShowColFilters(!showColFilters),
     className: `ctl ctl-icon relative shrink-0${showColFilters ? ' ctl-on' : ''}`,
+    "aria-expanded": showColFilters,
+    "aria-label": `欄位篩選${colFilterCount > 0 ? `（${colFilterCount} 個生效中）` : ''}`,
     title: colFilterCount > 0 ? `欄位篩選（${colFilterCount} 個生效中）` : '欄位篩選：在表頭下方開一排輸入框，可逐欄過濾'
   }, /*#__PURE__*/React.createElement("svg", {
     width: "14",
@@ -3996,8 +4811,14 @@ function App() {
   }, /*#__PURE__*/React.createElement(ToggleChip, {
     on: compact,
     onClick: toggleCompact,
-    title: "\u4E3B\u7BA1\u6AA2\u8996\uFF1A\u6536\u8D77\u6B21\u8981\u6B04\u4F4D\uFF08Notes Link\u3001Status\u3001\u8A3B\u518A\u65E5\u671F\u3001MP Saving\u3001\u64CD\u4F5C\uFF09\uFF0C\u56DB\u500B\u968E\u6BB5\u6642\u7A0B\u53EA\u7559\u300C\u9084\u6C92\u8D70\u5B8C\u7684\u968E\u6BB5\u88E1\u6700\u6025\u7684\u90A3\u4E00\u500B\u300D\uFF0C\u4E26\u4EE5\u5230\u671F\u65E5\u8FD1\u7684\u6392\u5728\u4E0A\u9762\u3002\u5B8C\u6574\u6642\u7A0B\u4ECD\u53EF\u5C55\u958B\u8A72\u5217\u67E5\u770B\uFF1B\u95DC\u9589\u5F8C\u756B\u9762\u8207\u539F\u672C\u5B8C\u5168\u76F8\u540C"
-  }, "\u7CBE\u7C21\u6A21\u5F0F"), /*#__PURE__*/React.createElement("div", {
+    disabled: present || narrow,
+    title: present ? '投影模式中不能關閉精簡模式（投影模式的前置條件就是它）。請先離開投影模式' : narrow ? '目前視窗寬度在 1024px 以下，已自動套用精簡模式（16 欄在這個寬度只能一直橫捲）。把視窗拉寬就會回到你原本的設定' : '主管檢視：收起次要欄位（Notes Link、Status、註冊日期、MP Saving、操作），四個階段時程只留「還沒走完的階段裡最急的那一個」，並以到期日近的排在上面。完整時程仍可展開該列查看；關閉後畫面與原本完全相同'
+  }, "\u7CBE\u7C21\u6A21\u5F0F", narrow && /*#__PURE__*/React.createElement("span", {
+    className: "ml-1 font-normal",
+    style: {
+      opacity: 0.75
+    }
+  }, "\xB7 \u7A84\u87A2\u5E55")), /*#__PURE__*/React.createElement("div", {
     className: "relative"
   }, /*#__PURE__*/React.createElement(MenuButton, {
     open: openMenu === 'sort',
@@ -4042,8 +4863,59 @@ function App() {
       direction: 'desc'
     }),
     title: "\u4F9D\u898F\u683C\u56DE\u9000\u6B21\u6578\u7531\u591A\u5230\u5C11\u6392\u5E8F\u3002\u6CE8\u610F\uFF1A\u300CDone \u7F6E\u5E95\u300D\u958B\u8457\u6642\uFF0C\u7D50\u6848\u7684\u6848\u4EF6\u4ECD\u6703\u88AB\u6392\u5230\u4E0B\u65B9"
-  }, "\u56DE\u9000\u6700\u591A")))))), /*#__PURE__*/React.createElement("div", {
-    className: "t-card t-table-card"
+  }, "\u56DE\u9000\u6700\u591A")))))), activeChips.length > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "t-card px-4 py-2.5 flex flex-wrap items-center gap-2"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "text-[10px] font-bold px-1.5 py-0.5 rounded flex-shrink-0",
+    style: {
+      color: 'var(--text-tertiary)',
+      background: 'var(--bg-input)',
+      border: '1px solid var(--bg-input-border)'
+    }
+  }, "\u751F\u6548\u4E2D\u7684\u689D\u4EF6"), activeChips.map(c => /*#__PURE__*/React.createElement("span", {
+    key: c.id,
+    className: "inline-flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-lg text-[11px] font-bold",
+    style: c.hidden ? {
+      color: 'var(--tone-alert)',
+      background: 'var(--tone-alert-bg)',
+      border: '1px solid var(--tone-alert-border)'
+    } : {
+      color: 'var(--text-secondary)',
+      background: 'var(--bg-input)',
+      border: '1px solid var(--bg-input-border)'
+    },
+    title: c.hidden ? `這個條件正在生效，但「${c.label}」欄在目前的模式下被收起來了，所以看不到它的輸入框 —— 筆數變少的原因就是它。點 ✕ 可以直接移除` : `${c.label}：${c.value}（點 ✕ 只移除這一條）`
+  }, c.hidden && /*#__PURE__*/React.createElement("span", {
+    "aria-hidden": "true"
+  }, "\u26A0"), c.color && /*#__PURE__*/React.createElement("span", {
+    className: "w-1.5 h-1.5 rounded-full flex-shrink-0",
+    style: {
+      background: c.color
+    }
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: c.hidden ? 'inherit' : 'var(--text-muted)'
+    }
+  }, c.label), /*#__PURE__*/React.createElement("span", null, c.value), /*#__PURE__*/React.createElement("button", {
+    onClick: c.onRemove,
+    className: "w-4 h-4 rounded flex items-center justify-center text-[12px] leading-none no-print hover:bg-black/10",
+    style: {
+      color: 'inherit',
+      opacity: 0.7
+    },
+    "aria-label": `移除篩選條件：${c.label} ${c.value}`,
+    title: `移除這一條（${c.label}）`
+  }, "\u2715"))), hiddenChipCount > 0 && /*#__PURE__*/React.createElement("span", {
+    className: "text-[10px]",
+    style: {
+      color: 'var(--tone-alert)'
+    }
+  }, "\u26A0 \u6709 ", hiddenChipCount, " \u500B\u689D\u4EF6\u7684\u6B04\u4F4D\u5728\u76EE\u524D\u6A21\u5F0F\u4E0B\u662F\u6536\u8D77\u4F86\u7684\uFF0C\u4F46\u5B83\u4ECD\u5728\u904E\u6FFE")), /*#__PURE__*/React.createElement("div", {
+    className: "t-card t-table-card",
+    style: {
+      opacity: refreshing ? 0.55 : 1,
+      transition: 'opacity 0.15s'
+    }
   }, /*#__PURE__*/React.createElement("div", {
     className: "flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2.5 text-[10px] rounded-t-[10px]",
     style: {
@@ -4081,7 +4953,9 @@ function App() {
     className: "w-full text-left border-collapse sticky-table",
     style: {
       '--head-top-group': `${headOffsets.group}px`,
-      '--head-top-col': `${headOffsets.col}px`
+      '--head-top-col': `${headOffsets.col}px`,
+      // 左側凍結欄：第二欄的 left（見 input.css 的 .frz-2）
+      '--frz-2': `${frzLeft}px`
     }
   }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
     ref: groupHeadRef,
@@ -4129,7 +5003,8 @@ function App() {
       borderBottom: '2px solid var(--border-card)'
     }
   }, /*#__PURE__*/React.createElement("th", {
-    className: "px-2 py-2.5 text-[11px] font-bold select-none whitespace-nowrap",
+    ref: noHeadRef,
+    className: "px-2 py-2.5 text-[11px] font-bold select-none whitespace-nowrap frz frz-1",
     style: {
       color: 'var(--text-tertiary)',
       borderRight: '1px solid var(--border-card)',
@@ -4138,92 +5013,88 @@ function App() {
     title: "\u6D41\u6C34\u865F\uFF1A\u76EE\u524D\u6392\u5E8F\u8207\u7BE9\u9078\u4E0B\u7684\u7B2C\u5E7E\u5217\uFF08\u4E0D\u662F NID\uFF09"
   }, /*#__PURE__*/React.createElement("div", {
     className: "flex items-center"
-  }, "No")), /*#__PURE__*/React.createElement("th", {
-    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none whitespace-nowrap",
+  }, "No")), /*#__PURE__*/React.createElement("th", _extends({
+    className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none whitespace-nowrap frz frz-2",
     style: {
       color: 'var(--text-tertiary)',
       borderRight: '1px solid var(--border-card)',
       width: '48px'
-    },
-    onClick: () => requestSort('nid')
-  }, /*#__PURE__*/React.createElement("div", {
+    }
+  }, sortProps('nid')), /*#__PURE__*/React.createElement("div", {
     className: "flex items-center"
   }, "NID ", /*#__PURE__*/React.createElement("span", {
     className: "ml-1"
   }, /*#__PURE__*/React.createElement(SortIcon, {
     active: sortConfig.key === 'nid',
     dir: sortConfig.direction
-  })))), showCol('status') && /*#__PURE__*/React.createElement("th", {
+  })))), showCol('status') && /*#__PURE__*/React.createElement("th", _extends({
     className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none whitespace-nowrap",
     style: {
       color: 'var(--text-tertiary)',
       borderRight: '1px solid var(--border-card)',
       width: '96px'
-    },
-    onClick: () => requestSort('status'),
+    }
+  }, sortProps('status'), {
     title: "Overall Status\uFF1AInit\uFF08\u5C1A\u672A\u958B\u59CB\uFF09\uFF0FOngoing\uFF08\u57F7\u884C\u4E2D\uFF09\uFF0FDone\uFF08\u7D50\u6848\uFF09"
-  }, /*#__PURE__*/React.createElement("div", {
+  }), /*#__PURE__*/React.createElement("div", {
     className: "flex items-center"
   }, "Status ", /*#__PURE__*/React.createElement("span", {
     className: "ml-1"
   }, /*#__PURE__*/React.createElement(SortIcon, {
     active: sortConfig.key === 'status',
     dir: sortConfig.direction
-  })))), !compact && /*#__PURE__*/React.createElement("th", {
+  })))), !compact && /*#__PURE__*/React.createElement("th", _extends({
     className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none whitespace-nowrap",
     style: {
       color: 'var(--text-tertiary)',
       borderRight: '1px solid var(--border-card)',
       width: '116px'
-    },
-    onClick: () => requestSort('stageCode'),
+    }
+  }, sortProps('stageCode'), {
     title: "StatusID\uFF1A1.EMS\u898F\u683C\u78BA\u8A8D / 2.MSD\u78BA\u8A8D\u4E2D / 3.MSD\u958B\u767C\u4E2D / 4.EMS\u9A57\u6536 / 5.\u7D50\u6848"
-  }, /*#__PURE__*/React.createElement("div", {
+  }), /*#__PURE__*/React.createElement("div", {
     className: "flex items-center"
   }, "StatusID ", /*#__PURE__*/React.createElement("span", {
     className: "ml-1"
   }, /*#__PURE__*/React.createElement(SortIcon, {
     active: sortConfig.key === 'stageCode',
     dir: sortConfig.direction
-  })))), showCol('regDate') && /*#__PURE__*/React.createElement("th", {
+  })))), showCol('regDate') && /*#__PURE__*/React.createElement("th", _extends({
     className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none whitespace-nowrap",
     style: {
       color: 'var(--text-tertiary)',
       borderRight: '1px solid var(--border-card)',
       width: '86px'
-    },
-    onClick: () => requestSort('regDate')
-  }, /*#__PURE__*/React.createElement("div", {
+    }
+  }, sortProps('regDate')), /*#__PURE__*/React.createElement("div", {
     className: "flex items-center"
   }, "\u8A3B\u518A\u65E5\u671F ", /*#__PURE__*/React.createElement("span", {
     className: "ml-1"
   }, /*#__PURE__*/React.createElement(SortIcon, {
     active: sortConfig.key === 'regDate',
     dir: sortConfig.direction
-  })))), /*#__PURE__*/React.createElement("th", {
+  })))), /*#__PURE__*/React.createElement("th", _extends({
     className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none whitespace-nowrap",
     style: {
       color: 'var(--text-tertiary)',
       borderRight: '1px solid var(--border-card)',
       width: '150px'
-    },
-    onClick: () => requestSort('mainCat')
-  }, /*#__PURE__*/React.createElement("div", {
+    }
+  }, sortProps('mainCat')), /*#__PURE__*/React.createElement("div", {
     className: "flex items-center"
   }, "Main Cat ", /*#__PURE__*/React.createElement("span", {
     className: "ml-1"
   }, /*#__PURE__*/React.createElement(SortIcon, {
     active: sortConfig.key === 'mainCat',
     dir: sortConfig.direction
-  })))), /*#__PURE__*/React.createElement("th", {
+  })))), /*#__PURE__*/React.createElement("th", _extends({
     className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none whitespace-nowrap",
     style: {
       color: 'var(--text-tertiary)',
       borderRight: showCol('notesLink') ? '1px solid var(--border-card)' : '2px solid var(--border-card)',
       width: '190px'
-    },
-    onClick: () => requestSort('subCat')
-  }, /*#__PURE__*/React.createElement("div", {
+    }
+  }, sortProps('subCat')), /*#__PURE__*/React.createElement("div", {
     className: "flex items-center"
   }, "Sub Cat ", /*#__PURE__*/React.createElement("span", {
     className: "ml-1"
@@ -4240,48 +5111,46 @@ function App() {
     title: "Notes Link\uFF1A\u9EDE\u8CC7\u6599\u5217\u4E0A\u7684\u5716\u793A\u958B\u555F\u9023\u7D50"
   }, /*#__PURE__*/React.createElement("div", {
     className: "flex items-center justify-center"
-  }, "Notes Link")), /*#__PURE__*/React.createElement("th", {
+  }, "Notes Link")), /*#__PURE__*/React.createElement("th", _extends({
     className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center whitespace-nowrap",
     style: {
       color: 'var(--text-tertiary)',
       borderRight: '1px solid var(--border-card)',
       background: 'var(--thead-col-ems)',
       width: '50px'
-    },
-    onClick: () => requestSort('emsOwner')
-  }, /*#__PURE__*/React.createElement("div", {
+    }
+  }, sortProps('emsOwner')), /*#__PURE__*/React.createElement("div", {
     className: "flex items-center justify-center"
   }, "EMS ", /*#__PURE__*/React.createElement("span", {
     className: "ml-1"
   }, /*#__PURE__*/React.createElement(SortIcon, {
     active: sortConfig.key === 'emsOwner',
     dir: sortConfig.direction
-  })))), /*#__PURE__*/React.createElement("th", {
+  })))), /*#__PURE__*/React.createElement("th", _extends({
     className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center whitespace-nowrap",
     style: {
       color: 'var(--text-tertiary)',
       borderRight: compact ? '1px solid var(--border-card)' : '2px solid var(--border-card)',
       background: 'var(--thead-col-msd)',
       width: '50px'
-    },
-    onClick: () => requestSort('msdOwner')
-  }, /*#__PURE__*/React.createElement("div", {
+    }
+  }, sortProps('msdOwner')), /*#__PURE__*/React.createElement("div", {
     className: "flex items-center justify-center"
   }, "MSD ", /*#__PURE__*/React.createElement("span", {
     className: "ml-1"
   }, /*#__PURE__*/React.createElement(SortIcon, {
     active: sortConfig.key === 'msdOwner',
     dir: sortConfig.direction
-  })))), compact && /*#__PURE__*/React.createElement("th", {
+  })))), compact && /*#__PURE__*/React.createElement("th", _extends({
     className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none whitespace-nowrap",
     style: {
       color: 'var(--text-tertiary)',
       borderRight: '2px solid var(--border-card)',
       width: '104px'
-    },
-    onClick: () => requestSort('stageCode'),
+    }
+  }, sortProps('stageCode'), {
     title: "StatusID\uFF1A1.EMS\u898F\u683C\u78BA\u8A8D / 2.MSD\u78BA\u8A8D\u4E2D / 3.MSD\u958B\u767C\u4E2D / 4.EMS\u9A57\u6536 / 5.\u7D50\u6848"
-  }, /*#__PURE__*/React.createElement("div", {
+  }), /*#__PURE__*/React.createElement("div", {
     className: "flex items-center"
   }, "StatusID ", /*#__PURE__*/React.createElement("span", {
     className: "ml-1"
@@ -4305,89 +5174,83 @@ function App() {
   }, /*#__PURE__*/React.createElement(SortIcon, {
     active: duePriority,
     dir: "asc"
-  })))) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("th", {
+  })))) : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("th", _extends({
     className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center whitespace-nowrap",
     style: {
       color: 'var(--col-schedule-text)',
       borderRight: '1px solid var(--border-card)',
       background: 'var(--thead-col-schedule)'
-    },
-    onClick: () => requestSort('specEnd')
-  }, /*#__PURE__*/React.createElement("div", {
+    }
+  }, sortProps('specEnd')), /*#__PURE__*/React.createElement("div", {
     className: "flex items-center justify-center"
   }, "1_EMS\u898F\u683C\u78BA\u8A8D ", /*#__PURE__*/React.createElement("span", {
     className: "ml-1"
   }, /*#__PURE__*/React.createElement(SortIcon, {
     active: sortConfig.key === 'specEnd',
     dir: sortConfig.direction
-  })))), /*#__PURE__*/React.createElement("th", {
+  })))), /*#__PURE__*/React.createElement("th", _extends({
     className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center whitespace-nowrap",
     style: {
       color: 'var(--col-schedule-text)',
       borderRight: '1px solid var(--border-card)',
       background: 'var(--thead-col-schedule)'
-    },
-    onClick: () => requestSort('msdConfirm')
-  }, /*#__PURE__*/React.createElement("div", {
+    }
+  }, sortProps('msdConfirm')), /*#__PURE__*/React.createElement("div", {
     className: "flex items-center justify-center"
   }, "2_MSD\u78BA\u8A8D\u4E2D ", /*#__PURE__*/React.createElement("span", {
     className: "ml-1"
   }, /*#__PURE__*/React.createElement(SortIcon, {
     active: sortConfig.key === 'msdConfirm',
     dir: sortConfig.direction
-  })))), /*#__PURE__*/React.createElement("th", {
+  })))), /*#__PURE__*/React.createElement("th", _extends({
     className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center whitespace-nowrap",
     style: {
       color: 'var(--col-schedule-text)',
       borderRight: '1px solid var(--border-card)',
       background: 'var(--thead-col-schedule)'
-    },
-    onClick: () => requestSort('msdEnd')
-  }, /*#__PURE__*/React.createElement("div", {
+    }
+  }, sortProps('msdEnd')), /*#__PURE__*/React.createElement("div", {
     className: "flex items-center justify-center"
   }, "3_MSD\u958B\u767C\u4E2D ", /*#__PURE__*/React.createElement("span", {
     className: "ml-1"
   }, /*#__PURE__*/React.createElement(SortIcon, {
     active: sortConfig.key === 'msdEnd',
     dir: sortConfig.direction
-  })))), /*#__PURE__*/React.createElement("th", {
+  })))), /*#__PURE__*/React.createElement("th", _extends({
     className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center whitespace-nowrap",
     style: {
       color: 'var(--col-schedule-text)',
       borderRight: '2px solid var(--border-card)',
       background: 'var(--thead-col-schedule)'
-    },
-    onClick: () => requestSort('uatEnd')
-  }, /*#__PURE__*/React.createElement("div", {
+    }
+  }, sortProps('uatEnd')), /*#__PURE__*/React.createElement("div", {
     className: "flex items-center justify-center"
   }, "4_EMS\u9A57\u6536 ", /*#__PURE__*/React.createElement("span", {
     className: "ml-1"
   }, /*#__PURE__*/React.createElement(SortIcon, {
     active: sortConfig.key === 'uatEnd',
     dir: sortConfig.direction
-  }))))), compact && /*#__PURE__*/React.createElement("th", {
+  }))))), compact && /*#__PURE__*/React.createElement("th", _extends({
     className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none whitespace-nowrap",
     style: {
       color: 'var(--text-tertiary)',
       width: '260px'
-    },
-    onClick: () => requestSort('currentStatus')
-  }, /*#__PURE__*/React.createElement("div", {
+    }
+  }, sortProps('currentStatus')), /*#__PURE__*/React.createElement("div", {
     className: "flex items-center"
   }, "\u73FE\u6CC1\u63CF\u8FF0 ", /*#__PURE__*/React.createElement("span", {
     className: "ml-1"
   }, /*#__PURE__*/React.createElement(SortIcon, {
     active: sortConfig.key === 'currentStatus',
     dir: sortConfig.direction
-  })))), showCol('mpSaving') && /*#__PURE__*/React.createElement("th", {
+  })))), showCol('mpSaving') && /*#__PURE__*/React.createElement("th", _extends({
     className: "px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center whitespace-nowrap",
     style: {
       color: 'var(--text-tertiary)',
       width: '72px',
       borderRight: '1px solid var(--border-card)'
-    },
-    onClick: () => requestSort('mpSaving')
-  }, /*#__PURE__*/React.createElement("div", {
+    }
+  }, sortProps('mpSaving')), /*#__PURE__*/React.createElement("div", {
     className: "flex items-center justify-center"
   }, "MP Saving ", /*#__PURE__*/React.createElement("span", {
     className: "ml-1"
@@ -4417,16 +5280,16 @@ function App() {
   }))))), showColFilters && /*#__PURE__*/React.createElement("tr", {
     className: "no-print",
     style: {
-      background: 'var(--bg-table)',
+      background: 'var(--bg-card)',
       borderBottom: '2px solid var(--border-card)'
     }
   }, /*#__PURE__*/React.createElement("th", {
-    className: "px-1 py-1",
+    className: "px-1 py-1 frz frz-1",
     style: {
       borderRight: '1px solid var(--border-card)'
     }
   }), /*#__PURE__*/React.createElement("th", {
-    className: "px-1 py-1",
+    className: "px-1 py-1 frz frz-2",
     style: {
       borderRight: '1px solid var(--border-card)'
     }
@@ -4892,20 +5755,14 @@ function App() {
     return /*#__PURE__*/React.createElement(Fragment, {
       key: item.id || item.nid || idx
     }, /*#__PURE__*/React.createElement("tr", {
-      className: "cursor-pointer transition-colors",
+      className: `row-main cursor-pointer transition-colors${isExp ? ' row-exp' : ''}`,
       style: {
         borderBottom: '1px solid var(--border-table)',
-        background: rowBg
-      },
-      onMouseEnter: e => {
-        if (!isExp) e.currentTarget.style.background = 'var(--bg-table-hover)';
-      },
-      onMouseLeave: e => {
-        e.currentTarget.style.background = rowBg;
+        '--row-bg': rowBg
       },
       onClick: () => toggleRow(item.id)
     }, /*#__PURE__*/React.createElement("td", {
-      className: "px-2 py-2.5 text-xs font-bold tabular-nums",
+      className: "px-2 py-2.5 text-xs font-bold tabular-nums frz frz-1",
       style: {
         color: 'var(--text-muted)',
         borderRight: '1px solid var(--border-table)',
@@ -4914,6 +5771,17 @@ function App() {
       title: `${rowAlert ? rowAlert.label + '｜' : ''}點這一列可${isExp ? '收合' : '展開'}明細`
     }, /*#__PURE__*/React.createElement("div", {
       className: "flex items-center gap-1"
+    }, /*#__PURE__*/React.createElement("button", {
+      onClick: e => {
+        e.stopPropagation();
+        toggleRow(item.id);
+      },
+      "aria-expanded": isExp,
+      "aria-label": `${isExp ? '收合' : '展開'} NID ${item.nid} 的明細`,
+      className: "inline-flex flex-shrink-0 items-center justify-center w-4 h-4 -ml-0.5 rounded hover:bg-black/10",
+      style: {
+        color: 'inherit'
+      }
     }, /*#__PURE__*/React.createElement("span", {
       className: "inline-flex flex-shrink-0",
       style: {
@@ -4929,8 +5797,8 @@ function App() {
       "aria-hidden": "true"
     }, /*#__PURE__*/React.createElement("path", {
       d: "M8 5l11 7-11 7z"
-    }))), idx + 1)), /*#__PURE__*/React.createElement("td", {
-      className: "px-2 py-2.5 text-sm font-black",
+    })))), idx + 1)), /*#__PURE__*/React.createElement("td", {
+      className: "px-2 py-2.5 text-sm font-black frz frz-2",
       style: {
         color: 'var(--text-primary)',
         borderRight: '1px solid var(--border-table)'
@@ -5120,14 +5988,16 @@ function App() {
         openEdit(item);
       },
       className: "text-blue-500 hover:text-blue-600 p-1 rounded transition-colors",
-      title: "\u7DE8\u8F2F"
+      title: "\u7DE8\u8F2F",
+      "aria-label": `編輯 NID ${item.nid}`
     }, /*#__PURE__*/React.createElement("svg", {
       width: "16",
       height: "16",
       viewBox: "0 0 24 24",
       fill: "none",
       stroke: "currentColor",
-      strokeWidth: "2"
+      strokeWidth: "2",
+      "aria-hidden": "true"
     }, /*#__PURE__*/React.createElement("path", {
       d: "M12 20h9"
     }), /*#__PURE__*/React.createElement("path", {
@@ -5138,14 +6008,16 @@ function App() {
         handleDelete(item);
       },
       className: "text-red-500 hover:text-red-600 p-1 rounded transition-colors ml-1",
-      title: "\u522A\u9664"
+      title: "\u522A\u9664",
+      "aria-label": `刪除 NID ${item.nid}`
     }, /*#__PURE__*/React.createElement("svg", {
       width: "16",
       height: "16",
       viewBox: "0 0 24 24",
       fill: "none",
       stroke: "currentColor",
-      strokeWidth: "2"
+      strokeWidth: "2",
+      "aria-hidden": "true"
     }, /*#__PURE__*/React.createElement("polyline", {
       points: "3 6 5 6 21 6"
     }), /*#__PURE__*/React.createElement("path", {
@@ -5510,7 +6382,12 @@ function App() {
       }
     }, "\u7121\u73FE\u6CC1\u63CF\u8FF0"))))));
   }))))), editingData && /*#__PURE__*/React.createElement("div", {
-    className: "fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+    className: "fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4",
+    "data-ct-modal": true,
+    role: "dialog",
+    "aria-modal": "true",
+    "aria-label": editingData.isNew ? '新增資料列' : '編輯資料列',
+    tabIndex: -1
   }, /*#__PURE__*/React.createElement("div", {
     className: "rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col",
     style: {
@@ -5527,7 +6404,8 @@ function App() {
   }, editingData.isNew ? '新增資料列' : '編輯資料列'), /*#__PURE__*/React.createElement("button", {
     onClick: closeEdit,
     className: "icon-btn transition-colors",
-    title: "\u95DC\u9589\uFF08Esc\uFF09"
+    title: "\u95DC\u9589\uFF08Esc\uFF09",
+    "aria-label": "\u95DC\u9589\u7DE8\u8F2F\u8996\u7A97"
   }, /*#__PURE__*/React.createElement("svg", {
     width: "20",
     height: "20",
@@ -5559,7 +6437,7 @@ function App() {
     className: "w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 ring-indigo-500/50",
     style: {
       background: 'var(--bg-main)',
-      borderColor: 'var(--border-table)'
+      borderColor: errBorder('nid')
     },
     value: editingData.nid || '',
     onChange: e => setEditingData({
@@ -5567,6 +6445,8 @@ function App() {
       nid: e.target.value
     }),
     placeholder: "\u4F8B\u5982: 11"
+  }), /*#__PURE__*/React.createElement(FieldErrorHint, {
+    msg: errOf('nid')
   })), !editingData.isNew && /*#__PURE__*/React.createElement("div", {
     className: "col-span-1"
   }, /*#__PURE__*/React.createElement("label", {
@@ -5660,7 +6540,9 @@ function App() {
         color: 'var(--text-muted)'
       }
     }, c || '未設定'));
-  })(), !stageUnlocked && /*#__PURE__*/React.createElement("button", {
+  })(), /*#__PURE__*/React.createElement(FieldErrorHint, {
+    msg: errOf('stage')
+  }), !stageUnlocked && /*#__PURE__*/React.createElement("button", {
     type: "button",
     onClick: () => setStageUnlocked(true),
     className: "mt-1.5 w-full px-2 py-1 rounded text-[11px] font-bold border transition-colors",
@@ -5758,7 +6640,8 @@ function App() {
       categories: unlockCategories,
       setCategories: setUnlockCategories,
       reasons: unlockReasons,
-      setReasons: setUnlockReasons
+      setReasons: setUnlockReasons,
+      error: errOf('reason.stage')
     }));
   })(), /*#__PURE__*/React.createElement("div", {
     className: "col-span-1"
@@ -5774,13 +6657,15 @@ function App() {
     className: "w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 ring-indigo-500/50",
     style: {
       background: 'var(--bg-main)',
-      borderColor: 'var(--border-table)'
+      borderColor: errBorder('mainCat')
     },
     value: editingData.mainCat || '',
     onChange: e => setEditingData({
       ...editingData,
       mainCat: e.target.value
     })
+  }), /*#__PURE__*/React.createElement(FieldErrorHint, {
+    msg: errOf('mainCat')
   })), /*#__PURE__*/React.createElement("div", {
     className: "col-span-1"
   }, /*#__PURE__*/React.createElement("label", {
@@ -5795,13 +6680,15 @@ function App() {
     className: "w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 ring-indigo-500/50",
     style: {
       background: 'var(--bg-main)',
-      borderColor: 'var(--border-table)'
+      borderColor: errBorder('subCat')
     },
     value: editingData.subCat || '',
     onChange: e => setEditingData({
       ...editingData,
       subCat: e.target.value
     })
+  }), /*#__PURE__*/React.createElement(FieldErrorHint, {
+    msg: errOf('subCat')
   })), /*#__PURE__*/React.createElement("div", {
     className: "col-span-1"
   }, /*#__PURE__*/React.createElement("label", {
@@ -5835,7 +6722,7 @@ function App() {
     className: "w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 ring-indigo-500/50",
     style: {
       background: 'var(--bg-main)',
-      borderColor: 'var(--border-table)'
+      borderColor: errBorder('emsOwner')
     },
     value: editingData.emsOwner || '',
     onChange: e => setEditingData({
@@ -5847,7 +6734,9 @@ function App() {
   }, "\u8ACB\u9078\u64C7"), ownerSelectOptions('EMS', editingData.emsOwner).map(name => /*#__PURE__*/React.createElement("option", {
     key: name,
     value: name
-  }, name))), /*#__PURE__*/React.createElement(AssigneeErrorHint, {
+  }, name))), /*#__PURE__*/React.createElement(FieldErrorHint, {
+    msg: errOf('emsOwner')
+  }), /*#__PURE__*/React.createElement(AssigneeErrorHint, {
     error: assigneeError
   })), /*#__PURE__*/React.createElement("div", {
     className: "col-span-1"
@@ -5905,7 +6794,7 @@ function App() {
     className: "w-[160px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-amber-500/50 disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800",
     style: {
       background: isFieldLocked('spec', 'start') ? undefined : 'var(--bg-main)',
-      borderColor: 'var(--border-table)'
+      borderColor: errBorder('spec.start')
     },
     value: editingData.spec?.start || '',
     onChange: e => setEditingData({
@@ -5915,6 +6804,8 @@ function App() {
         start: e.target.value
       }
     })
+  }), /*#__PURE__*/React.createElement(FieldErrorHint, {
+    msg: errOf('spec.start')
   }), /*#__PURE__*/React.createElement(StartDefaultHint, {
     start: editingData.spec?.start,
     end: editingData.spec?.end
@@ -5932,7 +6823,7 @@ function App() {
     className: "w-[160px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-amber-500/50 disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800",
     style: {
       background: isFieldLocked('spec', 'end') ? undefined : 'var(--bg-main)',
-      borderColor: 'var(--border-table)'
+      borderColor: errBorder('spec.end')
     },
     value: editingData.spec?.end || '',
     onChange: e => setEditingData({
@@ -5942,6 +6833,8 @@ function App() {
         end: e.target.value
       }
     })
+  }), /*#__PURE__*/React.createElement(FieldErrorHint, {
+    msg: errOf('spec.end')
   }))), unlockedSections.spec && isPhaseEndModified('spec') && /*#__PURE__*/React.createElement("div", {
     className: "mt-4 p-3 bg-red-50 dark:bg-red-900/10 border border-red-200 dark:border-red-900/30 rounded-lg"
   }, /*#__PURE__*/React.createElement(ReasonFields, {
@@ -5949,7 +6842,8 @@ function App() {
     categories: unlockCategories,
     setCategories: setUnlockCategories,
     reasons: unlockReasons,
-    setReasons: setUnlockReasons
+    setReasons: setUnlockReasons,
+    error: errOf('reason.spec')
   })), /*#__PURE__*/React.createElement(PhaseAuditList, {
     entries: editingPhaseHist('spec')
   })), /*#__PURE__*/React.createElement("div", {
@@ -6031,7 +6925,7 @@ function App() {
     className: "w-[160px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-violet-500/50 disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800",
     style: {
       background: isFieldLocked('confirm', 'confirm') ? undefined : 'var(--bg-main)',
-      borderColor: 'var(--border-table)'
+      borderColor: errBorder('msd.confirm')
     },
     value: editingData.msd?.confirm || '',
     onChange: e => setEditingData({
@@ -6041,6 +6935,8 @@ function App() {
         confirm: e.target.value
       }
     })
+  }), /*#__PURE__*/React.createElement(FieldErrorHint, {
+    msg: errOf('msd.confirm')
   })), unlockedSections.confirm && isPhaseEndModified('confirm') && /*#__PURE__*/React.createElement("div", {
     className: "mt-4 p-3 bg-red-50 dark:bg-red-900/10 border border-red-200 dark:border-red-900/30 rounded-lg"
   }, /*#__PURE__*/React.createElement(ReasonFields, {
@@ -6048,7 +6944,8 @@ function App() {
     categories: unlockCategories,
     setCategories: setUnlockCategories,
     reasons: unlockReasons,
-    setReasons: setUnlockReasons
+    setReasons: setUnlockReasons,
+    error: errOf('reason.confirm')
   })), /*#__PURE__*/React.createElement(PhaseAuditList, {
     entries: editingPhaseHist('confirm')
   })), !editingData.isNew && /*#__PURE__*/React.createElement("div", {
@@ -6083,7 +6980,7 @@ function App() {
     className: "w-[160px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-blue-500/50 disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800",
     style: {
       background: isFieldLocked('msd', 'start') ? undefined : 'var(--bg-main)',
-      borderColor: 'var(--border-table)'
+      borderColor: errBorder('msd.start')
     },
     value: editingData.msd?.start || '',
     onChange: e => setEditingData({
@@ -6093,6 +6990,8 @@ function App() {
         start: e.target.value
       }
     })
+  }), /*#__PURE__*/React.createElement(FieldErrorHint, {
+    msg: errOf('msd.start')
   }), /*#__PURE__*/React.createElement(StartDefaultHint, {
     start: editingData.msd?.start,
     end: editingData.msd?.end
@@ -6111,7 +7010,7 @@ function App() {
     className: "w-[160px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-blue-500/50 disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800",
     style: {
       background: isFieldLocked('msd', 'end') ? undefined : 'var(--bg-main)',
-      borderColor: 'var(--border-table)'
+      borderColor: errBorder('msd.end')
     },
     value: editingData.msd?.end || '',
     onChange: e => setEditingData({
@@ -6121,6 +7020,8 @@ function App() {
         end: e.target.value
       }
     })
+  }), /*#__PURE__*/React.createElement(FieldErrorHint, {
+    msg: errOf('msd.end')
   }))), unlockedSections.msd && isPhaseEndModified('msd') && /*#__PURE__*/React.createElement("div", {
     className: "mt-4 p-3 bg-red-50 dark:bg-red-900/10 border border-red-200 dark:border-red-900/30 rounded-lg"
   }, /*#__PURE__*/React.createElement(ReasonFields, {
@@ -6128,7 +7029,8 @@ function App() {
     categories: unlockCategories,
     setCategories: setUnlockCategories,
     reasons: unlockReasons,
-    setReasons: setUnlockReasons
+    setReasons: setUnlockReasons,
+    error: errOf('reason.msd')
   })), /*#__PURE__*/React.createElement(PhaseAuditList, {
     entries: editingPhaseHist('msd')
   })), !editingData.isNew && /*#__PURE__*/React.createElement("div", {
@@ -6163,7 +7065,7 @@ function App() {
     className: "w-[160px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-pink-500/50 disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800",
     style: {
       background: isFieldLocked('uat', 'start') ? undefined : 'var(--bg-main)',
-      borderColor: 'var(--border-table)'
+      borderColor: errBorder('uat.start')
     },
     value: editingData.uat?.start || '',
     onChange: e => setEditingData({
@@ -6173,6 +7075,8 @@ function App() {
         start: e.target.value
       }
     })
+  }), /*#__PURE__*/React.createElement(FieldErrorHint, {
+    msg: errOf('uat.start')
   }), /*#__PURE__*/React.createElement(StartDefaultHint, {
     start: editingData.uat?.start,
     end: editingData.uat?.end
@@ -6191,7 +7095,7 @@ function App() {
     className: "w-[160px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-pink-500/50 disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800",
     style: {
       background: isFieldLocked('uat', 'end') ? undefined : 'var(--bg-main)',
-      borderColor: 'var(--border-table)'
+      borderColor: errBorder('uat.end')
     },
     value: editingData.uat?.end || '',
     onChange: e => setEditingData({
@@ -6201,6 +7105,8 @@ function App() {
         end: e.target.value
       }
     })
+  }), /*#__PURE__*/React.createElement(FieldErrorHint, {
+    msg: errOf('uat.end')
   }))), unlockedSections.uat && isPhaseEndModified('uat') && /*#__PURE__*/React.createElement("div", {
     className: "mt-4 p-3 bg-red-50 dark:bg-red-900/10 border border-red-200 dark:border-red-900/30 rounded-lg"
   }, /*#__PURE__*/React.createElement(ReasonFields, {
@@ -6208,7 +7114,8 @@ function App() {
     categories: unlockCategories,
     setCategories: setUnlockCategories,
     reasons: unlockReasons,
-    setReasons: setUnlockReasons
+    setReasons: setUnlockReasons,
+    error: errOf('reason.uat')
   })), /*#__PURE__*/React.createElement(PhaseAuditList, {
     entries: editingPhaseHist('uat')
   })), /*#__PURE__*/React.createElement("div", {
@@ -6240,12 +7147,19 @@ function App() {
     }
   }, /*#__PURE__*/React.createElement("button", {
     onClick: closeEdit,
-    className: "px-5 py-2 rounded-lg text-sm font-bold hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+    disabled: isSubmitting,
+    className: "px-5 py-2 rounded-lg text-sm font-bold hover:bg-black/5 dark:hover:bg-white/5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
   }, "\u53D6\u6D88"), /*#__PURE__*/React.createElement("button", {
     onClick: handleSave,
-    className: "px-5 py-2 rounded-lg text-sm font-bold bg-indigo-500 text-white hover:bg-indigo-600 shadow-md transition-colors"
-  }, editingData.isNew ? '確認新增' : '儲存變更')))), isActorModalOpen && /*#__PURE__*/React.createElement("div", {
+    disabled: isSubmitting,
+    className: "px-5 py-2 rounded-lg text-sm font-bold bg-indigo-500 text-white hover:bg-indigo-600 shadow-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-indigo-500"
+  }, isSubmitting ? '儲存中…' : editingData.isNew ? '確認新增' : '儲存變更')))), isActorModalOpen && /*#__PURE__*/React.createElement("div", {
     className: "fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4",
+    "data-ct-modal": true,
+    role: "dialog",
+    "aria-modal": "true",
+    "aria-label": "\u6A21\u64EC Windows \u5E33\u865F",
+    tabIndex: -1,
     onClick: () => setIsActorModalOpen(false)
   }, /*#__PURE__*/React.createElement("div", {
     className: "rounded-xl shadow-2xl w-full max-w-md",
@@ -6353,6 +7267,11 @@ function App() {
     className: "px-4 py-1.5 rounded-lg text-[11px] font-bold bg-indigo-500 text-white hover:bg-indigo-600 transition-colors"
   }, "\u5957\u7528")))), alertModal && /*#__PURE__*/React.createElement("div", {
     className: "fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4",
+    "data-ct-modal": true,
+    role: "alertdialog",
+    "aria-modal": "true",
+    "aria-label": alertModal.title || '提示',
+    tabIndex: -1,
     onClick: () => setAlertModal(null)
   }, /*#__PURE__*/React.createElement("div", {
     className: "rounded-xl shadow-2xl w-full max-w-md",
@@ -6387,7 +7306,12 @@ function App() {
     onClick: () => setAlertModal(null),
     className: "px-5 py-2 rounded-lg text-sm font-bold bg-indigo-500 text-white hover:bg-indigo-600 shadow-md transition-colors"
   }, "\u6211\u77E5\u9053\u4E86")))), rollbackModal && /*#__PURE__*/React.createElement("div", {
-    className: "fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4"
+    className: "fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4",
+    "data-ct-modal": true,
+    role: "dialog",
+    "aria-modal": "true",
+    "aria-label": `規格回退 NID ${rollbackModal.nid}`,
+    tabIndex: -1
   }, /*#__PURE__*/React.createElement("div", {
     className: "rounded-xl shadow-2xl w-full max-w-lg",
     style: {
@@ -6486,15 +7410,22 @@ function App() {
     }
   }, /*#__PURE__*/React.createElement("button", {
     onClick: () => setRollbackModal(null),
-    className: "px-5 py-2 rounded-lg text-sm font-bold hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+    disabled: isSubmitting,
+    className: "px-5 py-2 rounded-lg text-sm font-bold hover:bg-black/5 dark:hover:bg-white/5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
   }, "\u53D6\u6D88"), /*#__PURE__*/React.createElement("button", {
     onClick: handleRollback,
-    className: "px-5 py-2 rounded-lg text-sm font-bold text-white shadow-md transition-colors",
+    disabled: isSubmitting,
+    className: "px-5 py-2 rounded-lg text-sm font-bold text-white shadow-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
     style: {
       background: '#8b5cf6'
     }
-  }, "\u78BA\u8A8D\u56DE\u9000")))), confirmModal && /*#__PURE__*/React.createElement("div", {
-    className: "fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4"
+  }, isSubmitting ? '回退中…' : '確認回退')))), confirmModal && /*#__PURE__*/React.createElement("div", {
+    className: "fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4",
+    "data-ct-modal": true,
+    role: "alertdialog",
+    "aria-modal": "true",
+    "aria-label": confirmModal.title || '請確認',
+    tabIndex: -1
   }, /*#__PURE__*/React.createElement("div", {
     className: "rounded-xl shadow-2xl w-full max-w-md",
     style: {
@@ -6512,7 +7443,8 @@ function App() {
     style: {
       background: 'rgba(239,68,68,0.1)',
       color: '#ef4444'
-    }
+    },
+    "aria-hidden": "true"
   }, "?"), /*#__PURE__*/React.createElement("div", {
     className: "min-w-0"
   }, /*#__PURE__*/React.createElement("h3", {
@@ -6554,7 +7486,7 @@ function App() {
       setConfirmModal(null);
       confirmModal.onConfirm(v);
     },
-    disabled: !!confirmModal.prompt && !String(confirmModal.value || '').trim(),
+    disabled: isSubmitting || !!confirmModal.prompt && !String(confirmModal.value || '').trim(),
     className: "px-5 py-2 rounded-lg text-sm font-bold bg-red-500 text-white hover:bg-red-600 shadow-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-red-500"
   }, "\u78BA\u8A8D"))))));
 }

@@ -938,6 +938,16 @@ select.ctl {
   zoom: var(--present-zoom, 1.5);
 }
 
+/* 字級（2026-08-24 / 第 29 批）。與 .present-zoom 完全同一個機制，
+     差別只在倍率小得多（1 / 1.15 / 1.3）而且**只掛在 <main>** ——
+     要放大的是資料列，不是頁首與標題。
+     ⚠️ 兩個 class 不會同時出現在同一個元素上（見 app.jsx 的 <main>）：
+     zoom 疊在同一層會相乘，1.3 × 1.5 = 1.95，右邊整片被切掉。 */
+
+.ui-zoom {
+  zoom: var(--ui-zoom, 1);
+}
+
 /* 投影機的實際對比遠低於螢幕（黑階其實是灰的，會議室還開著燈）。
      基礎色盤本身已於 2026-08-19 加深過一階（見上方 :root / .dark 的註解），
      投影模式在那之上**再**提一階，表格框線同理加深，遠看才分得出格子。
@@ -1041,6 +1051,85 @@ select.ctl {
 
 .sticky-table thead:nth-of-type(2) tr:nth-child(2) th {
   position: static;
+}
+
+/* ── 表格左側欄位橫向凍結（2026-08-24 / 第 27 批）──
+     一般模式 16 欄在 1366~1440px 必定橫捲，而捲動的是**整個頁面**（見上面的註解）。
+     在此之前 No 與 NID 會整個捲出畫面 —— 右邊看到 ④ 驗收那格紅字時，
+     已經不知道那是哪一筆需求，只能捲回去再捲過來。
+     ⚠️ 只凍最左邊**連續**的兩欄（No / NID）。一般模式的欄序是
+     No→NID→Status→StatusID→註冊日期→Main Cat→Sub Cat，
+     Main Cat **不與 NID 相鄰**；position:sticky 只凍得了連續的前綴欄，
+     跳著凍會在中間留下一段照樣會捲的欄位，看起來像破圖。
+     第二欄的 left 由 app.jsx 量測 No 欄的實際寬度後用 --frz-2 傳進來 ——
+     **不可以寫死 44px**：th 上的 width 只是建議值，投影倍率與字級都會改變它
+     （與兩層表頭的 top 一律實測是同一條理由）。 */
+
+.sticky-table .frz {
+  position: sticky;
+}
+
+.sticky-table .frz-1 {
+  left: 0;
+}
+
+.sticky-table .frz-2 {
+  left: var(--frz-2, 44px);
+}
+
+/* 欄名列本來就 sticky top，加上 left 就是兩軸都吸附。
+     z-index 要高過其他表頭格，否則橫捲時會被右邊捲過來的表頭蓋掉 */
+
+.sticky-table thead th.frz {
+  z-index: 21;
+}
+
+/* 篩選列上面剛被設成 position:static（它本來就該捲到表頭底下），
+     這裡把凍結的那兩格改回 sticky —— **只給 left、不給 top**，垂直行為完全不變。
+     它的底色掛在 <tr> 上、th 自己是透明的，橫捲時會透出底下的資料列，所以要補一層 */
+
+.sticky-table thead:nth-of-type(2) tr:nth-child(2) th.frz {
+  position: sticky;
+  background: var(--bg-card);
+}
+
+/* 資料列的凍結格。z-index 只要蓋過同列其他格（auto）即可，一定要低於表頭的 20。
+     ⚠️ **不可以**寫成 background: var(--row-bg)。列底色那三個值有兩個是**半透明**的
+     （實測 --bg-row-done = rgba(30,41,59,0.45)、--bg-table-expanded 深色也是 0.5），
+     半透明的凍結欄等於沒凍 —— 62 列裡有 45 列是 Done，橫捲時右邊的欄位會直接
+     從那兩格透出來，變成兩層字疊在一起。
+     作法：底下鋪一層不透明的卡片色（表格本來就疊在 .t-card 上），
+     再用 background-image 把列底色疊上去 —— 合成結果與非凍結區看到的完全一致。 */
+
+.sticky-table tbody td.frz {
+  z-index: 3;
+  background-color: var(--bg-card);
+  background-image: linear-gradient(var(--row-bg, transparent), var(--row-bg, transparent));
+}
+
+/* ── 資料列 hover ──
+     ⚠️ 這裡以前是 <tr> 上的 onMouseEnter / onMouseLeave 直接寫 inline style。
+     凍結欄有自己的 background（見上面），JS 只改 tr 的底色時那兩格不會跟著亮，
+     滑過去會變成「中間亮、左邊兩格沒亮」。改用 CSS 之後兩邊一起處理，
+     順帶修掉舊寫法的 bug：onMouseLeave 寫回的是 render 當下閉包裡的 rowBg。
+     展開中的列不套 hover（與舊的 if(!isExp) 同義）。 */
+
+.sticky-table tbody tr.row-main {
+  background: var(--row-bg, transparent);
+}
+
+.sticky-table tbody tr.row-main:not(.row-exp):hover {
+  background: var(--bg-table-hover);
+}
+
+/* hover 同理，只換最上面那一層。--bg-table-hover 也是半透明的
+     （淺色 rgba(99,102,241,0.04)／深色 rgba(255,255,255,0.03)），直接寫
+     background: var(--bg-table-hover) 的話滑鼠一移過去那兩格就變透明 —— 實測過。
+     ⚠️ 這裡**只鋪 hover 色、不再疊列底色**，是為了與上面 tr 的 hover 規則一致：
+     那條也是整個 background 換成 hover 色（Done 的淡色在 hover 時本來就會讓位） */
+
+.sticky-table tbody tr.row-main:not(.row-exp):hover td.frz {
+  background-image: linear-gradient(var(--bg-table-hover), var(--bg-table-hover));
 }
 
 .pointer-events-none {
@@ -1158,6 +1247,10 @@ select.ctl {
   margin-right: auto;
 }
 
+.-ml-0\.5 {
+  margin-left: -0.125rem;
+}
+
 .-mr-1 {
   margin-right: -0.25rem;
 }
@@ -1258,8 +1351,16 @@ select.ctl {
   display: table;
 }
 
+.table-cell {
+  display: table-cell;
+}
+
 .grid {
   display: grid;
+}
+
+.hidden {
+  display: none;
 }
 
 .h-1\.5 {
@@ -1284,6 +1385,10 @@ select.ctl {
 
 .h-3 {
   height: 0.75rem;
+}
+
+.h-4 {
+  height: 1rem;
 }
 
 .h-5 {
@@ -1358,6 +1463,10 @@ select.ctl {
   width: 7rem;
 }
 
+.w-4 {
+  width: 1rem;
+}
+
 .w-5 {
   width: 1.25rem;
 }
@@ -1402,6 +1511,10 @@ select.ctl {
   max-width: 1440px;
 }
 
+.max-w-\[1600px\] {
+  max-width: 1600px;
+}
+
 .max-w-\[280px\] {
   max-width: 280px;
 }
@@ -1416,6 +1529,10 @@ select.ctl {
 
 .max-w-md {
   max-width: 28rem;
+}
+
+.max-w-none {
+  max-width: none;
 }
 
 .max-w-xl {
@@ -1873,6 +1990,10 @@ select.ctl {
   padding-left: 0.25rem;
 }
 
+.pl-2 {
+  padding-left: 0.5rem;
+}
+
 .pl-4 {
   padding-left: 1rem;
 }
@@ -1927,6 +2048,10 @@ select.ctl {
 
 .font-mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+.font-sans {
+  font-family: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
 }
 
 .text-\[10px\] {
@@ -2198,6 +2323,19 @@ select.ctl {
   }
 }
 
+/* 重新整理鈕的轉圈（2026-08-24 / 第 27 批）。名稱刻意加 ct 前綴 ——
+     Tailwind 自己有一個 spin，同名會蓋掉它 */
+
+@keyframes ctSpin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .scrollbar-thin::-webkit-scrollbar {
   width: 4px;
   height: 4px;
@@ -2317,9 +2455,9 @@ select.ctl {
     border-radius: 0 !important;
   }
 
-  /* 投影模式的放大在紙上要拿掉，否則右邊直接被裁掉 */
+  /* 投影模式與字級的放大在紙上都要拿掉，否則右邊直接被裁掉 */
 
-  .present-zoom {
+  .present-zoom, .ui-zoom {
     zoom: 1 !important;
   }
 
@@ -2342,6 +2480,15 @@ select.ctl {
     page-break-inside: avoid;
   }
 
+  /* 左側凍結欄同理（2026-08-24 / 第 27 批）：紙上沒有橫向捲軸，
+     留著 sticky 只會讓那兩格在某些瀏覽器疊印到別的欄位上。
+     底色也要拿掉 —— 那是為了遮住捲過來的內容，印出來會變成兩條灰帶 */
+
+  .sticky-table .frz {
+    position: static !important;
+    background: transparent !important;
+  }
+
   /* 展開的明細在紙上改成單欄（三張卡並排會被頁面邊界切斷） */
 
   .lg\:grid-cols-3 {
@@ -2358,6 +2505,14 @@ select.ctl {
 
 .last\:mb-0:last-child {
   margin-bottom: 0px;
+}
+
+.hover\:bg-black\/10:hover {
+  background-color: rgb(0 0 0 / 0.1);
+}
+
+.hover\:bg-black\/20:hover {
+  background-color: rgb(0 0 0 / 0.2);
 }
 
 .hover\:bg-black\/5:hover {
@@ -2437,6 +2592,10 @@ select.ctl {
   --tw-ring-color: rgb(99 102 241 / 0.4);
 }
 
+.disabled\:cursor-default:disabled {
+  cursor: default;
+}
+
 .disabled\:cursor-not-allowed:disabled {
   cursor: not-allowed;
 }
@@ -2454,8 +2613,17 @@ select.ctl {
   opacity: 0.4;
 }
 
+.disabled\:opacity-50:disabled {
+  opacity: 0.5;
+}
+
 .disabled\:opacity-60:disabled {
   opacity: 0.6;
+}
+
+.disabled\:hover\:bg-indigo-500:hover:disabled {
+  --tw-bg-opacity: 1;
+  background-color: rgb(99 102 241 / var(--tw-bg-opacity, 1));
 }
 
 .disabled\:hover\:bg-red-500:hover:disabled {
