@@ -467,6 +467,7 @@
 | `10_add_actualend_and_counters.sql` | 2026-08-18 | **已執行** | 新增四個 `*ActualEnd DATE` 與 `DelayCount` / `EarlyCount` / `RollbackCount INT NOT NULL DEFAULT 0`。實際執行：7 個欄位全數新增，62 筆計數欄皆為 0；重跑確認 idempotent |
 | `11_create_assignee.sql` | 2026-08-21 | **已執行** | 建立指派人員主檔 `dbo.Assignee`（`EMPO` / `NAME` / `DEPT` / `IsActive`）與唯一索引 `UX_Assignee_Dept_Name`，由控表現有指派回填。實際執行：**13 筆**（EMS 8 / MSD 5），`EMPO` 全空、`IsActive` 全 1；重跑確認 idempotent（回填 0 筆） |
 | `12_drop_personnel.sql` | 2026-08-21 | **已執行** | `DROP TABLE dbo.Personnel`（已被 `dbo.Assignee` 取代）。刪除前先 SELECT 印出全部 3 筆留檔。實際執行：3 筆已印出、表已刪除，現存人員相關資料表只剩 `dbo.Assignee`；重跑確認 idempotent（走 `IF EXISTS` 跳過） |
+| `14_fix_reschedule_changetype.sql` | 2026-08-27 | **已執行** | **資料修正，非架構變更**：把「回退之後重新壓的日期」由 `init` 改判為 `重新排程`。判定＝同一個 `(RequirementId, Phase)` 之下前一筆是 `規格回退` 的 `init`（與 `Program.cs` 的 `rescheduled` 等價）。只改 `ChangeType`，日期／`ChangedAt`／`ChangedBy` 原封不動。**目前符合條件的只有 1 列**（`Id 242` / NID 4 / spec / 2026-08-27 22:21）。冪等（改完就不再符合條件） |
 | `13_nid_unique.sql` | 2026-08-22 | **已執行** | 建立 `UX_Controltable_NID_Active`（`UNIQUE (NID) WHERE IsDeleted = 0 AND NID IS NOT NULL`），並移除被它取代的 `IX_Controltable_Active`。**有重複 NID 時不建立索引，只印出待處理清單**。實際執行：62 筆 / 62 個相異 NID / 0 筆 NID 為空，**無重複**，索引建立成功、舊索引已移除；重跑確認 idempotent（兩段都走「已存在／不存在」跳過） |
 
 > 📌 **第 14 批（階段順序 gating）沒有 DB 變更**，純前端 + 後端驗證，所以沒有它專屬的腳本。
@@ -521,6 +522,35 @@ SQL Server 的 `TRY_CONVERT(DATE, '')` **不會回傳 NULL，而是回傳 `1900-
 > `Msg 1934`。sqlcmd 連線預設是 **OFF**，第一次執行 `07` 時兩段 UPDATE 就是這樣整批失敗、
 > 卻只有 PRINT 看得出來（回填 0 筆但腳本「跑完了」）。
 > **日後所有含 UPDATE / INSERT 的累加腳本，每個批次都要自己帶 `SET QUOTED_IDENTIFIER ON;`。**
+
+### 14_fix_reschedule_changetype.sql
+
+`WriteAuditAsync()` 原本只看「舊的 End 是不是空的」判 `init`，但**規格回退剛好會把 End 清成 NULL** ——
+於是回退後重新壓的日期被當成「首次填寫」。三個看得到的後果：
+
+1. 那一列沉到明細面板最下面的**「初始時程」**區，標題還寫著「初始」
+   （使用者回報「回退之後壓的日期沒有寫進軌跡」講的就是這個）
+2. **不計入 ⚠N**（`isDateChange` 只認 `日期異動`）
+3. 同一個階段出現**兩筆 `init`**，前端 `initStamp` 的時間戳去重跟著失效，
+   「初始時程」那一區從共用一個標題退化成每行各印一個時間
+
+程式面已於第 35 批修正（`LastChangeTypeByPhaseAsync()` + `rescheduled`），
+但**只對之後的寫入生效**，既有的錯誤分類要靠這支腳本補。
+
+⚠️ 這是**修正一個分類錯誤，不是竄改事實**：只改 `ChangeType`，
+`OldStart`/`NewEnd`/`ChangedAt`/`ChangedBy` 全部原封不動。
+腳本執行前後各印一次受影響的列，數量對不上要先停下來確認。
+
+**實際執行**（2026-08-27）：修正 **1 列**（`Id 242` / NID 4 / spec / 22:21:11），
+執行後殘留 0、重跑確認 idempotent（前置檢查 0 列、`FixedRows` 0）。
+
+> ⚠️ **`@@ROWCOUNT` 會被 `PRINT` 重設。** 第一次執行時這支腳本的
+> `SELECT @@ROWCOUNT` 排在 `PRINT` 後面，結果那一列**明明改成功了、報表卻印出 0**。
+> 與上面 `07` 那個「回填 0 筆但腳本跑完了」是同一類坑，只是方向相反（做了事卻回報 0）——
+> 重跑的人看到 0 會分不出「早就修好了」和「根本沒作用」。
+> 已改成緊接著 `UPDATE` 就 `SET @Fixed = @@ROWCOUNT`；並在一個 `ROLLBACK` 的交易裡
+> 把該列暫時設回 `init` 複驗過計數器真的會印出 1。
+> **日後所有累加腳本要回報影響列數，一律緊接著 DML 收進變數，中間不要夾任何敘述。**
 
 ### 13_nid_unique.sql
 

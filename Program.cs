@@ -2451,10 +2451,38 @@ static async Task InsertHistoryAsync(SqlConnection conn, int reqId, string? nid,
 // extraNotes：系統要補在說明後面的話（key 為 phase）。目前唯一的用途是
 // 「End 改了所以順手清掉該階段的 ActualEnd」——那件事使用者看不見，
 // 不寫進軌跡的話資料列會出現「⏰ 延期 1」卻查不到任何實際完成日的組合（第 21 批）。
+// ─── 每個 phase 最後一筆稽核列的 ChangeType（2026-08-27 / 第 35 批）───
+// 只有一個用途：分辨「這個階段的 End 是空的」是**從來沒填過**，還是**剛被回退清掉**。
+// ⚠️ 一次查詢撈完四個階段（ROW_NUMBER 取每組最新），不要在迴圈裡一個階段查一次 ——
+// 那會變成每存一次檔多送四趟 round trip，而這支在匯入時是逐列呼叫的。
+// 一定要吃同一個 tx：回退與重排若落在同一個交易裡，讀不到未 commit 的資料會判錯。
+static async Task<Dictionary<string, string>> LastChangeTypeByPhaseAsync(
+    SqlConnection conn, int reqId, SqlTransaction? tx = null)
+{
+    var map = new Dictionary<string, string>();
+    using var cmd = new SqlCommand(@"
+        SELECT Phase, ChangeType FROM (
+            SELECT Phase, ChangeType,
+                   ROW_NUMBER() OVER (PARTITION BY Phase ORDER BY Id DESC) AS rn
+            FROM dbo.Controltable_History WHERE RequirementId = @Id
+        ) t WHERE rn = 1", conn, tx);
+    cmd.Parameters.AddWithValue("@Id", reqId);
+    using var r = await cmd.ExecuteReaderAsync();
+    while (await r.ReadAsync())
+    {
+        var p = ReadString(r, "Phase");
+        if (!string.IsNullOrEmpty(p)) map[p] = ReadString(r, "ChangeType") ?? "";
+    }
+    return map;
+}
+
 static async Task WriteAuditAsync(SqlConnection conn, int reqId, Requirement req, Requirement? oldReq,
                                   string? changedBy, string changedBySource, SqlTransaction? tx = null,
                                   IReadOnlyDictionary<string, string>? extraNotes = null)
 {
+    // 新增（oldReq == null）不必查：那時候還沒有任何稽核列，全部都是真的 init
+    var lastType = oldReq == null ? new Dictionary<string, string>()
+                                  : await LastChangeTypeByPhaseAsync(conn, reqId, tx);
     foreach (var phase in AllPhases())
     {
         var newD = PhaseDatesOf(req, phase);
@@ -2480,15 +2508,29 @@ static async Task WriteAuditAsync(SqlConnection conn, int reqId, Requirement req
         // 那是首次填寫，不是「起日調整」。會走到這裡的是「只填了 Start、End 留空」的階段 ——
         // 舊寫法一律記成 `起日調整`，那一列就會被前端歸進「時程變更軌跡」的異動區
         // （changeEntries = 非 init），畫成「開始 未填 → 2026-09-01」。不影響計數，但分類是錯的。
+        // ⚠️ 「End 原本是空的」還要再分一次（2026-08-27 / 第 35 批）：空的原因可能是
+        // **剛被規格回退清掉**，那時候重新壓日期不是「首次填寫」，是**重新排程**。
+        // 使用者回報：回退之後補上的日期在軌跡裡找不到 —— 它其實有寫進去，
+        // 只是被判成 init，於是沉到面板最下面的「初始時程」區，標題還寫著「初始」。
+        // 那一列因此也不會計入 ⚠N（isDateChange 只認 `日期異動`），而且同一個階段
+        // 會出現兩筆 init，前端 initStamp 的收合（時間戳去重）跟著失效。
+        // 判定只看「這個階段最後一筆是不是 `規格回退`」—— 會把 End 清空的路徑只有回退
+        // （手動清掉既有日期時 oldEnd 不是空的，會落在 `日期異動`）。
+        var rescheduled = oldEnd == "" && newEnd != ""
+                          && lastType.TryGetValue(phase, out var lt) && lt == "規格回退";
         var changeType = oldEnd == newEnd ? (AnyDate(oldD) ? "起日調整" : "init")
-                       : oldEnd == ""     ? "init"
+                       : oldEnd == ""     ? (rescheduled ? "重新排程" : "init")
                                           : "日期異動";
 
         ChangeMeta? m = null;
         if (req.changeMeta != null && req.changeMeta.TryGetValue(phase, out var found)) m = found;
 
-        // init 與起日調整都不會有使用者填的理由（前端也不會問），所以不帶 category / note
-        var keepMeta = changeType == "日期異動";
+        // init 與起日調整都不會有使用者填的理由（前端也不會問），所以不帶 category / note。
+        // ⚠️ `重新排程` 同樣**不強制**理由（前端也不問）：正上方那筆回退自己就帶著回退說明，
+        //    緊接著再逼一次等於同一件事問兩遍。它也不計入 ⚠N，所以不會出現
+        //    「掛著 ⚠1 點開卻查不到原因」那個坑（見 EndChangedWithoutReason 的說明）。
+        //    但使用者若真的填了理由就照收 —— 那是額外資訊，沒有理由丟掉。
+        var keepMeta = changeType == "日期異動" || changeType == "重新排程";
         var note = keepMeta ? m?.note : null;
         if (extraNotes != null && extraNotes.TryGetValue(phase, out var extra))
             note = string.IsNullOrWhiteSpace(note) ? extra : note + "｜" + extra;

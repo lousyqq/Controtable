@@ -1,0 +1,834 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MSD 需求管控表手冊</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Noto+Sans+TC:wght@400;500;700&family=Noto+Serif+TC:wght@600;700&display=swap">
+<style>
+:root{
+  --ground:#fbfbfd; --card:#ffffff; --card-2:#f5f6fa;
+  --ink:#101728; --ink-2:#414d63; --ink-3:#6b7689;
+  --rule:#dfe2ec; --rule-soft:#ebedf4;
+  --brand:#4f46e5; --brand-soft:rgba(79,70,229,.08); --brand-line:rgba(79,70,229,.28);
+  --alert:#b91c1c; --alert-bg:rgba(185,28,28,.06); --alert-line:rgba(185,28,28,.28);
+  --warn:#b45309;  --warn-bg:rgba(180,83,9,.06);   --warn-line:rgba(180,83,9,.28);
+  --ok:#047857;    --ok-bg:rgba(4,120,87,.06);     --ok-line:rgba(4,120,87,.28);
+  --code-bg:#f0f1f6; --code-ink:#3b3f52;
+  --s1:#b45309; --s2:#6d28d9; --s3:#1d4ed8; --s4:#be185d; --s5:#047857;
+  --s1f:rgba(180,83,9,.10); --s2f:rgba(109,40,217,.10); --s3f:rgba(29,78,216,.10);
+  --s4f:rgba(190,24,93,.10); --s5f:rgba(4,120,87,.10);
+  --shadow:0 1px 2px rgba(16,23,40,.05), 0 8px 24px -18px rgba(16,23,40,.35);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#0b1020; --card:#131a2c; --card-2:#182036;
+    --ink:#e9edf6; --ink-2:#b3bdd0; --ink-3:#8592aa;
+    --rule:#28324a; --rule-soft:#1e2739;
+    --brand:#8b90f8; --brand-soft:rgba(139,144,248,.12); --brand-line:rgba(139,144,248,.34);
+    --alert:#f87171; --alert-bg:rgba(248,113,113,.10); --alert-line:rgba(248,113,113,.32);
+    --warn:#fbbf24;  --warn-bg:rgba(251,191,36,.10);   --warn-line:rgba(251,191,36,.32);
+    --ok:#34d399;    --ok-bg:rgba(52,211,153,.10);     --ok-line:rgba(52,211,153,.32);
+    --code-bg:#1b2338; --code-ink:#c3ccdf;
+    --s1:#fbbf24; --s2:#a78bfa; --s3:#60a5fa; --s4:#f472b6; --s5:#34d399;
+    --s1f:rgba(251,191,36,.12); --s2f:rgba(167,139,250,.12); --s3f:rgba(96,165,250,.12);
+    --s4f:rgba(244,114,182,.12); --s5f:rgba(52,211,153,.12);
+    --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 28px -20px rgba(0,0,0,.8);
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0b1020; --card:#131a2c; --card-2:#182036;
+  --ink:#e9edf6; --ink-2:#b3bdd0; --ink-3:#8592aa;
+  --rule:#28324a; --rule-soft:#1e2739;
+  --brand:#8b90f8; --brand-soft:rgba(139,144,248,.12); --brand-line:rgba(139,144,248,.34);
+  --alert:#f87171; --alert-bg:rgba(248,113,113,.10); --alert-line:rgba(248,113,113,.32);
+  --warn:#fbbf24;  --warn-bg:rgba(251,191,36,.10);   --warn-line:rgba(251,191,36,.32);
+  --ok:#34d399;    --ok-bg:rgba(52,211,153,.10);     --ok-line:rgba(52,211,153,.32);
+  --code-bg:#1b2338; --code-ink:#c3ccdf;
+  --s1:#fbbf24; --s2:#a78bfa; --s3:#60a5fa; --s4:#f472b6; --s5:#34d399;
+  --s1f:rgba(251,191,36,.12); --s2f:rgba(167,139,250,.12); --s3f:rgba(96,165,250,.12);
+  --s4f:rgba(244,114,182,.12); --s5f:rgba(52,211,153,.12);
+  --shadow:0 1px 2px rgba(0,0,0,.3), 0 10px 28px -20px rgba(0,0,0,.8);
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--ground); color:var(--ink);
+  font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+  font-size:15px; line-height:1.85; -webkit-font-smoothing:antialiased;
+}
+code,kbd,.mono{font-family:"IBM Plex Mono",ui-monospace,"Cascadia Mono",Consolas,monospace}
+code{background:var(--code-bg); color:var(--code-ink); padding:.1em .38em; border-radius:4px; font-size:.86em}
+kbd{background:var(--card); border:1px solid var(--rule); border-bottom-width:2px; border-radius:5px; padding:.05em .4em; font-size:.8em; color:var(--ink-2)}
+a{color:var(--brand); text-underline-offset:3px}
+a:focus-visible,button:focus-visible{outline:2px solid var(--brand); outline-offset:3px; border-radius:3px}
+
+/* ── shell ── */
+.shell{max-width:1180px; margin:0 auto; padding:0 28px 96px;
+  display:grid; grid-template-columns:236px minmax(0,1fr); gap:56px; align-items:start}
+@media (max-width:1000px){ .shell{grid-template-columns:minmax(0,1fr); gap:0; padding:0 20px 72px} }
+
+/* ── masthead ── */
+.mast{grid-column:1/-1; padding:56px 0 34px; border-bottom:1px solid var(--rule)}
+.mast .eyebrow{font-size:11px; letter-spacing:.22em; text-transform:uppercase;
+  color:var(--ink-3); font-weight:700; margin:0 0 14px}
+.mast h1{font-family:"Noto Serif TC",Georgia,serif; font-weight:700;
+  font-size:clamp(30px,5vw,46px); line-height:1.2; margin:0 0 14px; letter-spacing:-.01em; text-wrap:balance}
+.mast .lede{max-width:62ch; color:var(--ink-2); font-size:16px; margin:0}
+.mast .meta{margin-top:22px; display:flex; flex-wrap:wrap; gap:8px 20px;
+  font-size:12px; color:var(--ink-3)}
+.mast .meta b{color:var(--ink-2); font-weight:500}
+
+/* ── nav ── */
+nav.toc{position:sticky; top:24px; padding-top:40px}
+@media (max-width:1000px){ nav.toc{position:static; padding:26px 0 6px; border-bottom:1px solid var(--rule)} }
+nav.toc .toc-h{font-size:11px; letter-spacing:.18em; text-transform:uppercase;
+  color:var(--ink-3); font-weight:700; margin:0 0 14px}
+nav.toc ol{list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:1px}
+nav.toc a{display:grid; grid-template-columns:26px 1fr; gap:8px; align-items:baseline;
+  text-decoration:none; color:var(--ink-2); font-size:13.5px; line-height:1.5;
+  padding:5px 8px; border-radius:6px; border-left:2px solid transparent}
+nav.toc a:hover{background:var(--brand-soft); color:var(--ink); border-left-color:var(--brand-line)}
+nav.toc .n{font-family:"IBM Plex Mono",monospace; font-size:11px; color:var(--ink-3); font-weight:600}
+
+/* ── content ── */
+main{padding-top:40px; min-width:0}
+section{scroll-margin-top:20px; padding-bottom:8px}
+section+section{margin-top:56px; padding-top:44px; border-top:1px solid var(--rule-soft)}
+h2{font-family:"Noto Serif TC",Georgia,serif; font-weight:700; font-size:25px; line-height:1.35;
+  margin:0 0 6px; letter-spacing:-.005em; text-wrap:balance;
+  display:grid; grid-template-columns:auto 1fr; gap:12px; align-items:baseline}
+h2 .n{font-family:"IBM Plex Mono",monospace; font-size:13px; font-weight:600;
+  color:var(--brand); letter-spacing:.04em}
+h3{font-size:15.5px; font-weight:700; margin:32px 0 8px; color:var(--ink); letter-spacing:.005em}
+h4{font-size:13.5px; font-weight:700; margin:22px 0 6px; color:var(--ink-2)}
+p{margin:10px 0; max-width:70ch}
+.sub{color:var(--ink-3); font-size:13.5px; margin:0 0 18px; max-width:70ch}
+ul,ol.list{margin:10px 0; padding-left:1.25em; max-width:70ch}
+li{margin:5px 0}
+li::marker{color:var(--ink-3)}
+strong{font-weight:700}
+hr.soft{border:0; border-top:1px solid var(--rule-soft); margin:28px 0}
+
+/* ── stage flow ── */
+.flow{display:grid; grid-template-columns:repeat(5,1fr); gap:8px; margin:26px 0 8px}
+@media (max-width:760px){ .flow{grid-template-columns:repeat(2,1fr)} }
+.st{border:1px solid var(--rule); border-top:3px solid var(--hue); border-radius:9px;
+  background:var(--card); padding:12px 12px 13px; box-shadow:var(--shadow); min-width:0}
+.st .code{font-family:"IBM Plex Mono",monospace; font-size:11px; font-weight:600; color:var(--hue)}
+.st .nm{font-weight:700; font-size:14px; margin:2px 0 6px; line-height:1.3}
+.st .who{display:inline-block; font-size:10.5px; font-weight:700; letter-spacing:.06em;
+  padding:1px 7px; border-radius:20px; background:var(--fill); color:var(--hue); margin-bottom:7px}
+.st .fld{font-family:"IBM Plex Mono",monospace; font-size:10.5px; color:var(--ink-3); line-height:1.6; word-break:break-all}
+.s1{--hue:var(--s1); --fill:var(--s1f)} .s2{--hue:var(--s2); --fill:var(--s2f)}
+.s3{--hue:var(--s3); --fill:var(--s3f)} .s4{--hue:var(--s4); --fill:var(--s4f)}
+.s5{--hue:var(--s5); --fill:var(--s5f)}
+
+/* ── tables ── */
+.tw{overflow-x:auto; margin:16px 0; border:1px solid var(--rule); border-radius:9px; background:var(--card)}
+table{border-collapse:collapse; width:100%; font-size:13px; min-width:520px}
+th,td{text-align:left; padding:9px 13px; border-bottom:1px solid var(--rule-soft); vertical-align:top; line-height:1.65}
+thead th{background:var(--card-2); font-size:11px; letter-spacing:.08em; text-transform:uppercase;
+  color:var(--ink-3); font-weight:700; white-space:nowrap; border-bottom:1px solid var(--rule)}
+tbody tr:last-child td{border-bottom:0}
+td code{white-space:nowrap}
+.num{font-variant-numeric:tabular-nums; text-align:right; white-space:nowrap}
+
+/* ── callouts ── */
+.note{border-left:3px solid var(--tone,var(--brand)); background:var(--tone-bg,var(--brand-soft));
+  padding:12px 16px; border-radius:0 8px 8px 0; margin:18px 0; max-width:72ch}
+.note p{margin:5px 0; max-width:none}
+.note .lb{display:block; font-size:10.5px; font-weight:700; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--tone,var(--brand)); margin-bottom:3px}
+.note.warn{--tone:var(--warn); --tone-bg:var(--warn-bg)}
+.note.stop{--tone:var(--alert); --tone-bg:var(--alert-bg)}
+.note.ok{--tone:var(--ok); --tone-bg:var(--ok-bg)}
+
+/* ── ui chips ── */
+.ui{display:inline-block; font-size:12px; font-weight:700; padding:1px 7px; border-radius:6px;
+  border:1px solid var(--rule); background:var(--card-2); color:var(--ink-2); white-space:nowrap}
+.badge{display:inline-block; font-size:11px; font-weight:700; padding:1px 7px; border-radius:20px;
+  border:1px solid var(--tone,var(--rule)); background:var(--tone-bg,var(--card-2)); color:var(--tone,var(--ink-2)); white-space:nowrap}
+.badge.a{--tone:var(--alert); --tone-bg:var(--alert-bg)}
+.badge.w{--tone:var(--warn); --tone-bg:var(--warn-bg)}
+.badge.v{--tone:var(--s2); --tone-bg:var(--s2f)}
+
+/* ── steps ── */
+ol.steps{list-style:none; counter-reset:s; padding:0; margin:18px 0; max-width:72ch}
+ol.steps>li{counter-increment:s; position:relative; padding-left:38px; margin:0 0 14px}
+ol.steps>li::before{content:counter(s,decimal-leading-zero); position:absolute; left:0; top:2px;
+  font-family:"IBM Plex Mono",monospace; font-size:11px; font-weight:600; color:var(--brand);
+  background:var(--brand-soft); border-radius:5px; width:26px; height:20px;
+  display:grid; place-items:center}
+ol.steps b{display:block}
+
+/* ── faq ── */
+.faq{border:1px solid var(--rule); border-radius:9px; background:var(--card); margin:12px 0; overflow:hidden}
+.faq summary{cursor:pointer; padding:12px 16px; font-weight:700; font-size:14px; list-style:none;
+  display:flex; gap:10px; align-items:baseline}
+.faq summary::-webkit-details-marker{display:none}
+.faq summary::before{content:"?"; font-family:"IBM Plex Mono",monospace; font-size:12px;
+  color:var(--brand); font-weight:600; flex:none}
+.faq summary:hover{background:var(--card-2)}
+.faq[open] summary{border-bottom:1px solid var(--rule-soft)}
+.faq .body{padding:4px 16px 14px 32px}
+.faq .body p{margin:8px 0}
+
+footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid var(--rule);
+  font-size:12px; color:var(--ink-3); display:flex; flex-wrap:wrap; gap:6px 22px; justify-content:space-between}
+
+@media print{
+  :root{--ground:#fff; --card:#fff; --card-2:#fff; --ink:#000; --ink-2:#222; --ink-3:#555;
+        --rule:#bbb; --rule-soft:#ddd; --shadow:none}
+  nav.toc,footer{display:none}
+  .shell{grid-template-columns:1fr; max-width:none; padding:0}
+  section{break-inside:auto} h2,h3{break-after:avoid}
+  .faq{break-inside:avoid} .faq .body{display:block!important}
+  @page{size:A4; margin:16mm}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important; transition:none!important}}
+</style>
+</head>
+<body>
+
+<div class="shell">
+
+  <header class="mast">
+    <p class="eyebrow">使用者手冊 · Controltable</p>
+    <h1>MSD 需求管控表</h1>
+    <p class="lede">EMS 提需求、MSD 開發、EMS 驗收 —— 這套系統把一筆需求從提出到結案的四個階段、每一次日期異動的理由、以及每週要 review 的逾期項目，全部收在同一張表裡。本手冊涵蓋日常操作、判讀規則與疑難排解。</p>
+    <p class="meta">
+      <span><b>版本</b> 20260827006</span>
+      <span><b>適用</b> 需求列表 · 統計報表</span>
+      <span><b>對象</b> EMS／MSD 負責人、主管</span>
+      <span><b>權威規格</b> FIELD_SPEC.md</span>
+    </p>
+  </header>
+
+  <nav class="toc" aria-label="章節目錄">
+    <p class="toc-h">目錄</p>
+    <ol>
+      <li><a href="#c1"><span class="n">01</span><span>系統概觀與名詞</span></a></li>
+      <li><a href="#c2"><span class="n">02</span><span>畫面導覽</span></a></li>
+      <li><a href="#c3"><span class="n">03</span><span>新增需求</span></a></li>
+      <li><a href="#c4"><span class="n">04</span><span>編輯需求與壓日期</span></a></li>
+      <li><a href="#c5"><span class="n">05</span><span>標記完成</span></a></li>
+      <li><a href="#c6"><span class="n">06</span><span>規格回退</span></a></li>
+      <li><a href="#c7"><span class="n">07</span><span>手動修正 StatusID</span></a></li>
+      <li><a href="#c8"><span class="n">08</span><span>刪除需求</span></a></li>
+      <li><a href="#c9"><span class="n">09</span><span>搜尋、篩選與排序</span></a></li>
+      <li><a href="#c10"><span class="n">10</span><span>逾期與需關注</span></a></li>
+      <li><a href="#c11"><span class="n">11</span><span>統計報表</span></a></li>
+      <li><a href="#c12"><span class="n">12</span><span>顯示、投影與列印</span></a></li>
+      <li><a href="#c13"><span class="n">13</span><span>Excel 匯出與匯入</span></a></li>
+      <li><a href="#c14"><span class="n">14</span><span>疑難排解</span></a></li>
+      <li><a href="#c15"><span class="n">15</span><span>附錄：欄位對照</span></a></li>
+    </ol>
+  </nav>
+
+  <main>
+
+  <!-- ═══ 01 ═══ -->
+  <section id="c1">
+    <h2><span class="n">01</span><span>系統概觀與名詞</span></h2>
+    <p class="sub">先讀這一章。後面所有規則都建立在「四個階段」與「兩個狀態欄」之上。</p>
+
+    <p>一筆需求由 EMS 部門提出，交給 MSD 部門開發，完成後再由 EMS 驗收。整個流程切成四個階段，第五個代號代表結案：</p>
+
+    <div class="flow">
+      <div class="st s1"><div class="code">StatusID 1</div><div class="nm">EMS 規格確認</div><span class="who">EMS</span><div class="fld">1_EMSStart ~ <b>1_EMSEnd</b></div></div>
+      <div class="st s2"><div class="code">StatusID 2</div><div class="nm">MSD 確認中</div><span class="who">MSD</span><div class="fld"><b>2_MSDConfirm</b><br>（單一日期）</div></div>
+      <div class="st s3"><div class="code">StatusID 3</div><div class="nm">MSD 開發中</div><span class="who">MSD</span><div class="fld">3_MSDStart ~ <b>3_MSDEnd</b></div></div>
+      <div class="st s4"><div class="code">StatusID 4</div><div class="nm">EMS 驗收</div><span class="who">EMS</span><div class="fld">4_EMSStart ~ <b>4_EMSEnd</b></div></div>
+      <div class="st s5"><div class="code">StatusID 5</div><div class="nm">結案</div><span class="who">—</span><div class="fld">不再預警</div></div>
+    </div>
+
+    <h3>兩個容易混淆的狀態欄</h3>
+    <div class="tw"><table>
+      <thead><tr><th style="width:110px">欄位</th><th style="width:180px">值</th><th>意義</th></tr></thead>
+      <tbody>
+        <tr><td><b>Status</b></td><td><code>Init</code> · <code>Ongoing</code> · <code>Done</code></td><td>整體狀態。<code>Init</code>＝尚未開始，<code>Ongoing</code>＝執行中，<code>Done</code>＝結案。舊資料裡的 <code>Pending</code> 一律收斂為 <code>Ongoing</code>。</td></tr>
+        <tr><td><b>StatusID</b></td><td><code>1</code> ~ <code>5</code></td><td>目前走到哪一個階段（上圖）。資料列上顯示成「代號＋階段名稱」的彩色藥丸。</td></tr>
+      </tbody>
+    </table></div>
+    <p>兩欄講的不是同一件事，也不會自動保持一致。系統偵測到矛盾（例如 <code>Done</code> 但 <code>StatusID ≠ 5</code>）時會在該列標上 <span class="badge a">⚠</span>，請進去修正。</p>
+
+    <h3 id="end-rule">最高原則：一切以 End 為準</h3>
+    <div class="note ok">
+      <span class="lb">核心規則</span>
+      <p><b>判斷一個階段走完了沒，只看它的結束日（End）有沒有填。</b>開始日（Start）不重要 —— 沒填的話存檔時會自動帶成與 End 同一天，畫面上會事先提示你「未填 → 儲存時自動帶入 YYYY-MM-DD」。</p>
+      <p>連帶的三件事：改 End 才算「時程異動」、才要填理由、才會計入警示數字；改 Start 不必填理由，也不會掛警示。②「MSD 確認中」只有單一日期，那個日期就是它的 End。</p>
+    </div>
+
+    <h3>畫面上會看到的三種標記</h3>
+    <div class="tw"><table>
+      <thead><tr><th style="width:120px">標記</th><th style="width:150px">位置</th><th>意義</th></tr></thead>
+      <tbody>
+        <tr><td><span class="badge w">⏰ N</span></td><td>NID 欄下方</td><td>這筆需求「延期完成」過 N 次。N ≥ 2 轉紅色。</td></tr>
+        <tr><td><span class="badge v">🔄 N</span></td><td>NID 欄下方</td><td>這筆需求「規格回退」過 N 次。</td></tr>
+        <tr><td><span class="badge a">⚠ N</span></td><td>階段時程欄</td><td>這個階段的 End 被人改過 N 次（只算<b>日期異動</b>，完成與回退不計入）。</td></tr>
+      </tbody>
+    </table></div>
+    <p>⏰ 與 🔄 刻意分開，不合併成一個「異常 N 次」—— 回退是規格一直變、延期是執行落後，兩者要分開判讀。</p>
+  </section>
+
+  <!-- ═══ 02 ═══ -->
+  <section id="c2">
+    <h2><span class="n">02</span><span>畫面導覽</span></h2>
+    <p class="sub">兩個頁籤：<span class="ui">需求列表</span> 與 <span class="ui">統計報表</span>。所有寫入動作都在需求列表。</p>
+
+    <h3>頁首（最上方一列）</h3>
+    <div class="tw"><table>
+      <thead><tr><th style="width:150px">控制項</th><th>作用</th></tr></thead>
+      <tbody>
+        <tr><td><span class="ui">需求列表</span> / <span class="ui">統計報表</span></td><td>切換兩個頁籤。頁籤上的紅色數字＝目前需關注的件數。</td></tr>
+        <tr><td><span class="badge a">⚠ 右邊被切掉</span></td><td>只在表格真的超出視窗時出現，附上實際被切掉的像素數。<b>點一下就會做最有效的那件事</b>（降投影倍率／降字級／切精簡模式）。詳見第 12 章。</td></tr>
+        <tr><td><span class="ui">📽 投影</span></td><td>會議室投影模式。<b>必須先開精簡模式、而且在需求列表頁</b>才能按。</td></tr>
+        <tr><td><span class="ui">Ａ 100%</span></td><td>字級循環 100% → 115% → 130%。只放大需求列表本身，設定會被記住。</td></tr>
+        <tr><td><span class="ui">☾ 深色</span> / <span class="ui">☀ 淺色</span></td><td>深淺色切換，設定會被記住。</td></tr>
+        <tr><td><span class="ui">⟳</span> 重新整理</td><td>重讀需求與異動軌跡，<b>但保留目前的篩選、排序與展開的列</b>。別人剛存過檔、或你撞到「資料已被其他人修改」時按這顆，不要按 <kbd>F5</kbd>（F5 會把篩選全部清掉）。</td></tr>
+        <tr><td>資料更新／畫面</td><td>兩個不同的時間。<b>資料更新</b>＝所有需求裡最後一次被異動的時間；<b>畫面</b>＝你手上這份是幾點抓的。別人存了檔而你的分頁一直開著時，上面那個數字不會變。</td></tr>
+      </tbody>
+    </table></div>
+
+    <h3>工具列（需求列表，由左至右）</h3>
+    <div class="tw"><table>
+      <thead><tr><th style="width:160px">控制項</th><th>作用</th></tr></thead>
+      <tbody>
+        <tr><td>搜尋框</td><td>比對 NID、專案名稱、子項目分類、負責人等欄位。輸入即時反應，過濾延遲約 0.2 秒。</td></tr>
+        <tr><td>漏斗圖示</td><td>開關「欄位篩選」列 —— 在表頭下方展開一排輸入框，可逐欄過濾。右上角的紅色數字＝目前有幾欄在過濾。</td></tr>
+        <tr><td><span class="ui">EMS</span> / <span class="ui">MSD</span></td><td>依負責人篩選。選項直接取自現有資料（沒有負責人的歸「未指派」）。</td></tr>
+        <tr><td><span class="ui">逾期</span></td><td>需關注／已到階段未壓日期／已逾期／7 日內到期。詳見第 10 章。</td></tr>
+        <tr><td><span class="ui">進度</span></td><td>進行中／已完成。</td></tr>
+        <tr><td><span class="ui">警示</span></td><td>有時程異動／有延期完成／有規格回退。</td></tr>
+        <tr><td><span class="badge a">✕ 清除全部</span></td><td>一鍵清掉所有搜尋與篩選（只有在真的有條件生效時才出現）。</td></tr>
+        <tr><td><span class="ui">Excel</span></td><td>展開匯出／匯入選單。詳見第 13 章。</td></tr>
+        <tr><td><span class="ui">＋ 新增需求</span></td><td>開啟新增視窗。</td></tr>
+      </tbody>
+    </table></div>
+    <p>工具列下方是 <span class="ui">ALL</span> 與五個階段的統計鈕，點一下就篩出那一階段（<b>1~5 可複選</b>，ALL 代表清空選取）。上面的數字是「套用其他篩選後」的分佈，所以選了 EMS 之後這排數字會跟著變。</p>
+
+    <h3>資料列與明細</h3>
+    <p>一般模式 16 欄，由左至右是：流水號 <code>No</code>、<code>NID</code>、<code>Status</code>、<code>StatusID</code>、註冊日期、專案名稱、子項目分類、Notes Link、EMS、MSD、四個階段時程、MP Saving、操作。</p>
+    <ul>
+      <li><b>點整列</b>（或按 <code>No</code> 欄的三角形）可展開明細：需求補充、完整四階段時程、時程變更軌跡、現況描述、建立與更新時間。鍵盤使用者用 <kbd>Tab</kbd> 移到三角形按鈕，<kbd>Enter</kbd> 展開。</li>
+      <li><code>No</code> 是<b>畫面流水號</b>，不是 NID —— 篩選之後會從 1 重新編。整列最左邊的顏色細條代表這一列的到期風險。</li>
+      <li>Notes Link 整欄都沒有資料時會自動收起。</li>
+      <li>表頭可點擊排序，鍵盤按 <kbd>Enter</kbd> 或 <kbd>Space</kbd> 也可以。</li>
+    </ul>
+  </section>
+
+  <!-- ═══ 03 ═══ -->
+  <section id="c3">
+    <h2><span class="n">03</span><span>新增需求</span></h2>
+
+    <ol class="steps">
+      <li><b>按工具列右上的 <span class="ui">＋ 新增需求</span></b>游標會自動落在 NID 欄。</li>
+      <li><b>填必填欄位</b>NID、專案名稱、子項目分類、EMS 負責人，以及 ① 階段的<b>結束日 <code>1_EMSEnd</code></b>。</li>
+      <li><b>視需要填選填欄位</b>需求補充（Remark）、MSD 負責人、① 的開始日。開始日留空的話，存檔時會自動帶成與結束日同一天。</li>
+      <li><b>按「確認新增」</b>成功後清單會重新載入，新的一筆就在裡面。</li>
+    </ol>
+
+    <h3>自動帶入的預設值</h3>
+    <div class="tw"><table>
+      <thead><tr><th style="width:150px">欄位</th><th>預設</th></tr></thead>
+      <tbody>
+        <tr><td>Status</td><td><code>Init</code></td></tr>
+        <tr><td>StatusID</td><td><code>1</code>（EMS 規格確認）</td></tr>
+        <tr><td>註冊日期</td><td>當天，畫面上唯讀不可改</td></tr>
+      </tbody>
+    </table></div>
+
+    <div class="note warn">
+      <span class="lb">NID 不可重複</span>
+      <p>NID 是需求的唯一編號，重複時會跳視窗提示，請換一個編號。已經被刪除（軟刪除）的 NID 可以被重新使用。</p>
+    </div>
+
+    <div class="note">
+      <span class="lb">存不進去時</span>
+      <p>系統會<b>一次列出全部問題</b>，同時把對應的欄位標紅。改好一欄，那一欄的紅字就會自己消失，不必反覆按儲存試錯。</p>
+    </div>
+  </section>
+
+  <!-- ═══ 04 ═══ -->
+  <section id="c4">
+    <h2><span class="n">04</span><span>編輯需求與壓日期</span></h2>
+    <p class="sub">按資料列最右邊的鉛筆圖示開啟編輯視窗。視窗裡的四個階段各自獨立：各自解鎖、各自填理由、各自寫軌跡。</p>
+
+    <h3>兩種「日期不能改」的狀態</h3>
+    <div class="tw"><table>
+      <thead><tr><th style="width:190px">看到的東西</th><th style="width:130px">意思</th><th>怎麼處理</th></tr></thead>
+      <tbody>
+        <tr><td><span class="ui">🔒 已鎖定，點此修改</span></td><td>防誤改</td><td>這一階段<b>已經有日期</b>了。點一下就解鎖，可以改。</td></tr>
+        <tr><td>灰色實心鎖頭（不可點）</td><td>前置階段未完成</td><td>這一階段<b>還沒開始填</b>，而且前一階段的結束日還是空的。把前一階段補完，這一階段會<b>立刻</b>開放（不必先存檔再重開視窗）。</td></tr>
+      </tbody>
+    </table></div>
+
+    <h4>階段開放條件</h4>
+    <div class="tw"><table>
+      <thead><tr><th style="width:200px">階段</th><th>要先填完什麼</th></tr></thead>
+      <tbody>
+        <tr><td><b>① EMS 規格確認</b></td><td>永遠開放</td></tr>
+        <tr><td><b>② MSD 確認中</b></td><td>① 的結束日</td></tr>
+        <tr><td><b>③ MSD 開發中</b></td><td>② 的確認日</td></tr>
+        <tr><td><b>④ EMS 驗收</b></td><td>③ 的結束日</td></tr>
+      </tbody>
+    </table></div>
+    <p>這個限制<b>只擋「從空白開始填寫」</b>。已經有值的欄位一律照舊，解鎖後就能改 —— 舊資料裡有階段跳空的（③ 有日期但 ② 空），那些列不會因此被鎖死。</p>
+
+    <h3>改日期一定要留理由</h3>
+    <div class="note stop">
+      <span class="lb">必填</span>
+      <p>把一個<b>已經壓好的結束日改掉</b>時，必須選一個<b>異動原因分類</b>（規格變更／優先級調整／技術問題／其他）並填<b>文字說明</b>，兩者缺一不可儲存。</p>
+      <p>不需要理由的情況：只改了開始日、解鎖了但沒動結束日、或是第一次填寫這個結束日。</p>
+    </div>
+    <p>異動會寫進稽核軌跡，在展開明細的「時程變更軌跡」與編輯視窗的「異動紀錄」都查得到，並讓那一格的 <span class="badge a">⚠ N</span> 加一。</p>
+
+    <h3>日期的先後限制</h3>
+    <ul>
+      <li>同一階段內：<b>結束日不可早於開始日</b>（同一天可以）。日期選擇器會直接把不合法的日子反灰。</li>
+      <li>跨階段：<code>① End ≤ ② Confirm ≤ ③ End ≤ ④ End</code>。<b>只檢查這次被你動到的那一組</b> —— 舊資料裡本來就倒著填的，不會因此連現況描述都存不了。</li>
+      <li>改掉結束日時，該階段的「實際完成日」會一併清空（原訂日重排之後，原本的落差就不成立了）。<b>⏰ 延期次數不會跟著減</b>，那是已經發生的事實。</li>
+    </ul>
+
+    <div class="note warn">
+      <span class="lb">關閉前會問你</span>
+      <p>視窗裡有未儲存的變更時，按 <kbd>Esc</kbd>／✕／取消都會跳確認。改回原值再關則不會問。</p>
+    </div>
+  </section>
+
+  <!-- ═══ 05 ═══ -->
+  <section id="c5">
+    <h2><span class="n">05</span><span>標記完成</span></h2>
+    <p class="sub">每個階段標題旁的 <span class="ui">✓ 完成</span> 鈕。這是推進 StatusID 的<b>正常路徑</b>。</p>
+
+    <p>按下去時，系統拿<b>今天</b>去比對這個階段原訂的結束日：</p>
+    <div class="tw"><table>
+      <thead><tr><th style="width:150px">情況</th><th style="width:170px">結束日欄位</th><th style="width:130px">實際完成日</th><th>計數</th></tr></thead>
+      <tbody>
+        <tr><td><b>提早完成</b><br><span style="color:var(--ink-3);font-size:12px">今天 ≤ 原訂</span></td><td><b>更新成今天</b></td><td>不寫</td><td>提早次數 +1（準時＝提早 0 天時不加）</td></tr>
+        <tr><td><b>延期完成</b><br><span style="color:var(--ink-3);font-size:12px">今天 &gt; 原訂</span></td><td><b>保持不變</b></td><td>寫入今天</td><td><span class="badge w">⏰</span> 延期次數 +1</td></tr>
+      </tbody>
+    </table></div>
+
+    <div class="note">
+      <span class="lb">延期完成怎麼呈現</span>
+      <p>資料列上會同時顯示<b>原訂（灰字）</b>與下一行的 <b>→ 實際（紅字）</b>。原訂日期<b>不畫刪除線</b> —— 它並沒有被改掉，主管要看得到落差。</p>
+    </div>
+
+    <p>成功之後會連動兩件事：</p>
+    <ul>
+      <li><b>StatusID 前進一階</b>（①→2、②→3、③→4、④→5），<b>只前進不後退</b>。已經在 ④ 的案子回頭補按 ① 的完成，不會被拉回 2。</li>
+      <li><b>Status 連動</b>：推到 <code>5</code> 時自動變 <code>Done</code>；離開第 1 階段時 <code>Init</code> → <code>Ongoing</code>。</li>
+    </ul>
+
+    <h3>沒有出現「✓ 完成」鈕時，畫面會告訴你原因</h3>
+    <div class="tw"><table>
+      <thead><tr><th style="width:44px">順序</th><th style="width:230px">灰字訊息</th><th>意思與處理</th></tr></thead>
+      <tbody>
+        <tr><td class="num">1</td><td>已略過此階段</td><td>StatusID 已經走過這一階段了。要重做請走「規格回退」。</td></tr>
+        <tr><td class="num">2</td><td>前面的階段還缺日期</td><td>把前面缺的結束日補齊（tooltip 會逐條列出缺哪些）。</td></tr>
+        <tr><td class="num">3</td><td>前一階段的日期還在今天之後</td><td>提早完成會把結束日拉到今天，那會做出「② 9/1 才確認、③ 8/22 就開發完」的資料。先調整前一階段的日期。</td></tr>
+        <tr><td class="num">4</td><td>壓上日期並儲存後，這裡會出現「✓ 完成」</td><td>這一階段還沒壓結束日。先填日期並儲存。</td></tr>
+      </tbody>
+    </table></div>
+
+    <div class="note stop">
+      <span class="lb">三個限制</span>
+      <p><b>同一階段不可重複標記完成</b>（否則計數會變成假數字）。回退之後可以重新標記。</p>
+      <p><b>視窗裡改了日期還沒儲存就按完成會被擋下</b> —— 它會拿舊值比對，結果與畫面對不起來。請先儲存。</p>
+      <p><b>完成成功後視窗會關閉並重新載入這筆資料</b>，所以視窗裡任何沒存的欄位都會遺失。系統會先擋下並要求你儲存。</p>
+    </div>
+  </section>
+
+  <!-- ═══ 06 ═══ -->
+  <section id="c6">
+    <h2><span class="n">06</span><span>規格回退</span></h2>
+    <p class="sub">規格變更導致前面的階段要重做時使用。入口在編輯視窗 StatusID 下方的 <span class="ui">🔄 規格回退</span>（StatusID ≥ 2 才會出現）。</p>
+
+    <ol class="steps">
+      <li><b>先儲存視窗裡未存的變更</b>系統會在<b>開啟回退視窗之前</b>就擋下，不會讓你挑完階段、打完說明才說不行。</li>
+      <li><b>選要退回哪一個 StatusID</b>可退回先前任一階段（1 ~ 目前-1）。</li>
+      <li><b>填寫文字說明（必填）</b>異動原因分類固定記為「規格變更」，不需要選。</li>
+      <li><b>確認</b>視窗關閉並重新載入這筆資料。</li>
+    </ol>
+
+    <h3>回退會做什麼</h3>
+    <div class="tw"><table>
+      <thead><tr><th style="width:180px">項目</th><th>行為</th></tr></thead>
+      <tbody>
+        <tr><td>清空日期</td><td><b>≥ 目標階段的全部日期，含目標階段自己</b>。例：目前在 ④、回退到 ② → 清空 ②③④。回退到 ② 的語意就是「這個確認要重做」。</td></tr>
+        <tr><td>稽核快照</td><td>清空<b>之前</b>先把每個被清的階段各寫一列到軌跡，說明記成「由 X 回退至 Y：你填的說明」。清掉就拿不回來了。</td></tr>
+        <tr><td>三個計數欄</td><td><b>不清空</b>（延期／提早／回退次數都是既成事實）。回退本身讓 <span class="badge v">🔄</span> 加一。</td></tr>
+        <tr><td>Status</td><td>原本是 <code>Done</code> 的話回到 <code>Ongoing</code>。</td></tr>
+        <tr><td>後面的階段</td><td>自動重新鎖定（回到「未填寫」狀態，第 4 章的開放條件自然生效）。</td></tr>
+      </tbody>
+    </table></div>
+
+    <div class="note">
+      <span class="lb">回退之後重新排日期</span>
+      <p>回退把結束日清成空白之後，你重新填上的日期會被記成 <b>「重新排程」</b>，<b>不需要填理由</b>（正上方那筆回退本身就帶著說明了），也<b>不計入 ⚠ 時程異動次數</b>。</p>
+      <p>軌跡上，一次回退清掉的多個階段會收成<b>一張卡</b>顯示 —— 那是同一個動作，不該被畫成四件事。</p>
+    </div>
+  </section>
+
+  <!-- ═══ 07 ═══ -->
+  <section id="c7">
+    <h2><span class="n">07</span><span>手動修正 StatusID</span></h2>
+    <p class="sub">StatusID 預設是<b>唯讀</b>的彩色藥丸。正常只由「✓ 完成」與「🔄 規格回退」兩條路推進。</p>
+
+    <p>階段填錯（尤其是 Excel 匯入來的資料）時，按 <span class="ui">✎ 手動修正 StatusID</span> 開放下拉。</p>
+
+    <div class="note stop">
+      <span class="lb">分類與說明兩者都必填</span>
+      <p>手動改 StatusID 一定要留痕跡，否則主管看到的「延期 0 次」可能只是有人用下拉跳過去的結果。改 <b>Status</b> 則不必填理由（它是人工壓的旗標），但一樣會寫進軌跡。</p>
+    </div>
+
+    <h3>前置階段沒填完就不給改</h3>
+    <p>把 StatusID 設成 N，語意就是「1 ~ N-1 都已經走完」，所以那些階段的結束日必須齊全：</p>
+    <div class="tw"><table>
+      <thead><tr><th style="width:130px">目標 StatusID</th><th>必須已填的結束日</th></tr></thead>
+      <tbody>
+        <tr><td><code>1</code> / 未設定</td><td>無</td></tr>
+        <tr><td><code>2</code></td><td>①</td></tr>
+        <tr><td><code>3</code></td><td>① + ②</td></tr>
+        <tr><td><code>4</code></td><td>①② + ③</td></tr>
+        <tr><td><code>5</code></td><td>①②③ + ④</td></tr>
+      </tbody>
+    </table></div>
+    <ul>
+      <li><b>缺什麼會在你選了階段的當下就列出來</b>（紅色面板取代原因欄），不是等按了儲存才說。</li>
+      <li><b>不檢查目標階段自己</b> —— <code>StatusID = 4</code> 的語意是「正在驗收」，這時驗收日還沒排是正常的。</li>
+      <li>判定用<b>視窗當下的值</b>，所以「在同一個視窗裡補完 ③ 的日期再把階段改成 4」可以直接存。</li>
+      <li><b>手動調整不動三個計數欄</b>，也不會補寫該階段的完成紀錄，差異只留在軌跡裡。</li>
+    </ul>
+  </section>
+
+  <!-- ═══ 08 ═══ -->
+  <section id="c8">
+    <h2><span class="n">08</span><span>刪除需求</span></h2>
+
+    <p>按資料列最右邊的垃圾桶圖示。這是<b>軟刪除</b> —— 資料庫保留紀錄，只是不再出現在清單上。</p>
+
+    <div class="note stop">
+      <span class="lb">刪除原因必填</span>
+      <p>確認視窗有一個必填的「刪除原因」，沒填時「確認」鈕是停用的。訊息會寫明是哪一筆（NID／專案名稱／子項目分類），並提醒<b>此編號之後可以再被使用</b>。</p>
+    </div>
+
+    <p>刪除會寫一筆稽核紀錄（誰、什麼時候、為什麼），供日後查帳追溯 —— 但那筆紀錄<b>不會出現在畫面上</b>，需要時請從資料庫查詢。刪除是唯一讓整筆資料從清單消失的動作，所以特別要求說明理由。</p>
+  </section>
+
+  <!-- ═══ 09 ═══ -->
+  <section id="c9">
+    <h2><span class="n">09</span><span>搜尋、篩選與排序</span></h2>
+
+    <h3>條件晶片列</h3>
+    <p>表格正上方會把<b>目前生效中的每一個條件</b>列成一顆晶片，每顆都有自己的 <b>✕</b> 只移除那一條。它解釋的是「下面這 N 筆是怎麼來的」。</p>
+    <div class="note warn">
+      <span class="lb">留意標成紅框的晶片</span>
+      <p>精簡模式收起來的欄位（Status／註冊日期／MP Saving／四個階段時程）與一般模式沒有的欄位（目前階段時程／現況描述），它們的<b>欄位篩選值照樣在過濾</b>。那些晶片會標上 ⚠ 與紅框，列尾也會寫一句「有 N 個條件的欄位在目前模式下是收起來的，但它仍在過濾」。</p>
+      <p>這就是「看不到條件卻筆數變少」的答案。</p>
+    </div>
+
+    <h3>排序</h3>
+    <p>點表頭可依該欄排序。工具列的 <span class="ui">排序</span> 面板另有四個開關：</p>
+    <div class="tw"><table>
+      <thead><tr><th style="width:130px">開關</th><th>作用</th></tr></thead>
+      <tbody>
+        <tr><td><b>Done 置底</b></td><td><b>預設開啟</b>。結案的資料列一律排到最下面。</td></tr>
+        <tr><td><b>逾期優先</b></td><td>「已到階段卻沒壓日期」排最上面，其餘依剩餘天數由少到多（逾期最久的在前）。<b>切進精簡模式時會自動打開</b>，可以自己關掉。</td></tr>
+        <tr><td><b>延期最多</b></td><td>依 ⏰ 次數由多到少。</td></tr>
+        <tr><td><b>回退最多</b></td><td>依 🔄 次數由多到少。</td></tr>
+      </tbody>
+    </table></div>
+    <p>「延期最多」「回退最多」與表頭排序互斥。<b>Done 置底開著時，結案的案件仍會被排到下方</b> —— 這兩顆的 tooltip 有寫明。</p>
+
+    <h3>把目前的清單傳給別人</h3>
+    <p>搜尋、篩選與排序<b>會即時寫進網址列</b>，直接複製整條網址貼給同事，他打開就是一模一樣的畫面。</p>
+    <div class="tw"><table>
+      <thead><tr><th style="width:130px">參數</th><th>對應</th></tr></thead>
+      <tbody>
+        <tr><td><code>q</code></td><td>搜尋字串</td></tr>
+        <tr><td><code>stage</code></td><td>StatusID 複選，逗號分隔（<code>1</code>~<code>5</code>）</td></tr>
+        <tr><td><code>ems</code> / <code>msd</code></td><td>負責人篩選</td></tr>
+        <tr><td><code>due</code></td><td><code>attention</code> / <code>unset</code> / <code>overdue</code> / <code>soon</code></td></tr>
+        <tr><td><code>prog</code> / <code>alert</code></td><td>進度／警示篩選</td></tr>
+        <tr><td><code>f_&lt;欄位&gt;</code></td><td>欄位篩選，一欄一個參數（帶了會自動打開欄位篩選面板）</td></tr>
+        <tr><td><code>sort</code></td><td><code>欄位:asc</code> 或 <code>欄位:desc</code></td></tr>
+        <tr><td><code>dl=0</code> / <code>dp=1</code></td><td>關掉 Done 置底／開啟逾期優先</td></tr>
+        <tr><td><code>view=dashboard</code></td><td>直接開在統計報表頁</td></tr>
+      </tbody>
+    </table></div>
+    <ul>
+      <li>認不得的參數值會被<b>退回預設並從網址清掉</b>，不會做出一個 0 筆又找不到原因的清單。</li>
+      <li>深淺色、精簡模式、投影模式、展開了哪幾列<b>不寫進網址</b>（那是個人顯示偏好）。</li>
+      <li>篩到 0 筆時畫面會說明「條件把 N 筆全部篩掉了」並附上清除鈕。</li>
+    </ul>
+  </section>
+
+  <!-- ═══ 10 ═══ -->
+  <section id="c10">
+    <h2><span class="n">10</span><span>逾期與需關注</span></h2>
+    <p class="sub">每週會議要 review 快到期的需求。整套判定只有一份規則，所以<b>畫面上的紅字必然對得上工具列與統計報表的數字</b>。</p>
+
+    <h3>系統怎麼挑「該關注的那個階段」</h3>
+    <ol class="list">
+      <li><b>目前這一階段（StatusID 指的那一個）壓日期了沒？</b>沒壓 → 就是它，標成「⚠ 未壓日期」，不再往下找。</li>
+      <li>有壓 → <b>排除已經走完的階段</b>。</li>
+      <li>剩下已經壓了日期的階段裡，取<b>到期日最早</b>的那一個。</li>
+    </ol>
+    <p>挑到的<b>不是</b> StatusID 對應的那一階段時，畫面會標「<b>最急 · 階段名</b>」—— 代表目前那一階段還沒排日期，或它的到期日比較晚。</p>
+
+    <div class="note warn">
+      <span class="lb">⚠ 未壓日期＝已經到那一階段，卻還沒排日期</span>
+      <p>最常見的產生方式：按了「③ 完成」，StatusID 推進到 4，但 ④ 的驗收日還是空的。這種列<b>不受 7 日窗限制</b>，一定會被列入需關注，並排在「逾期優先」的最上面。資料列上那一格會同步標紅色的「⚠ 未壓日期」徽章 —— <b>每一件被算進去的，畫面上都看得見原因</b>。</p>
+      <p>StatusID 空白或超出 1~5 的資料一律不推斷（空白代表「不知道走到哪」，硬猜會冤枉一批舊資料）。</p>
+    </div>
+
+    <h3>什麼情況不預警</h3>
+    <ul>
+      <li>Status = <code>Done</code>，或 StatusID = <code>5</code>（結案）—— 整筆不預警。</li>
+      <li>階段已被下一階段接手（例如 ① 的日期是去年，但 ② 早就確認了）—— 那不是風險。</li>
+      <li>該階段有「實際完成日」—— 已經走完了。</li>
+      <li>未走完的階段全都還沒壓日期、而且 StatusID 也推不出當前階段 —— 沒有可盯的到期日就不預警，精簡模式那一欄會顯示「未排定」。</li>
+    </ul>
+
+    <h3>「逾期」下拉的四個選項</h3>
+    <div class="tw"><table>
+      <thead><tr><th style="width:200px">選項</th><th>包含什麼</th></tr></thead>
+      <tbody>
+        <tr><td><b>需關注</b></td><td>未壓日期 + 已逾期 + 7 日內到期，全部。</td></tr>
+        <tr><td><b>已到階段未壓日期</b></td><td>只看上面那個 ⚠ 未壓日期。</td></tr>
+        <tr><td><b>已逾期</b></td><td>到期日已經過去。</td></tr>
+        <tr><td><b>7 日內到期</b></td><td>還沒到期，但剩 7 天以內。</td></tr>
+      </tbody>
+    </table></div>
+    <p>7 日的窗只限制「尚未到期」的項目；<b>已逾期與未壓日期的一律列入</b>。</p>
+  </section>
+
+  <!-- ═══ 11 ═══ -->
+  <section id="c11">
+    <h2><span class="n">11</span><span>統計報表</span></h2>
+    <p class="sub">由上而下：KPI 卡 → 風險預警 → 各年月 × 目前階段案件數 → 人員負載 → 各年月案件數。</p>
+
+    <h3>KPI 卡（五張，全部可點）</h3>
+    <div class="tw"><table>
+      <thead><tr><th style="width:130px">卡片</th><th>點下去會發生什麼</th></tr></thead>
+      <tbody>
+        <tr><td><b>總需求數</b></td><td>切到需求列表，清除所有篩選。</td></tr>
+        <tr><td><b>進行中</b></td><td>切到需求列表，只看尚未結案的。</td></tr>
+        <tr><td><b>已完成</b></td><td>切到需求列表，只看已結案的。</td></tr>
+        <tr><td><b>需關注</b></td><td>切到需求列表，套上「需關注」篩選<b>並打開逾期優先排序</b>。副標寫著「未壓 N · 逾期 N · 7 日內 N」。</td></tr>
+        <tr><td><b>時程異動</b></td><td>主數字是<b>異動次數</b>，副標的「涉及 N 件」才是需求件數 —— 兩個數字本來就不一樣。</td></tr>
+      </tbody>
+    </table></div>
+    <p>件數為 0 的卡不給點（點了只會看到空表格）。<b>風險預警</b>卡列出需關注的明細，點其中一筆會切到需求列表、套上篩選並自動展開那一列。</p>
+
+    <h3>各年月 × 目前階段案件數</h3>
+    <p>列＝五個階段，欄＝年月，右側「合計」欄、底部「合計」列。</p>
+    <ul>
+      <li>分組的年月是<b>註冊年月</b>，與下方的趨勢圖完全相同 —— 所以<b>合計列的每一格必然等於下方那根柱子的總高</b>。</li>
+      <li><b>0 一律留白不寫 0</b>：有值的格子才跳得出來。</li>
+      <li>1~5 五列固定都出現（0 件也要看得到「這一階段是空的」）。推不出階段的資料歸「— 未分類」列。</li>
+    </ul>
+
+    <h3>年月區間</h3>
+    <p>控制項只放在交叉表的標題列，<b>趨勢圖與它連動</b>。兩個下拉（起／迄）＋三顆預設鈕（近 6 月／近 12 月／全部）。預設是最近 <b>12 個有資料的年月</b>（不是日曆月 —— 資料本來就會斷月）。起訖選反了會把另一端一起帶過去，不會讓畫面直接空掉。</p>
+
+    <h3>趨勢圖</h3>
+    <p>數字<b>直接標在柱子上</b>：總數在柱子正上方，進行中／已完成分別印在自己的色塊中央 —— 這張圖會投在會議室的牆上，台下沒有滑鼠可以 hover。</p>
+  </section>
+
+  <!-- ═══ 12 ═══ -->
+  <section id="c12">
+    <h2><span class="n">12</span><span>顯示、投影與列印</span></h2>
+
+    <h3>精簡模式（主管檢視）</h3>
+    <p>從 16 欄收到 <b>9 欄</b>：<code>No</code>、<code>NID</code>、專案名稱、子項目分類、EMS、MSD、StatusID、<b>目前階段時程</b>、現況描述。</p>
+    <ul>
+      <li>四個階段的日期欄併成一欄「<b>目前階段時程</b>」，顯示第 10 章那套規則挑出來的階段 —— 所以這一欄的紅字必然對得上「需關注」的數字。</li>
+      <li>7 日以外的項目改用灰字顯示「剩 N 天」（顏色只留給異常）。</li>
+      <li>完整的四階段時程仍在<b>展開明細</b>裡，資訊沒有消失。</li>
+      <li><b>視窗寬度 ≤ 1024px 時自動套用</b>，開關上會標「· 窄螢幕」。把視窗拉寬就回到你原本的設定。</li>
+    </ul>
+
+    <h3>字級</h3>
+    <p>頁首的 <span class="ui">Ａ 100%</span> 循環 100% → 115% → 130%，設定會被記住。資料列的字很小（10~11px），這顆讓你在自己的桌機上整片放大。</p>
+
+    <div class="note warn">
+      <span class="lb">放大會讓可用寬度變窄</span>
+      <p><b>可用寬度 = 視窗寬 ÷ 放大倍率。</b>16 欄的表格壓縮到極限是 <b>約 1237px</b>，低於這個數字整頁就會橫向捲動 —— 而<b>頁首與工具列會跟著滑出畫面左邊</b>，看起來就像「版面跑掉」。</p>
+      <p>真的塞不下時，頁首會出現 <span class="badge a">⚠ 右邊被切掉</span>（帶實際像素數）。<b>點它一下就會做最有效的那件事</b>：投影中就降倍率、字級 &gt; 100% 就降字級、其餘就切精簡模式。系統<b>不會自動幫你改設定</b>。</p>
+    </div>
+
+    <h3>投影模式</h3>
+    <p>頁首的 <span class="ui">📽 投影</span>。它不是第三套版面，只是把既有畫面調到會議室看得見的程度：整體放大（預設 150%，可調 125／140／150／175／200%）、提高對比、加上斑馬紋，並自動切到淺色底（投影機黑階偏灰）。</p>
+    <div class="tw"><table>
+      <thead><tr><th style="width:210px">情境</th><th>行為</th></tr></thead>
+      <tbody>
+        <tr><td>還沒開精簡模式</td><td><span class="ui">📽 投影</span> 是<b>停用</b>的 —— 16 欄放大後一定橫向捲。請先按「精簡模式」。</td></tr>
+        <tr><td>在統計報表頁</td><td><span class="ui">📽 投影</span> 停用（那頁是圖表，放大會把圖擠扁）。</td></tr>
+        <tr><td>投影模式中</td><td>「精簡模式」開關被停用（它是前置條件）。</td></tr>
+        <tr><td>投影中切到統計報表</td><td><b>自動退出投影</b>，回到正常版面；切回需求列表不會自動再開。</td></tr>
+        <tr><td>離開投影</td><td>字級、對比與被收起的操作鈕全部還原，包含進入前的深淺色設定。</td></tr>
+      </tbody>
+    </table></div>
+    <p>投影時會<b>收起所有寫入型操作</b>（新增需求、Excel 匯出／匯入、模擬帳號）—— 台上沒有人會現場改資料，而匯入會清空整張表。搜尋、篩選、排序全部保留。</p>
+
+    <h3>列印 / 存成 PDF</h3>
+    <ul>
+      <li>直接按瀏覽器的列印即可。紙上一律<b>白底黑字</b>（深色模式直接印會把整張紙塗黑），但<b>逾期的紅色與警示色會保留</b>。</li>
+      <li>版面固定 <b>A4 橫向</b>，表頭每頁重複。</li>
+      <li>不印的東西：頁首、整條工具列、欄位篩選列、「操作」欄。</li>
+      <li>紙上會多一行列印專用抬頭：表名、資料更新時間、列印日期、顯示筆數。<b>條件晶片列會印出來</b>，所以傳閱時看得出這份清單套了哪些條件。</li>
+      <li>明細展開的三張卡在紙上改單欄並完整攤開。</li>
+    </ul>
+  </section>
+
+  <!-- ═══ 13 ═══ -->
+  <section id="c13">
+    <h2><span class="n">13</span><span>Excel 匯出與匯入</span></h2>
+    <p class="sub">工具列的 <span class="ui">Excel</span> 鈕展開。兩個功能的風險差很多，所以刻意分開呈現。</p>
+
+    <h3>↓ 匯出 Excel</h3>
+    <p>把目前資料庫的狀態下載成 <code>.xlsx</code>。匯出的表頭與匯入的對應名稱一致，<b>匯出的檔案可以原封不動匯回來</b>。</p>
+
+    <h3>⚠ 匯入 Excel</h3>
+    <div class="note stop">
+      <span class="lb">匯入會清空整張表</span>
+      <p>匯入<b>不是</b>以 NID 比對更新，而是<b>清空整張表後以檔案內容重建</b>。這是測試階段的刻意做法。會跳確認視窗，請確認你選的是正確的檔案。</p>
+      <p>三個歷史軌跡欄位每次匯入都會清空，確保舊的歷史不會堆疊。</p>
+    </div>
+    <p>清空之前系統會先做四道檢查，任何一道沒過就<b>整個中止、資料不動</b>：</p>
+    <ul>
+      <li>檔案打不開</li>
+      <li>找不到表頭列，或關鍵欄位都對應不到</li>
+      <li>一列資料都讀不出來</li>
+      <li>檔案內有重複的 NID</li>
+    </ul>
+    <p>匯入成功後會顯示匯入了幾筆。若有欄位對應不到，訊息會列出<b>對應不到的欄名清單</b> —— 那串字值得抄下來，Toast 的停留時間會依字數自動加長（最多 12 秒），也可以按 ✕ 手動關掉。</p>
+    <p>四個「實際完成日」欄位與三個計數欄<b>會匯出但不會被匯入吃回去</b>，避免重灌時撞欄。</p>
+  </section>
+
+  <!-- ═══ 14 ═══ -->
+  <section id="c14">
+    <h2><span class="n">14</span><span>疑難排解</span></h2>
+
+    <details class="faq"><summary>日期欄位是灰的，改不動</summary><div class="body">
+      <p>看鎖頭的樣子：<b>「🔒 已鎖定，點此修改」</b>代表這階段已經有日期，點一下就解鎖。<b>灰色實心、點不動的鎖頭</b>代表前一階段的結束日還沒填 —— 補完前一階段，這一階段會立刻開放（見第 4 章）。</p>
+    </div></details>
+
+    <details class="faq"><summary>「✓ 完成」鈕不見了</summary><div class="body">
+      <p>鈕的位置會改顯示一句灰字說明為什麼。四種原因與處理方式列在第 5 章的表格裡。</p>
+    </div></details>
+
+    <details class="faq"><summary>畫面上沒有「延期」這個功能，為什麼「警示」下拉有「有延期完成」？</summary><div class="body">
+      <p>「延期完成」不是一個獨立的按鈕，它是你按下 <b>「✓ 完成」那一刻的判定結果</b> —— 今天已經超過原訂結束日，系統就把它記成延期完成並讓 ⏰ 次數加一。所以篩選的是「曾經延期完成過」的需求。</p>
+    </div></details>
+
+    <details class="faq"><summary>存檔時說「這筆資料已被其他人修改」</summary><div class="body">
+      <p>你打開編輯視窗之後，有別人先存了同一筆。系統擋下來以免你的存檔把對方的改動蓋掉。<b>請按頁首的 ⟳ 重新整理</b>（篩選與排序會保留），重新打開這筆確認對方改了什麼，再重做你的修改。</p>
+    </div></details>
+
+    <details class="faq"><summary>筆數變少了，可是工具列上看不到我設了什麼條件</summary><div class="body">
+      <p>看表格正上方的<b>條件晶片列</b>，每一個生效中的條件都在那裡，每顆都能單獨移除。</p>
+      <p>特別留意<b>標成紅框的晶片</b> —— 那是「目前模式下被收起來的欄位」的篩選值，看不到卻仍在過濾（第 9 章）。</p>
+    </div></details>
+
+    <details class="faq"><summary>版面跑掉了，標題和搜尋框滑到畫面外面</summary><div class="body">
+      <p>表格橫向超出視窗了，整頁跟著橫捲，頁首與工具列會一起滑走。頁首會有一顆 <span class="badge a">⚠ 右邊被切掉</span>，<b>點它一下就會自動修正</b>。也可以自己降字級、切精簡模式，或把瀏覽器視窗拉寬。</p>
+    </div></details>
+
+    <details class="faq"><summary>新增需求時說「必填欄位未完成」，可是我都填了</summary><div class="body">
+      <p>檢查 EMS 負責人的下拉是不是空的。那個下拉的名單來自人員主檔，讀取失敗時下拉底下會出現紅字提示「指派人員名單讀取失敗」。<b>請重新整理頁面</b>；若持續失敗，代表後端讀不到人員資料，請找系統管理者。</p>
+    </div></details>
+
+    <details class="faq"><summary>展開明細看不到任何變更紀錄，統計報表的「時程異動」是 0</summary><div class="body">
+      <p>先看 KPI 卡上是不是顯示 <b>「—」</b> 而不是 0，以及圖例列有沒有寫「讀取失敗，不代表沒有變更」。有的話是稽核軌跡讀取失敗，<b>不是</b>這批需求真的沒被改過。請重新整理。</p>
+    </div></details>
+
+    <details class="faq"><summary>某一列左邊有紅色風險條，可是四個日期欄一格紅字都沒有</summary><div class="body">
+      <p>多半是「<b>⚠ 未壓日期</b>」：StatusID 已經走到某一階段，而那一階段自己還沒排日期。那一格會有紅色的「⚠ 未壓日期」徽章。切到精簡模式，「目前階段時程」欄會直接告訴你是哪一階段。</p>
+    </div></details>
+
+    <details class="faq"><summary>兩個人同時在改，會不會蓋掉彼此？</summary><div class="body">
+      <p>不會。系統有樂觀鎖，後存的那個人會收到「已被其他人修改」的提示（見上面那則）。另外連按儲存也只會送出一次 —— 按鈕在處理期間是停用的。</p>
+    </div></details>
+
+    <details class="faq"><summary>我按了 F5，篩選和展開的列全部不見了</summary><div class="body">
+      <p>那是 F5 的行為。要保留現場請用頁首的 <b>⟳ 重新整理</b> 鈕 —— 它會重讀需求與軌跡，但保留篩選、排序與展開狀態。（篩選與排序其實有寫進網址，F5 之後會回來；展開的列不會。）</p>
+    </div></details>
+  </section>
+
+  <!-- ═══ 15 ═══ -->
+  <section id="c15">
+    <h2><span class="n">15</span><span>附錄：欄位對照</span></h2>
+    <p class="sub">Excel 欄名是匯入匯出的對應鍵，<b>不會因為畫面上的名稱調整而改變</b>。</p>
+
+    <div class="tw"><table>
+      <thead><tr><th style="width:150px">Excel 欄名</th><th style="width:150px">畫面名稱</th><th>說明</th></tr></thead>
+      <tbody>
+        <tr><td><code>NID</code></td><td>NID</td><td>需求流水編號，<b>唯一值不可重複</b>，人工輸入</td></tr>
+        <tr><td><code>OverallStatus</code></td><td>Status</td><td><code>Init</code> / <code>Ongoing</code> / <code>Done</code></td></tr>
+        <tr><td><code>StatusID</code></td><td>StatusID</td><td><code>1</code>~<code>5</code>，純數字無括號</td></tr>
+        <tr><td><code>RegDate</code></td><td>註冊日期</td><td><code>YYYY/MM/DD</code>，新增時預設當天、唯讀</td></tr>
+        <tr><td><code>MainCat</code></td><td>專案名稱</td><td>必填</td></tr>
+        <tr><td><code>SubCat</code></td><td>子項目分類</td><td>必填</td></tr>
+        <tr><td><code>Remark</code></td><td>需求補充</td><td>子分類的描述補充（明細才顯示）</td></tr>
+        <tr><td><code>NotesLink</code></td><td>Notes Link</td><td>超連結。整欄沒資料時自動收起</td></tr>
+        <tr><td><code>EMS</code></td><td>EMS</td><td>提需求 Spec 的 EMS Owner，<b>必填</b></td></tr>
+        <tr><td><code>MSD</code></td><td>MSD</td><td>負責開發的 MSD Owner</td></tr>
+        <tr><td><code>1_EMSStart</code></td><td>① 開始日</td><td>可不填，空白時自動帶成 <code>1_EMSEnd</code></td></tr>
+        <tr><td><code>1_EMSEnd</code></td><td>EMS 提 Spec</td><td>① 的結束日，<b>新增時必填</b></td></tr>
+        <tr><td><code>2_MSDConfirm</code></td><td>MSD 確認需求</td><td>② 的單一日期（＝它的 End）</td></tr>
+        <tr><td><code>3_MSDStart</code></td><td>③ 開始日</td><td>—</td></tr>
+        <tr><td><code>3_MSDEnd</code></td><td>MSD 開發</td><td>③ 的結束日</td></tr>
+        <tr><td><code>4_EMSStart</code></td><td>④ 開始日</td><td>—</td></tr>
+        <tr><td><code>4_EMSEnd</code></td><td>EMS 驗收</td><td>④ 的結束日</td></tr>
+        <tr><td><code>1~4_*History</code></td><td>異動軌跡</td><td>各階段的變更歷史（明細才顯示）</td></tr>
+        <tr><td><code>StatusDesc</code></td><td>現況描述</td><td>明細顯示；<b>精簡模式的最後一欄</b>會完整顯示</td></tr>
+        <tr><td><code>MP Saving</code></td><td>MP Saving</td><td>完成後的 Benefit，自由文字（例：<code>0.5 人/月</code>）</td></tr>
+      </tbody>
+    </table></div>
+
+    <h3>異動類型與計數的關係</h3>
+    <p>軌跡裡有七種異動類型，但<b>只有「日期異動」會讓 <span class="badge a">⚠ N</span> 與統計報表的「時程異動」加一</b>：</p>
+    <div class="tw"><table>
+      <thead><tr><th style="width:120px">類型</th><th style="width:90px">計入 ⚠</th><th>什麼時候寫入</th></tr></thead>
+      <tbody>
+        <tr><td><code>init</code></td><td>否</td><td>結束日<b>首次</b>填寫（新增或匯入時的起始基準）</td></tr>
+        <tr><td><b><code>日期異動</code></b></td><td><b>是</b></td><td>有人把已經壓好的結束日改掉 —— 唯一計入的一種</td></tr>
+        <tr><td><code>起日調整</code></td><td>否</td><td>只改了開始日</td></tr>
+        <tr><td><code>提早完成</code></td><td>否</td><td>按「✓ 完成」而且準時或提早</td></tr>
+        <tr><td><code>延期完成</code></td><td>否</td><td>按「✓ 完成」而且已超過原訂日（已有專屬的 ⏰ 徽章）</td></tr>
+        <tr><td><code>規格回退</code></td><td>否</td><td>按「🔄 規格回退」（已有專屬的 🔄 徽章）</td></tr>
+        <tr><td><code>重新排程</code></td><td>否</td><td>回退清空之後重新填上日期</td></tr>
+        <tr><td><code>手動調整</code></td><td>否</td><td>「✎ 手動修正 StatusID」或改 Status —— 那不是日期</td></tr>
+      </tbody>
+    </table></div>
+    <p><b>完成與回退的紀錄仍完整列在展開明細的軌跡裡</b>，只是不計入次數。</p>
+
+    <h3>鍵盤操作</h3>
+    <div class="tw"><table>
+      <thead><tr><th style="width:150px">按鍵</th><th>作用</th></tr></thead>
+      <tbody>
+        <tr><td><kbd>Esc</kbd></td><td>關閉最上層的視窗或選單</td></tr>
+        <tr><td><kbd>Tab</kbd></td><td>在視窗內循環（不會跑到後面的表格上），關閉後焦點會回到原處</td></tr>
+        <tr><td><kbd>Enter</kbd> / <kbd>Space</kbd></td><td>在表頭上＝依該欄排序；在 <code>No</code> 欄的三角形上＝展開／收合明細</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  </main>
+
+  <footer>
+    <span>MSD 需求管控表 · 使用者手冊</span>
+    <span>規則的權威來源：<code>FIELD_SPEC.md</code>／<code>CLAUDE.md</code></span>
+  </footer>
+
+</div>
+
+</body>
+</html>

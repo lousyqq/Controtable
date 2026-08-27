@@ -118,6 +118,11 @@ const { useState, useMemo, Fragment, useEffect } = React;
         // 所以 Spec 階段要多看一個條件：MSD 是否已確認。
         // 色值走 CSS 變數，深淺色模式各自有對比度足夠的版本
         const ALERT_STYLES = {
+            // unset = 「已經走到這一階段，卻沒有壓日期」（第 33 批，2026-08-27）。
+            // 沿用逾期的紅色而不是另開一個色：它與逾期是同一件事的兩種樣子
+            // （一個是排定的日子過了、一個是根本沒排），畫面上再多一種顏色只會稀釋紅色的意義。
+            // 分得出來的是文字（「未壓日期」vs「逾期 N 天」）與實心邊框
+            unset:   { color:'var(--tone-alert)', bg:'var(--tone-alert-bg)', border:'var(--tone-alert)' },
             overdue: { color:'var(--tone-alert)', bg:'var(--tone-alert-bg)', border:'var(--tone-alert-border)' },
             soon:    { color:'var(--tone-warn)',  bg:'var(--tone-warn-bg)',  border:'var(--tone-warn-border)' }
         };
@@ -128,21 +133,37 @@ const { useState, useMemo, Fragment, useEffect } = React;
             if (isDueSoon) return { level:'soon', ...ALERT_STYLES.soon, label: diffDays===0 ? '今天到期' : `剩 ${diffDays} 天` };
             return null;
         };
+        // ─── 「已到階段卻沒壓日期」的徽章（第 33 批，2026-08-27）───
+        // 這一格在此之前是一個灰色的「-」，與「這個階段還很遠、當然還沒排」長得一模一樣。
+        // 差別在於 StatusID 已經走到這一階段了 —— 它現在就該有日期，而且它不會有任何
+        // 逾期提醒（沒有日期就沒有到期日可比），所以只有這個徽章會讓人看見它
+        const UnsetDateBadge = ({ label }) => (
+            <span className="text-[10px] font-black px-1 py-0.5 rounded whitespace-nowrap cursor-help"
+                  style={{color:ALERT_STYLES.unset.color, background:ALERT_STYLES.unset.bg,
+                          border:`1px solid ${ALERT_STYLES.unset.border}`}}
+                  title={`目前已經走到「${label}」，但這一階段還沒壓日期。\n沒有到期日就不會有逾期提醒，所以列在「逾期優先」排序的最上面`}>
+                ⚠ 未壓日期
+            </span>
+        );
+
         // 整列的風險等級取三個階段裡最嚴重的那個
         // 資料列上的時程欄：日期 + 逾期／即將到期徽章 + 該階段的異動次數標記 (⚠N)
         // actual = 實際完成日（只有「延期完成」才有值）。原訂 End 刻意保留不動，
         // 所以這欄一定要同時顯示兩個日期 —— 只顯示原訂的話主管根本看不到延遲
-        const scheduleCell = ({ val, alert, changes, label, br, actual }) => (
+        // unset = 這一格就是「已到階段卻沒壓日期」的那一格（見 unsetDuePhase）
+        const scheduleCell = ({ val, alert, changes, label, br, actual, unset }) => (
             <td className="px-2 py-2.5" style={{borderRight:br}}>
-                {!val && !changes
+                {!val && !changes && !unset
                     ? <span className="text-xs" style={{color:'var(--text-muted)'}}>-</span>
                     : <div className="flex flex-col gap-0.5 items-start">
                         <div className="flex items-center gap-1">
-                            <span className="text-xs whitespace-nowrap"
-                                  style={{color: actual ? 'var(--text-muted)' : alert ? alert.color : 'var(--text-secondary)',
-                                          fontWeight: (alert && !actual) ? 700 : 500}}>
+                            {(unset && !val)
+                                ? <UnsetDateBadge label={label} />
+                                : <span className="text-xs whitespace-nowrap"
+                                      style={{color: actual ? 'var(--text-muted)' : alert ? alert.color : 'var(--text-secondary)',
+                                              fontWeight: (alert && !actual) ? 700 : 500}}>
                                 {val || '-'}
-                            </span>
+                            </span>}
                             {changes > 0 && (
                                 <span className="text-[10px] font-bold px-1 rounded whitespace-nowrap cursor-help"
                                       style={{color:'var(--tone-warn)', background:'var(--tone-warn-bg)', border:'1px solid var(--tone-warn-border)'}}
@@ -170,17 +191,27 @@ const { useState, useMemo, Fragment, useEffect } = React;
 
         // ─── 精簡模式：四個階段時程併成一欄「目前階段時程」（2026-08-19）───
         // 主管要的是「這件事現在卡在哪、什麼時候到」，不是四個階段的完整排程表。
-        // 顯示哪一個日期由 resolveDuePhase() 決定 —— 與到期預警、逾期篩選、
+        // 顯示哪一個日期由 resolveFocusPhase() 決定 —— 與到期預警、逾期篩選、
         // 「需關注」KPI 完全同一套規則，所以這一欄的紅字必然對得上那些數字。
         //
         // 已結案沒有「目前階段」，改顯示最後一個排定的階段當結果，並標明已結案；
         // 完整四階段時程仍在展開明細裡，需要細節點開列即可（資訊沒有消失）。
         const currentStageCell = ({ item, isDone, changeOf, br }) => {
             const r = isDone ? (lastFilledPhase(item) ? { phase: lastFilledPhase(item), inferred: false } : null)
-                             : resolveDuePhase(item);
+                             : resolveFocusPhase(item);
             if (!r) return (
                 <td className="px-2 py-2.5 text-center" style={{borderRight:br}}>
-                    <span className="text-xs" style={{color:'var(--text-muted)'}} title="這筆需求四個階段都還沒壓日期">未排定</span>
+                    <span className="text-xs" style={{color:'var(--text-muted)'}} title="這筆需求四個階段都還沒壓日期，StatusID 也推不出目前在哪一階段">未排定</span>
+                </td>
+            );
+            // 已到階段卻沒壓日期：這一欄本來會顯示「未排定」那三個灰字，
+            // 與「這件事還沒開始排程」完全分不出來。改成與一般模式同一顆紅色徽章
+            if (r.unset) return (
+                <td className="px-2 py-2.5" style={{borderRight:br}}>
+                    <div className="flex flex-col gap-0.5 items-start">
+                        <UnsetDateBadge label={r.phase.label} />
+                        <span className="text-[10px] whitespace-nowrap" style={{color:'var(--text-muted)'}}>{r.phase.label}</span>
+                    </div>
                 </td>
             );
             const { phase } = r;
@@ -233,8 +264,12 @@ const { useState, useMemo, Fragment, useEffect } = React;
             );
         };
 
+        // 整列最左的風險色條取最嚴重的那一個。
+        // ⚠️ 「未壓日期」排在逾期前面（第 33 批）：逾期至少還看得到一個日期可以判斷落後多久，
+        // 沒壓日期連判斷的依據都沒有，而且它從頭到尾不會觸發任何逾期提醒
         const pickRowAlert = (...alerts) =>
-            alerts.find(a => a?.level==='overdue') || alerts.find(a => a?.level==='soon') || null;
+            alerts.find(a => a?.level==='unset') || alerts.find(a => a?.level==='overdue') ||
+            alerts.find(a => a?.level==='soon') || null;
 
         // 精簡模式的開關記在 localStorage。
         // ⚠️ 2026-08-23 起**只有精簡模式自己讀它** —— 原本 duePriority（逾期優先排序）的
@@ -341,6 +376,35 @@ const { useState, useMemo, Fragment, useEffect } = React;
             return false;
         };
 
+        // ─── 「已經走到這一階段，卻沒有壓日期」（第 33 批，2026-08-27，使用者要求）───
+        // resolveDuePhase() 只看**有日期**的階段 —— 沒有日期就沒有到期日可以比，
+        // 那筆需求會整列安安靜靜地不出現在任何預警裡。但那正是最該被看見的一種落後：
+        // 使用者回報的例子是 StatusID 已經到「④ EMS驗收」、①②③ 都壓好了、④ 一格空白 ——
+        // 畫面上沒有任何紅字、「需關注」找不到它、「逾期優先」還把它排到最後面
+        // （dueInfo 查不到 → 舊的排序把 null 當成「沒有到期資訊」丟到最底下）。
+        // 而這個狀態一按「③ 完成」就會產生（/done 會把 StageCode 推到 4，UatEnd 仍是空的）。
+        //
+        // ⚠️ 這**不違反**第 23 批那條「沒有可盯的到期日就不預警」的禁令。那條禁令講的是
+        //    「不要退回去挑一個**已經走完**的階段來預警」—— 它做出的是「資料列上一格紅字
+        //    都沒有，卻算一件需關注」。這裡指名的是**當前這一階段自己**，而且資料列上
+        //    那一格會同步標成紅色的「⚠ 未壓日期」：每一件被算進去的，畫面上都看得見原因。
+        //
+        // ⚠️ StageCode 空白或超出 1~5 的**一律不推斷**。空白代表「不知道走到哪」，
+        //    硬猜一個階段說它「未壓日期」只會冤枉一批舊資料；壞值那一格本來就已經有
+        //    紅色的 ⚠ 在請人修（見 stageIdCell），不必再多一個講不清楚的紅字。
+        const unsetDuePhase = (item) => {
+            if (normStatus(item.status) === 'Done') return null;   // 結案不提醒
+            const code = normStageCode(item.stageCode);
+            if (!STAGE_CODES[code] || code === '5') return null;
+            const ph = DUE_PHASES.find(p => p.code === code);
+            if (!ph) return null;
+            if (isDateVal(ph.getDate(item))) return null;          // 有壓日期 → 走原本 resolveDuePhase 那條路
+            // 已經被下一階段接手（含「有實際完成日」）的就不是還沒壓，是不用壓了。
+            // 例如 StatusID=2 但 ③ 已經在壓日期的跳空資料，② 的確認日補不補都不影響進度
+            if (isPhasePassed(item, ph.key)) return null;
+            return ph;
+        };
+
         const resolveDuePhase = (item) => {
             const code = normStageCode(item.stageCode);
             if (code === '5') return null;                        // 已完成，不再提醒
@@ -359,11 +423,29 @@ const { useState, useMemo, Fragment, useEffect } = React;
             return { phase: pick, inferred: pick.code !== code };
         };
 
+        // ─── 這一列現在該盯哪一個階段（第 33 批把兩條路收成這一支）───
+        // 順序是刻意的：**先問「當前這一階段壓日期了沒」**，沒壓就是它，不必再往下找。
+        // 反過來（先跑 resolveDuePhase）會漏掉「③ 沒壓、但 ④ 已經先填了預設驗收日」
+        // 這種很常見的組合 —— 那時 resolveDuePhase 會挑到 ④、畫面指著一個還沒輪到的階段，
+        // 真正卡住的 ③ 反而一個字都沒提。
+        // 需關注／逾期篩選／逾期優先排序／精簡模式的「目前階段時程」全部走這一支。
+        const resolveFocusPhase = (item) => {
+            const u = unsetDuePhase(item);
+            if (u) return { phase: u, inferred: false, unset: true };
+            const r = resolveDuePhase(item);
+            return r ? { phase: r.phase, inferred: r.inferred, unset: false } : null;
+        };
+
         // windowDays 天內到期（含已逾期）就回傳一筆預警，否則回 null
         const getDueEntry = (item, windowDays) => {
             if (normStatus(item.status) === 'Done') return null;  // 結案不提醒
-            const r = resolveDuePhase(item);
+            const r = resolveFocusPhase(item);
             if (!r) return null;
+            // 「未壓日期」沒有日期可比，所以**不受 windowDays 影響** ——
+            // 它不是「N 日內到期」，它是「連 N 都還沒有」。7 日窗（dueAlerts）與
+            // 超大窗（dueInfo）都一定收得到它，否則 KPI 與篩選又會各算各的
+            if (r.unset)
+                return { item, phase: r.phase, inferred: false, date: '', diffDays: null, level: 'unset' };
             const date = r.phase.getDate(item);
             const d = parseDateStr(date);
             if (!d) return null;
@@ -372,9 +454,17 @@ const { useState, useMemo, Fragment, useEffect } = React;
             return { item, phase: r.phase, inferred: r.inferred, date, diffDays,
                      level: diffDays < 0 ? 'overdue' : 'soon' };
         };
+        // 「未壓日期」一律排在最前面（使用者要求：算是逾期未壓）。
+        // ⚠️ 不可以把它塞成一個很小的 diffDays（例如 -9999）去混進同一條數線 ——
+        // 那個假天數會流進畫面（AlertItem 的「逾期 9999 天」）與 matchDueFilter 的
+        // `diffDays < 0`（它就會被算成「已逾期」，而它並沒有任何逾期的日期可查）
+        const dueRank = e => e.level === 'unset' ? 0 : 1;
         const buildDueList = (rows, windowDays) =>
-            rows.map(it => getDueEntry(it, windowDays)).filter(Boolean).sort((a,b) => a.diffDays - b.diffDays);
-        const dueLabel = n => n < 0 ? `逾期 ${Math.abs(n)} 天` : n === 0 ? '今天到期' : `剩 ${n} 天`;
+            rows.map(it => getDueEntry(it, windowDays)).filter(Boolean)
+                .sort((a,b) => (dueRank(a) - dueRank(b)) || ((a.diffDays || 0) - (b.diffDays || 0)));
+        // n 為 null ＝ 這個階段根本沒壓日期（見 getDueEntry 的 unset）
+        const dueLabel = n => n === null || n === undefined ? '未壓日期'
+                            : n < 0 ? `逾期 ${Math.abs(n)} 天` : n === 0 ? '今天到期' : `剩 ${n} 天`;
         const DUE_WINDOW_DEFAULT = 7;   // 每週會議固定看 7 日內
 
         // ─── 生效中的篩選：欄位定義（第 28 批，2026-08-24）───
@@ -412,9 +502,15 @@ const { useState, useMemo, Fragment, useEffect } = React;
 
         // 工具列四個下拉的值 → 晶片上的文字。⚠️ 與 FilterSelect 的 options 是同一組值，
         // 改一邊就要改兩邊（那邊的 label 還帶著筆數，晶片上不帶）
-        const DUE_FILTER_LABEL  = { attention:'需關注', overdue:'已逾期', soon:`${DUE_WINDOW_DEFAULT} 日內到期` };
+        const DUE_FILTER_LABEL  = { attention:'需關注', unset:'已到階段未壓日期', overdue:'已逾期', soon:`${DUE_WINDOW_DEFAULT} 日內到期` };
         const PROG_FILTER_LABEL = { ongoing:'進行中', done:'已完成' };
-        const ALERT_FILTER_LABEL= { changed:'有時程異動', delay:'有執行延期', delay2:'延期 2 次以上', rollback:'有規格回退' };
+        // ⚠️ 用語與 CHANGE_TYPES 的 `延期完成` 對齊（第 37 批）——
+        // 稽核軌跡、⏰ 徽章的 tooltip、圖例列、這裡的晶片與下拉一律同一組字。
+        // 舊的「執行延期」在畫面上找不到對應的動作，使用者因此問過「沒有延期功能為什麼有延期選項」
+        // ⚠️ `delay2`（延期完成 2 次以上）已於第 38 批依使用者要求移除 ——
+        // 「2 次以上」不需要自己一個篩選層級，併回 `delay`（有延期完成）就好。
+        // 舊網址帶著 `?alert=delay2` 會過不了白名單而退回「不限警示」（見 urlOne 那條規則）
+        const ALERT_FILTER_LABEL= { changed:'有時程異動', delay:'有延期完成', rollback:'有規格回退' };
         // 表頭可以點的排序鍵（requestSort 的呼叫點）＋ 排序面板的兩個次數鍵。
         // 網址的 `sort` 參數過這份白名單
         const SORT_KEYS = [...COL_FILTER_KEYS, 'delayCount', 'rollbackCount'];
@@ -487,6 +583,12 @@ const { useState, useMemo, Fragment, useEffect } = React;
             '提早完成': { label:'提早完成', color:'var(--tone-good)',   bg:'rgba(15,118,110,0.1)' },
             '延期完成': { label:'延期完成', color:'var(--tone-alert)',  bg:'var(--tone-alert-bg)' },
             '規格回退': { label:'規格回退', color:'#8b5cf6',            bg:'rgba(139,92,246,0.12)' },
+            // 回退把日期清空之後重新壓的日期（2026-08-27 / 第 35 批）。
+            // 在此之前它被判成 init，沉到面板最下面的「初始時程」區 ——
+            // 使用者回報「回退之後壓的日期沒有寫進軌跡」講的就是這個。
+            // 用回退的同一個紫色系（它是回退的下半場），但**不進 isDateChange**：
+            // 沒有人改動任何既有日期，計進 ⚠N 會讓同一件事被數兩次
+            '重新排程': { label:'重新排程', color:'#8b5cf6',            bg:'rgba(139,92,246,0.12)' },
             // 手動改 StatusID / Status（2026-08-22）。它繞過了「✓ 完成」與「🔄 規格回退」，
             // 所以一定要在軌跡上看得出來 —— 但**不算時程異動**（見 isDateChange），
             // 也不會動三個計數欄
@@ -537,14 +639,22 @@ const { useState, useMemo, Fragment, useEffect } = React;
             </div>
         );
 
-        // 需求列表工具列的下拉篩選。value 為 'All' 時代表不限
-        const FilterSelect = ({ label, value, onChange, options, allLabel }) => {
+        // 需求列表工具列的下拉篩選。value 為 'All' 時代表不限。
+        // `hint` = 掛在 <select> 自己的 title 上（一般 HTML 元素，hover 收合狀態時看得到）。
+        //
+        // ⚠️ **不要再把說明接在 option 的文字後面**（第 34 批試過，第 36、37 批各收拾一次）。
+        // 兩個原因，兩個都是實測踩到的：
+        //   1. 原生 `<select>` 的寬度由**最長的那個 option** 撐出來 —— 22 字的說明
+        //      把那顆下拉從 ~140px 撐成 365px，整條工具列破版（第 36 批）
+        //   2. option 的文字同時是**選中之後顯示在收合狀態的文字**，補述會被截斷成半句
+        // 選項名稱自己講不清楚時，正解是**把名稱改對**（見「延期完成」），不是加尾巴。
+        const FilterSelect = ({ label, value, onChange, options, allLabel, hint }) => {
             const active = value !== 'All';
             return (
                 <div className="relative">
                     <select value={value} onChange={e=>onChange(e.target.value)}
                         className={`ctl appearance-none pr-8 focus:outline-none focus:ring-2 focus:ring-indigo-500/40${active ? ' ctl-on' : ''}`}
-                        title={`依 ${label} 篩選`}>
+                        title={`依 ${label} 篩選${hint ? `\n${hint}` : ''}`}>
                         <option value="All">{allLabel}</option>
                         {options.map(o => <option key={o.value} value={o.value}>{label}：{o.label}</option>)}
                     </select>
@@ -646,7 +756,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     {delay > 0 && (
                         <span className="px-1 rounded text-[10px] font-bold border whitespace-nowrap cursor-help"
                               style={delayStyle}
-                              title={`執行延期 ${delay} 次${delay >= 2 ? '（2 次以上轉紅色警示）' : ''}`}>
+                              title={`延期完成 ${delay} 次（按下「✓ 完成」時已超過原訂結束日）${delay >= 2 ? '\n2 次以上轉紅色警示' : ''}`}>
                             ⏰{delay}
                         </span>
                     )}
@@ -848,7 +958,8 @@ const { useState, useMemo, Fragment, useEffect } = React;
         // entry 來自 getDueEntry：已經帶著「目前該盯的階段」與剩餘天數
         const AlertItem = ({ entry, onClick }) => {
             const { item, phase, date, diffDays, level } = entry;
-            const clr = level === 'overdue' ? 'var(--tone-alert)' : 'var(--tone-warn)';
+            // unset 與 overdue 同一個紅（見 ALERT_STYLES.unset），只有 soon 是琥珀
+            const clr = level === 'soon' ? 'var(--tone-warn)' : 'var(--tone-alert)';
             return (
                 <div className="flex items-center gap-3 px-3 py-2.5 cursor-pointer"
                      onClick={onClick} title="檢視到期預警清單"
@@ -863,7 +974,8 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     </div>
                     <div className="text-right flex-shrink-0">
                         <div className="text-xs font-semibold tabular-nums" style={{color:clr}}>{dueLabel(diffDays)}</div>
-                        <div className="text-[10px] tabular-nums" style={{color:'var(--text-muted)'}}>{date}</div>
+                        {/* 未壓的那幾筆沒有日期可印，留空會讓右欄看起來像掉了一行 */}
+                        <div className="text-[10px] tabular-nums" style={{color:'var(--text-muted)'}}>{date || '尚未壓定'}</div>
                     </div>
                 </div>
             );
@@ -1019,10 +1131,11 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // 「EMS：某某」—— 看得到原因才改得掉，靜靜退回 All 反而會讓人以為網址壞了
             const [emsFilter, setEmsFilter] = useState(() => urlText('ems') || 'All');
             const [msdFilter, setMsdFilter] = useState(() => urlText('msd') || 'All');
-            // 'All' | 'attention'(逾期+7日內) | 'overdue' | 'soon'
-            const [dueFilter, setDueFilter] = useState(() => urlOne('due', ['attention','overdue','soon']));
-            // 警示徽章篩選（第 17 批）：'All' | 'delay' | 'delay2' | 'rollback' | 'changed'
-            const [alertFilter, setAlertFilter] = useState(() => urlOne('alert', ['changed','delay','delay2','rollback']));
+            // 'All' | 'attention'(未壓+逾期+7日內) | 'unset'(已到階段未壓日期) | 'overdue' | 'soon'
+            const [dueFilter, setDueFilter] = useState(() => urlOne('due', ['attention','unset','overdue','soon']));
+            // 警示徽章篩選（第 17 批）：'All' | 'delay' | 'rollback' | 'changed'
+            // （`delay2` 於第 38 批移除，見 ALERT_FILTER_LABEL 上方）
+            const [alertFilter, setAlertFilter] = useState(() => urlOne('alert', ['changed','delay','rollback']));
             // 進度篩選：'All' | 'ongoing' | 'done'。定義與統計報表的 KPI 卡完全一致 ——
             // ongoing = 非 Done（含 Init），不是 OverallStatus 剛好等於 Ongoing 的那些。
             // 兩邊若各算各的，主管點了「進行中 17」卻看到 9 筆會直接不信任這張表
@@ -2331,8 +2444,10 @@ const { useState, useMemo, Fragment, useEffect } = React;
             }, [requirementsData, historyEntries]);
 
             // ─── 到期預警 ───
-            // 規則的唯一來源是 buildDueList() → resolveDuePhase()：排除已經走完的階段
-            // （isPhasePassed，與資料列的紅字判定同一支），在剩下的裡面取**到期日最早**的那一個。
+            // 規則的唯一來源是 buildDueList() → resolveFocusPhase()：
+            //   1. 當前這一階段（StatusID）沒壓日期 → 就是它，level='unset'，排最前面（第 33 批）
+            //   2. 否則排除已經走完的階段（isPhasePassed，與資料列的紅字判定同一支），
+            //      在剩下的裡面取**到期日最早**的那一個
             // ⚠️ 不可改回「四個日期一起比」（見 FIELD_SPEC.md）—— 走完的階段一定要先排除，
             // 否則去年交的 Spec 會永遠亮紅燈，把真正該關注的項目淹掉。
             //
@@ -2347,6 +2462,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
             }, [requirementsData]);
             const countLevels = list => ({
                 all: list.length,
+                unset: list.filter(e => e.level === 'unset').length,
                 overdue: list.filter(e => e.level === 'overdue').length,
                 soon: list.filter(e => e.level === 'soon').length
             });
@@ -2444,14 +2560,19 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 return max;
             }, [requirementsData]);
 
-            // 逾期篩選的四種模式，與 dueInfo 查到的 entry 比對
+            // 逾期篩選的五種模式，與 dueInfo 查到的 entry 比對。
+            // ⚠️ 一律比 `e.level`，不可以再用 `e.diffDays` 反推是哪一種（第 33 批）——
+            // 「未壓日期」的 diffDays 是 null，而 `null <= 7` 在 JS 裡是 **true**、
+            // `null < 0` 是 false：舊寫法會讓它剛好混進「需關注」卻進不了任何一個細項，
+            // 而且完全看不出是靠強制轉型碰對的
             const matchDueFilter = (item, mode) => {
                 if (mode === 'All') return true;
                 const e = dueInfo.get(item.id);
-                if (!e) return false;                       // 已結案或沒壓日期 —— 不算需關注
-                if (mode === 'overdue')   return e.diffDays < 0;
-                if (mode === 'soon')      return e.diffDays >= 0 && e.diffDays <= DUE_WINDOW_DEFAULT;
-                if (mode === 'attention') return e.diffDays <= DUE_WINDOW_DEFAULT;
+                if (!e) return false;                       // 已結案，或這一列沒有任何該盯的階段
+                if (mode === 'unset')     return e.level === 'unset';
+                if (mode === 'overdue')   return e.level === 'overdue';
+                if (mode === 'soon')      return e.level === 'soon' && e.diffDays <= DUE_WINDOW_DEFAULT;
+                if (mode === 'attention') return e.level === 'unset' || e.diffDays <= DUE_WINDOW_DEFAULT;
                 return true;
             };
 
@@ -2484,7 +2605,6 @@ const { useState, useMemo, Fragment, useEffect } = React;
             const matchAlertFilter = (item, mode) => {
                 if (mode === 'All') return true;
                 if (mode === 'delay')    return (item.delayCount || 0) > 0;
-                if (mode === 'delay2')   return (item.delayCount || 0) >= 2;
                 if (mode === 'rollback') return (item.rollbackCount || 0) > 0;
                 // 有任何時程異動（不限延期或回退）—— 統計報表「時程異動」KPI 卡的落點
                 if (mode === 'changed')  return changedIdSet.has(item.id);
@@ -2493,7 +2613,6 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // 下拉選項要顯示的件數（全域，與逾期下拉的做法一致）
             const alertCounts = useMemo(() => ({
                 delay:    requirementsData.filter(i => (i.delayCount || 0) > 0).length,
-                delay2:   requirementsData.filter(i => (i.delayCount || 0) >= 2).length,
                 rollback: requirementsData.filter(i => (i.rollbackCount || 0) > 0).length,
                 changed:  requirementsData.filter(i => changedIdSet.has(i.id)).length
             }), [requirementsData, changedIdSet]);
@@ -2649,13 +2768,16 @@ const { useState, useMemo, Fragment, useEffect } = React;
                         if (!aDone && bDone) return -1;
                     }
 
-                    // 逾期優先：剩餘天數由少到多，沒有到期資訊的（結案／沒壓日期）排最後
+                    // 逾期優先：①「已到階段卻沒壓日期」最上面（使用者要求：算是逾期未壓）、
+                    // ② 有到期日的按剩餘天數由少到多、③ 沒有任何到期資訊的（結案／
+                    // 目前這一階段還沒輪到）排最後。
+                    // ⚠️ 未壓那一群**不再往下比 diffDays**（它們的 diffDays 都是 null），
+                    // 直接落到下一個排序條件，維持穩定排序 —— 不可以拿 null 去做減法
                     if (duePriority) {
-                        const av = dueInfo.get(a.id)?.diffDays;
-                        const bv = dueInfo.get(b.id)?.diffDays;
-                        if (av == null && bv != null) return 1;
-                        if (av != null && bv == null) return -1;
-                        if (av != null && bv != null && av !== bv) return av - bv;
+                        const ea = dueInfo.get(a.id), eb = dueInfo.get(b.id);
+                        const ra = ea ? dueRank(ea) : 2, rb = eb ? dueRank(eb) : 2;
+                        if (ra !== rb) return ra - rb;
+                        if (ra === 1 && ea.diffDays !== eb.diffDays) return ea.diffDays - eb.diffDays;
                     }
 
                     // 次數排序（第 17 批）。字串比較會把 10 排在 9 前面，所以走獨立的數值分支
@@ -3129,7 +3251,9 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                     {/* 需關注是唯一會連排序一起套的：逾期優先，最急的排最上面。
                                         這就是舊版紅色橫幅「查看清單」鈕的去處 */}
                                     <KpiCard label="需關注" value={dueAlerts.length} tone={dueAlerts.length>0?'alert':null}
-                                             sub={dueAlerts.length>0?`逾期 ${dueCountsAll.overdue} · 7 日內 ${dueCountsAll.soon}`:"無緊急項目"}
+                                             sub={dueAlerts.length>0
+                                                    ? `${dueCountsAll.unset>0?`未壓 ${dueCountsAll.unset} · `:''}逾期 ${dueCountsAll.overdue} · ${DUE_WINDOW_DEFAULT} 日內 ${dueCountsAll.soon}`
+                                                    : "無緊急項目"}
                                              onClick={dueAlerts.length>0 ? ()=>openListWith(()=>{ setDueFilter('attention'); setDuePriority(true); }) : null}
                                              hint="點此切到需求列表，只看需關注的項目" />
                                     {/* 這張卡的數字是**異動次數**，篩出來的是**需求件數**，兩個數字本來就不會一樣。
@@ -3360,7 +3484,15 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                     都是不能按的裝飾，卻會佔掉第一頁上半。篩選的「結果」印在表格裡，
                                     篩了幾筆則印在上面那行列印抬頭 */}
                                 <div className="t-card px-4 py-3 flex flex-wrap items-center gap-2 no-print">
-                                    <div className="relative flex-1 min-w-[180px] max-w-[280px]">
+                                    {/* ⚠️ max-w 由 280 收到 220（2026-08-27 / 第 36 批）。
+                                        搜尋框是 flex-1，會把整條工具列的剩餘空間吃光 ——
+                                        五顆下拉改成等寬（各 140px）之後固定部分變寬，
+                                        280px 的搜尋框會剛好把 Excel／＋新增需求擠到第二行。
+                                        算式（1217px 的工具列）：220 + 34 漏斗 + 1 分隔 + 140×5 + 168 動作
+                                        + 8 個 gap×8 = 1187，剩 30px 餘裕。
+                                        ⚠️ 動這三個數字（搜尋 max-w／下拉寬度／動作區內容）任何一個
+                                        都要回來重算，否則又會多出一條幾乎空白的第二列。 */}
+                                    <div className="relative flex-1 min-w-[180px] max-w-[220px]">
                                         <svg className="absolute left-3 top-1/2 -translate-y-1/2" style={{color:'var(--text-muted)'}} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
                                         <input type="text" className="w-full h-[34px] pl-9 pr-3 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-colors"
                                             style={{background:'var(--bg-input)',border:'1px solid var(--bg-input-border)',color:'var(--text-secondary)'}}
@@ -3395,6 +3527,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                     <FilterSelect label="逾期" value={dueFilter} onChange={setDueFilter} allLabel="不限到期狀態"
                                                   options={[
                                                       { value:'attention', label:`需關注 (${dueCountsAll.all})` },
+                                                      { value:'unset',     label:`已到階段未壓日期 (${dueCountsAll.unset})` },
                                                       { value:'overdue',   label:`已逾期 (${dueCountsAll.overdue})` },
                                                       { value:'soon',      label:`${DUE_WINDOW_DEFAULT} 日內到期 (${dueCountsAll.soon})` }
                                                   ]} />
@@ -3404,12 +3537,25 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                       { value:'ongoing', label:`進行中 (${analytics.ongoing})` },
                                                       { value:'done',    label:`已完成 (${analytics.done})` }
                                                   ]} />
-                                    {/* 警示徽章篩選（第 17 批）。回退與延期是兩件獨立的事，選項也分開 */}
+                                    {/* 警示徽章篩選（第 17 批）。回退與延期是兩件獨立的事，選項也分開。
+                                        ⚠️ 「延期」補一句說明（2026-08-27 / 第 34 批，使用者要求）——
+                                        使用者回報「我目前的網頁沒有延期的功能，怎麼會有延期的選項」。
+                                        他是對的：畫面上**沒有**任何一顆按鈕叫「延期」，
+                                        它是「✓ 完成」按下去那一刻的判定結果（今天 > 原訂 End → DelayCount +1）。
+                                        另外三個選項不補：「規格回退」與「時程異動」的名字本身就對得上
+                                        畫面上真的存在的動作（🔄 規格回退鈕／改日期），不會讓人去找一個不存在的功能 */}
                                     <FilterSelect label="警示" value={alertFilter} onChange={setAlertFilter} allLabel="不限警示"
+                                                  hint="「延期完成」不是獨立功能，是按下「✓ 完成」時已超過原訂結束日才會記下的結果"
                                                   options={[
                                                       { value:'changed',  label:`📝 有時程異動 (${alertCounts.changed})` },
-                                                      { value:'delay',    label:`⏰ 有執行延期 (${alertCounts.delay})` },
-                                                      { value:'delay2',   label:`⏰ 延期 2 次以上 (${alertCounts.delay2})` },
+                                                      // ⚠️ 改用 `延期完成`（2026-08-27 / 第 37 批）。名字自己就講完了，
+                                                      // 不必再掛一句「＝…」的補述 —— 那個補述是第 34 批加的，
+                                                      // 第 36 批縮短過一次仍然讀不順（「按完成」沒有引號時不成詞），
+                                                      // 而且只有這一個選項有尾巴，看起來像沒清乾淨的殘骸。
+                                                      // `延期完成` 是稽核表實際寫入的 ChangeType（見 CHANGE_TYPES），
+                                                      // **詞裡就含著按鈕名「完成」** —— 使用者當初問「沒有延期功能為什麼有延期選項」，
+                                                      // 這個詞本身就是答案，而且與軌跡／徽章 tooltip 用同一組字
+                                                      { value:'delay',    label:`⏰ 有延期完成 (${alertCounts.delay})` },
                                                       { value:'rollback', label:`🔄 有規格回退 (${alertCounts.rollback})` }
                                                   ]} />
                                     {hasActiveFilter && (
@@ -3506,9 +3652,13 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                         style={on
                                                             ? {background:'var(--tone-alert)', color:'#fff', borderColor:'var(--tone-alert)'}
                                                             : {background:'var(--tone-alert-bg)', color:'var(--tone-alert)', borderColor:'var(--tone-alert-border)'}}
-                                                        title={`${DUE_WINDOW_DEFAULT} 日內到期或已逾期共 ${dueAlerts.length} 件（只看還沒走完的階段，取其中最急的那一個）。點一下只看這些，再點一次取消`}>
+                                                        title={`已到階段卻沒壓日期、已逾期、或 ${DUE_WINDOW_DEFAULT} 日內到期共 ${dueAlerts.length} 件（只看還沒走完的階段，取其中最急的那一個）。點一下只看這些，再點一次取消`}>
                                                     需關注
                                                     <span className="text-[13px] font-black tabular-nums">{dueAlerts.length}</span>
+                                                    {/* 未壓排在逾期前面，與清單的排序、色條的優先序一致 */}
+                                                    {dueCountsAll.unset > 0 && (
+                                                        <span className="font-semibold" style={{opacity:0.85}}>· 未壓 {dueCountsAll.unset}</span>
+                                                    )}
                                                     {dueCountsAll.overdue > 0 && (
                                                         <span className="font-semibold" style={{opacity:0.85}}>· 逾期 {dueCountsAll.overdue}</span>
                                                     )}
@@ -3550,13 +3700,13 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 <ToggleChip full on={doneLast} onClick={()=>setDoneLast(!doneLast)}
                                                             title="結案 (Done / StatusID 5) 的資料列一律排到最下面">Done 置底</ToggleChip>
                                                 <ToggleChip full on={duePriority} onClick={()=>setDuePriority(!duePriority)} tone="alert"
-                                                            title="依剩餘天數由少到多排序，逾期最久的排最上面">逾期優先</ToggleChip>
+                                                            title="「已到階段卻沒壓日期」排最上面，其餘依剩餘天數由少到多（逾期最久的在前）">逾期優先</ToggleChip>
                                                 {/* 次數排序（第 17 批）。用 sortConfig 而不是另一組 state，
                                                     這樣與表頭排序互斥，不會兩套排序打架 */}
                                                 <ToggleChip full on={sortConfig.key === 'delayCount'} tone="alert"
                                                             onClick={()=>setSortConfig(sortConfig.key === 'delayCount'
                                                                 ? { key:null, direction:'asc' } : { key:'delayCount', direction:'desc' })}
-                                                            title="依執行延期次數由多到少排序。注意：「Done 置底」開著時，結案的案件仍會被排到下方">延期最多</ToggleChip>
+                                                            title="依延期完成次數由多到少排序。注意：「Done 置底」開著時，結案的案件仍會被排到下方">延期最多</ToggleChip>
                                                 <ToggleChip full on={sortConfig.key === 'rollbackCount'}
                                                             onClick={()=>setSortConfig(sortConfig.key === 'rollbackCount'
                                                                 ? { key:null, direction:'asc' } : { key:'rollbackCount', direction:'desc' })}
@@ -3633,13 +3783,16 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                             <span className="inline-block w-0.5 h-3 align-middle" style={{background:'var(--tone-alert)'}}></span>
                                             左側色條＝該列最嚴重的到期風險
                                         </span>
-                                        <span>⏰ 執行延期次數（2 次以上轉紅）</span>
+                                        <span title="StatusID 已經走到那一階段，但那一階段的日期還是空的。沒有日期就不會有逾期提醒，所以「逾期優先」排序會把它排在最上面">⚠ 未壓日期＝已到該階段卻還沒壓日期</span>
+                                        {/* tooltip 與「警示」下拉那句是同一件事：畫面上沒有叫「延期」的按鈕，
+                                            所以這個詞一定要在出現的地方就解釋掉（2026-08-27 / 第 34 批） */}
+                                        <span className="cursor-help" title="按下「✓ 完成」時已超過原訂結束日就記一次。沒有獨立的「延期」功能 —— 那一刻原訂結束日會保留不動，只另外記下實際完成日">⏰ 延期完成次數（2 次以上轉紅）</span>
                                         <span>🔄 規格回退次數</span>
                                         <span title="只計「日期異動」；提早／延期完成與規格回退不算，它們各有 ⏰ / 🔄 或列在軌跡裡">⚠ 該階段日期異動次數</span>
                                         <span>→ 日期＝延期後的實際完成日</span>
                                         {/* 精簡模式的時程欄只有一個日期，要講清楚那是哪一個，
                                             否則主管會以為其他階段的資料不見了 */}
-                                        {compact && <span style={{color:'var(--text-tertiary)'}}>目前階段時程＝還沒走完的階段裡到期日最早的那一個（點該列可看完整四階段）</span>}
+                                        {compact && <span style={{color:'var(--text-tertiary)'}}>目前階段時程＝目前這一階段沒壓日期就標「未壓日期」，否則取還沒走完的階段裡到期日最早的那一個（點該列可看完整四階段）</span>}
                                         {/* 軌跡讀不到時，⚠N 會整片消失 —— 圖例列剛好就是在解釋 ⚠ 的地方，
                                             那句話變成謊言之前先在同一行講清楚（第 24 批） */}
                                         {historyError && (
@@ -3911,7 +4064,12 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 const confirmAlert = getPhaseAlert(item.msd?.confirm, isPhasePassed(item, 'confirm'));
                                                 const msdAlert     = getPhaseAlert(item.msd?.end,     isPhasePassed(item, 'msd'));
                                                 const uatAlert     = getPhaseAlert(item.uat?.end,     isPhasePassed(item, 'uat'));
-                                                const rowAlert  = pickRowAlert(specAlert, confirmAlert, msdAlert, uatAlert);
+                                                // 「已到階段卻沒壓日期」的那一格（第 33 批）。整列最多只會有一格 ——
+                                                // 它指的就是 StatusID 對應的那一階段自己
+                                                const unsetPhase = unsetDuePhase(item);
+                                                const unsetAlert = unsetPhase
+                                                    ? { level:'unset', ...ALERT_STYLES.unset, label:`${unsetPhase.label} 未壓日期` } : null;
+                                                const rowAlert  = pickRowAlert(unsetAlert, specAlert, confirmAlert, msdAlert, uatAlert);
                                                 // 整列最左的風險色條。No 欄 2026-08-19 起永遠是第一欄，
                                                 // 色條就固定掛在它上面，不必再跟著模式換位置
                                                 const stripe = { borderLeft:`3px solid ${rowAlert ? rowAlert.color : 'transparent'}` };
@@ -3927,6 +4085,24 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 const initStamps = [...new Set(initEntries.map(h =>
                                                     `${h.changedAt}${h.changedBy ? ` · ${h.changedBy}` : ''}${h.changedBySource === 'simulated' ? '（模擬）' : ''}`))];
                                                 const initStamp = initStamps.length === 1 ? initStamps[0] : null;
+                                                // ─── 同一次動作寫出來的多筆稽核列收成一張卡（第 35 批，2026-08-27）───
+                                                // 規格回退一次會清掉「≥ 目標階段」的全部日期，每個階段各留一筆快照。
+                                                // **那些列是必要的**（少一筆就不知道當時清掉了什麼），
+                                                // 但四筆的「型別／時間／異動人／分類／說明」完全一樣 ——
+                                                // 舊版逐筆各畫一個區塊，等於同一次動作被畫成四件事，
+                                                // 同一句 33 字的說明在畫面上重複四次（使用者回報「軌跡太肥」講的就是這個）。
+                                                // ⚠️ 只併**相鄰**的：`/api/history` 是 `ORDER BY ChangedAt, Id`，
+                                                // 同一次寫入本來就連續；跨越其他紀錄硬併會把時序畫顛倒。
+                                                const groupKeyOf = h => [h.changeType, h.changedAt, h.changedBy || '',
+                                                                         h.changedBySource || '', h.reasonCategory || '',
+                                                                         h.note || ''].join('');
+                                                const changeGroups = [];
+                                                changeEntries.forEach(h => {
+                                                    const k = groupKeyOf(h);
+                                                    const last = changeGroups[changeGroups.length - 1];
+                                                    if (last && last.key === k) last.rows.push(h);
+                                                    else changeGroups.push({ key: k, rows: [h] });
+                                                });
                                                 // 已結案的列改用淡底色標示，不再整列 opacity:0.5 —— 那會連文字
                                                 // 一起變淡，對比度掉到不易閱讀
                                                 // 投影模式加斑馬紋：投出來的對比比螢幕低得多，
@@ -4104,10 +4280,10 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                             {/* 精簡模式：只出一欄「目前階段時程」。四個階段的完整排程
                                                                 仍在展開明細裡，資訊沒有消失，只是不佔主管的視線 */}
                                                             {compact ? currentStageCell({ item, isDone, changeOf, br:'2px solid var(--border-card)' }) : (<>
-                                                            {scheduleCell({ val:item.spec?.end, alert:specAlert, changes:changeOf('spec'),    label:'1_EMS規格確認', br:'1px solid var(--border-table)', actual:item.spec?.actualEnd })}
-                                                            {scheduleCell({ val:item.msd?.confirm, alert:confirmAlert, changes:changeOf('confirm'), label:'2_MSD確認中', br:'1px solid var(--border-table)', actual:item.msd?.confirmActualEnd })}
-                                                            {scheduleCell({ val:item.msd?.end,     alert:msdAlert,  changes:changeOf('msd'),     label:'3_MSD開發中', br:'1px solid var(--border-table)', actual:item.msd?.actualEnd })}
-                                                            {scheduleCell({ val:item.uat?.end,     alert:uatAlert,  changes:changeOf('uat'),     label:'4_EMS驗收',   br:'2px solid var(--border-card)', actual:item.uat?.actualEnd })}
+                                                            {scheduleCell({ val:item.spec?.end, alert:specAlert, changes:changeOf('spec'),    label:'1_EMS規格確認', br:'1px solid var(--border-table)', actual:item.spec?.actualEnd,        unset:unsetPhase?.key==='spec' })}
+                                                            {scheduleCell({ val:item.msd?.confirm, alert:confirmAlert, changes:changeOf('confirm'), label:'2_MSD確認中', br:'1px solid var(--border-table)', actual:item.msd?.confirmActualEnd, unset:unsetPhase?.key==='confirm' })}
+                                                            {scheduleCell({ val:item.msd?.end,     alert:msdAlert,  changes:changeOf('msd'),     label:'3_MSD開發中', br:'1px solid var(--border-table)', actual:item.msd?.actualEnd,        unset:unsetPhase?.key==='msd' })}
+                                                            {scheduleCell({ val:item.uat?.end,     alert:uatAlert,  changes:changeOf('uat'),     label:'4_EMS驗收',   br:'2px solid var(--border-card)', actual:item.uat?.actualEnd,        unset:unsetPhase?.key==='uat' })}
                                                             </>)}
                                                             {/* 現況描述（CurrentStatus）。精簡模式的最後一欄。
                                                                 ⚠️ 不可用 truncate：內容常是多行長文，nowrap 會讓這一欄的
@@ -4211,65 +4387,99 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                                                     {historyError ? '軌跡讀取失敗，這不代表沒有變更' : '無變更紀錄'}
                                                                                   </div>
                                                                                 : <div className="space-y-3 max-h-56 overflow-y-auto scrollbar-thin pr-1">
-                                                                                    {changeEntries.map((h,i)=>{
-                                                                                        const ph = PHASES[h.phase] || {};
-                                                                                        const clr = ph.color || 'var(--text-muted)';
-                                                                                        const ct = changeTypeStyle(h.changeType);
-                                                                                        const phLabel = timelineLabelOf(h.phase);
-                                                                                        // 稽核表已明確存了前後值，直接列出真的有變動的欄位
-                                                                                        const changes = [['confirm','oldConfirm','newConfirm'],
-                                                                                                         ['start','oldStart','newStart'],
-                                                                                                         ['end','oldEnd','newEnd']]
-                                                                                            .map(([f,o,n]) => ({ f, before:h[o]||'', after:h[n]||'' }))
-                                                                                            .filter(c => (c.before||c.after) && c.before !== c.after);
+                                                                                    {changeGroups.map((g,gi)=>{
+                                                                                        // 群組共用的資訊只畫一次（型別／時間／人／分類／說明）。
+                                                                                        // 單筆的群組（絕大多數）版面與第 35 批之前完全相同 ——
+                                                                                        // 差別只在「多筆時不重複」，不是換一套畫法
+                                                                                        const head = g.rows[0];
+                                                                                        const many = g.rows.length > 1;
+                                                                                        const ct = changeTypeStyle(head.changeType);
+                                                                                        // 單筆時圓點用該階段的顏色（沿用舊版）；多筆時階段不只一個，改用型別色
+                                                                                        const dotClr = many ? ct.color : ((PHASES[head.phase] || {}).color || 'var(--text-muted)');
+                                                                                        const metaBlock = (<>
+                                                                                            {head.reasonCategory && (
+                                                                                                <div className="mt-1">
+                                                                                                    <span className="px-1 py-0.5 rounded font-bold"
+                                                                                                          style={{color:'var(--text-tertiary)', background:'var(--bg-input)', border:'1px solid var(--bg-input-border)'}}>
+                                                                                                        {head.reasonCategory}
+                                                                                                    </span>
+                                                                                                </div>
+                                                                                            )}
+                                                                                            {head.note && <div className="mt-1 whitespace-pre-wrap" style={{color:'var(--text-tertiary)'}}>說明：{head.note}</div>}
+                                                                                        </>);
                                                                                         return (
-                                                                                            <div key={h.id||i} className="flex items-start gap-2 text-[11px]">
-                                                                                                <div className="w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0" style={{background:clr}}></div>
+                                                                                            <div key={head.id||gi} className="flex items-start gap-2 text-[11px]">
+                                                                                                <div className="w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0" style={{background:dotClr}}></div>
                                                                                                 <div className="min-w-0 flex-1">
                                                                                                     <div className="flex items-center gap-1.5 flex-wrap">
-                                                                                                        <span className="font-bold" style={{color:clr}}>{phLabel}</span>
+                                                                                                        {/* 多筆時階段名移到下面每一行前面，標題只講「這是一次什麼動作」 */}
+                                                                                                        {!many && (
+                                                                                                            <span className="font-bold" style={{color:dotClr}}>{timelineLabelOf(head.phase)}</span>
+                                                                                                        )}
                                                                                                         <span className="px-1 py-0.5 rounded font-bold"
                                                                                                               style={{color:ct.color, background:ct.bg}}>{ct.label}</span>
-                                                                                                        <span style={{color:'var(--text-muted)'}}>{h.changedAt}</span>
+                                                                                                        <span style={{color:'var(--text-muted)'}}>{head.changedAt}</span>
                                                                                                         {/* 異動人員。模擬帳號一定標示出來，不可冒充真實登入者 */}
-                                                                                                        {h.changedBy && (
+                                                                                                        {head.changedBy && (
                                                                                                             <span style={{color:'var(--text-muted)'}}>
-                                                                                                                · {h.changedBy}
-                                                                                                                {h.changedBySource === 'simulated' && <span className="ml-0.5" title="這筆是用模擬帳號寫入的">（模擬）</span>}
+                                                                                                                · {head.changedBy}
+                                                                                                                {head.changedBySource === 'simulated' && <span className="ml-0.5" title="這筆是用模擬帳號寫入的">（模擬）</span>}
                                                                                                             </span>
                                                                                                         )}
+                                                                                                        {many && (
+                                                                                                            <span style={{color:'var(--text-muted)'}}
+                                                                                                                  title="這是同一次動作，一次影響了多個階段">· 影響 {g.rows.length} 個階段</span>
+                                                                                                        )}
                                                                                                     </div>
-                                                                                                    {changes.map(c => {
-                                                                                                        const d = dayDiff(c.before, c.after);
+                                                                                                    {/* 分類與說明整組共用，只畫一次。
+                                                                                                        ⚠️ 多筆時畫在**前面**（那句說明解釋的是整組，擺在四個階段後面會像只註解最後一個）；
+                                                                                                        單筆時維持舊版順序畫在**後面**（先看改了什麼、再看為什麼）——
+                                                                                                        單筆是絕大多數，沒有理由順手改掉它既有的讀法 */}
+                                                                                                    {many && metaBlock}
+                                                                                                    {g.rows.map((h,i)=>{
+                                                                                                        const clr = (PHASES[h.phase] || {}).color || 'var(--text-muted)';
+                                                                                                        // 稽核表已明確存了前後值，直接列出真的有變動的欄位
+                                                                                                        const changes = [['confirm','oldConfirm','newConfirm'],
+                                                                                                                         ['start','oldStart','newStart'],
+                                                                                                                         ['end','oldEnd','newEnd']]
+                                                                                                            .map(([f,o,n]) => ({ f, before:h[o]||'', after:h[n]||'' }))
+                                                                                                            .filter(c => (c.before||c.after) && c.before !== c.after);
                                                                                                         // 延期完成的原訂日期**沒有被改掉**（那是延遲的證據），
                                                                                                         // 所以不能畫刪除線，改標成「原訂 → 實際」
                                                                                                         const isDelay = h.changeType === '延期完成';
-                                                                                                        return (
-                                                                                                            <div key={c.f} className="mt-1 flex items-center gap-1.5 flex-wrap">
-                                                                                                                <span style={{color:'var(--text-muted)'}}>{PHASE_FIELD_LABEL[c.f]}{isDelay && ' 原訂'}</span>
-                                                                                                                <span style={{color:'var(--text-muted)', textDecoration: isDelay ? 'none' : 'line-through'}}>{c.before||'未填'}</span>
-                                                                                                                <span style={{color:'var(--text-muted)'}}>{isDelay ? '→ 實際' : '→'}</span>
-                                                                                                                <span className="font-bold" style={{color:'var(--text-primary)'}}>{c.after||'未填'}</span>
-                                                                                                                {d !== null && d !== 0 && (
-                                                                                                                    <span className="px-1 py-0.5 rounded font-bold"
-                                                                                                                          style={d>0
-                                                                                                                              ? {color:'var(--tone-alert)', background:'var(--tone-alert-bg)'}
-                                                                                                                              : {color:'var(--tone-good)', background:'rgba(15,118,110,0.1)'}}>
-                                                                                                                        {d>0 ? `延後 ${d} 天` : `提前 ${Math.abs(d)} 天`}
-                                                                                                                    </span>
-                                                                                                                )}
+                                                                                                        const fields = changes.map(c => {
+                                                                                                            const d = dayDiff(c.before, c.after);
+                                                                                                            return (
+                                                                                                                <span key={c.f} className="inline-flex items-center gap-1.5 flex-wrap">
+                                                                                                                    <span style={{color:'var(--text-muted)'}}>{PHASE_FIELD_LABEL[c.f]}{isDelay && ' 原訂'}</span>
+                                                                                                                    <span style={{color:'var(--text-muted)', textDecoration: isDelay ? 'none' : 'line-through'}}>{c.before||'未填'}</span>
+                                                                                                                    <span style={{color:'var(--text-muted)'}}>{isDelay ? '→ 實際' : '→'}</span>
+                                                                                                                    <span className="font-bold" style={{color:'var(--text-primary)'}}>{c.after||'未填'}</span>
+                                                                                                                    {d !== null && d !== 0 && (
+                                                                                                                        <span className="px-1 py-0.5 rounded font-bold"
+                                                                                                                              style={d>0
+                                                                                                                                  ? {color:'var(--tone-alert)', background:'var(--tone-alert-bg)'}
+                                                                                                                                  : {color:'var(--tone-good)', background:'rgba(15,118,110,0.1)'}}>
+                                                                                                                            {d>0 ? `延後 ${d} 天` : `提前 ${Math.abs(d)} 天`}
+                                                                                                                        </span>
+                                                                                                                    )}
+                                                                                                                </span>
+                                                                                                            );
+                                                                                                        });
+                                                                                                        // 多筆：階段名 + 該階段的欄位排在同一行（放不下自然換行），
+                                                                                                        // 一個階段一行。單筆：維持舊版「一個欄位一行」
+                                                                                                        return many ? (
+                                                                                                            <div key={h.id||i} className="mt-1 flex items-baseline gap-x-3 gap-y-1 flex-wrap">
+                                                                                                                <span className="font-bold flex-shrink-0" style={{color:clr}}>{timelineLabelOf(h.phase)}</span>
+                                                                                                                {fields}
                                                                                                             </div>
+                                                                                                        ) : (
+                                                                                                            <Fragment key={h.id||i}>
+                                                                                                                {fields.map((f,fi) => <div key={fi} className="mt-1 flex items-center gap-1.5 flex-wrap">{f}</div>)}
+                                                                                                            </Fragment>
                                                                                                         );
                                                                                                     })}
-                                                                                                    {h.reasonCategory && (
-                                                                                                        <div className="mt-1">
-                                                                                                            <span className="px-1 py-0.5 rounded font-bold"
-                                                                                                                  style={{color:'var(--text-tertiary)', background:'var(--bg-input)', border:'1px solid var(--bg-input-border)'}}>
-                                                                                                                {h.reasonCategory}
-                                                                                                            </span>
-                                                                                                        </div>
-                                                                                                    )}
-                                                                                                    {h.note && <div className="mt-1 whitespace-pre-wrap" style={{color:'var(--text-tertiary)'}}>說明：{h.note}</div>}
+                                                                                                    {!many && metaBlock}
                                                                                                 </div>
                                                                                             </div>
                                                                                         );
