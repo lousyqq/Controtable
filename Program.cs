@@ -2,6 +2,8 @@ using Microsoft.Data.SqlClient;
 using ClosedXML.Excel;
 using System.Data;
 using System.Globalization;
+using System.Net;
+using System.Net.Mail;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
@@ -57,6 +59,34 @@ app.UseAuthorization();
 var connectionString = builder.Configuration.GetConnectionString("Controltable")
     ?? "Server=localhost;Database=Controltable;Trusted_Connection=True;Encrypt=False;";
 
+// ─── 郵件通知設定（2026-08-31 / 第 39 批）───
+// 用途只有一個：「已到階段卻沒壓日期」時，通知下一棒進系統把日期壓上去。
+// 公司用 Lotus Notes / Domino 收發信，使用者要求「點下去就直接寄出」而不是開草稿，
+// 所以走後端 SMTP 直寄（System.Net.Mail，**沒有引入新的 NuGet 套件**）。
+//
+// ⚠️ Host 沒設定時 /notify-unset 會明確回 400「尚未設定郵件伺服器」，
+//    **不可以靜靜當成寄成功** —— 那會讓下一棒永遠等不到通知，而且畫面上還顯示已通知。
+// ⚠️ Password 若真的需要（多數內網 Domino relay 是匿名的），請放 User Secrets 或
+//    環境變數（`Mail__Password`），不要寫進 appsettings.json 進版控。
+var mailHost     = (builder.Configuration["Mail:Host"] ?? "").Trim();
+var mailPort     = builder.Configuration.GetValue<int?>("Mail:Port") ?? 25;
+var mailSsl      = builder.Configuration.GetValue<bool>("Mail:UseSsl");
+var mailUser     = (builder.Configuration["Mail:User"] ?? "").Trim();
+var mailPass     = builder.Configuration["Mail:Password"] ?? "";
+// ⚠️ Mail:From 是**後備**的寄件者，不是主要的（2026-08-31 使用者要求）。
+//    正常情況下寄件者是「按下按鈕的那個人本人」——
+//    Windows 帳號（工號）→ dbo.Assignee.EMPO → EMAIL，見 AssigneeByEmpNoAsync()。
+//    這裡設的信箱只在「操作者不在指派名單上／沒填信箱／是模擬帳號」時才用得到，
+//    留空也可以（那時那些人會拿到一句看得懂的 400，而不是靜靜寄不出去）。
+var mailFrom     = (builder.Configuration["Mail:From"] ?? "").Trim();
+var mailFromName = (builder.Configuration["Mail:FromName"] ?? "需求管控表").Trim();
+// 信裡那句「請至系統壓日期」要附的網址。空的就不附連結（總比附一個開不起來的好）
+var mailAppUrl   = (builder.Configuration["Mail:AppUrl"] ?? "").Trim();
+// ⚠️ 只看 Host。寄件者現在由 dbo.Assignee 決定（見上面 Mail:From 的說明），
+//    所以 From 空著也算「設定好了」—— 拿不到寄件者是**那一次呼叫**的問題，
+//    在端點裡另外回一句講得出原因的 400，不是整個功能沒開
+var mailReady    = mailHost != "";
+
 // 指派人員主檔。正式的變更紀錄在 11_create_assignee.sql，
 // 這裡的 bootstrap 只是讓尚未跑過腳本的環境也能啟動（沿用下方 MsdConfirmHistory 的做法）。
 // ⚠️ 名單的回填只在腳本裡做，這裡只建空表。
@@ -72,10 +102,17 @@ using (var conn = new SqlConnection(connectionString))
                 EMPO     NVARCHAR(20)  NULL,
                 NAME     NVARCHAR(100) NOT NULL,
                 DEPT     NVARCHAR(10)  NOT NULL,
+                EMAIL    NVARCHAR(255) NULL,
                 IsActive BIT           NOT NULL CONSTRAINT DF_Assignee_IsActive DEFAULT (1),
                 CONSTRAINT CK_Assignee_Dept CHECK (DEPT IN (N'EMS', N'MSD'))
             );
             CREATE UNIQUE INDEX UX_Assignee_Dept_Name ON dbo.Assignee (DEPT, NAME);
+        END
+        -- 信箱。正式的變更紀錄與回填在 15_add_assignee_email.sql。
+        -- ⚠️ 上面的 CREATE TABLE 只在「表還不存在」時跑，所以既有環境要靠這段 ALTER 補。
+        IF NOT EXISTS(SELECT * FROM sys.columns WHERE Name = N'EMAIL' AND Object_ID = Object_ID(N'dbo.Assignee'))
+        BEGIN
+            ALTER TABLE dbo.Assignee ADD EMAIL NVARCHAR(255) NULL
         END", conn))
     {
         cmd.ExecuteNonQuery();
@@ -582,7 +619,7 @@ app.MapGet("/api/assignees", async () =>
         using var conn = new SqlConnection(connectionString);
         await conn.OpenAsync();
         using var cmd = new SqlCommand(
-            "SELECT Id, EMPO, NAME, DEPT, IsActive FROM dbo.Assignee ORDER BY DEPT, NAME", conn);
+            "SELECT Id, EMPO, NAME, DEPT, EMAIL, IsActive FROM dbo.Assignee ORDER BY DEPT, NAME", conn);
         using var reader = await cmd.ExecuteReaderAsync();
         var list = new List<Assignee>();
         while (await reader.ReadAsync())
@@ -593,7 +630,8 @@ app.MapGet("/api/assignees", async () =>
                 EmpNo    = reader.IsDBNull(1) ? null : reader.GetString(1),
                 Name     = reader.GetString(2),
                 Dept     = reader.GetString(3),
-                IsActive = reader.GetBoolean(4)
+                Email    = reader.IsDBNull(4) ? null : reader.GetString(4),
+                IsActive = reader.GetBoolean(5)
             });
         }
         return Results.Ok(list);
@@ -1771,6 +1809,317 @@ app.MapPost("/api/requirements/{id}/rollback", async (int id, RollbackRequest bo
     }
 });
 
+// ─── 「已到階段卻沒壓日期」的後端判定（2026-08-31 / 第 39 批）───
+// ⚠️ 這是 app.jsx 的 **unsetDuePhase() + isPhasePassed() 的鏡像**（第 33 / 23 批），
+//    兩邊改了一定要一起改。之所以要在後端再算一次，理由只有一個：
+//    /notify-unset 會**真的把信寄給人**，收件者與階段若由呼叫端指定，
+//    任何人都能借系統的名義寄信給指派名單上的任何一個人。
+//    畫面上那份仍然是唯一的顯示規則，這一份只在寄信前把關。
+//
+// 四個階段各自的「負責的那一邊」與判定用的兩個日期。
+// 階段代號 ↔ phase / 標籤沿用 StageDatesOf()，不再重寫一份。
+// ⚠️ side 就是「這一階段該由誰壓日期」：①④ 是 EMS、②③ 是 MSD
+//    （與 app.jsx 的 DUE_PHASES.side 一致）
+static (string Side, string? End, string? Actual) StageSideOf(Requirement r, int stage) => stage switch
+{
+    1 => ("EMS", r.spec?.end,    r.spec?.actualEnd),
+    2 => ("MSD", r.msd?.confirm, r.msd?.confirmActualEnd),
+    3 => ("MSD", r.msd?.end,     r.msd?.actualEnd),
+    4 => ("EMS", r.uat?.end,     r.uat?.actualEnd),
+    _ => ("", null, null)
+};
+
+// app.jsx 的 isPhasePassed()。⚠️ ③ 與 ④ 刻意沒有「下一階段有日期就算走完」的補救條件 ——
+// ④ 的驗收日 EMS 可以一開始就先壓一個預設值，壓了不代表 ③ 已經開發完（見 app.jsx 那段說明）
+static bool StagePassed(Requirement r, int stage)
+{
+    if (StatusIs(r.status, "Done")) return true;
+    var (_, _, actual) = StageSideOf(r, stage);
+    if (NormDate(actual) != "") return true;            // 有實際完成日就一定走完了
+    var stageNum = int.TryParse(NormStage(r.stageCode), out var n) ? n : 0;
+    return stage switch
+    {
+        1 => NormDate(r.msd?.confirm) != "" || stageNum >= 2,
+        2 => NormDate(r.msd?.start) != "" || NormDate(r.msd?.end) != "" || stageNum >= 3,
+        3 => stageNum >= 4,
+        4 => stageNum >= 5,
+        _ => false
+    };
+}
+
+// StatusID 走到哪一階段、那一階段自己就沒有日期 → 回傳那個階段。
+// ⚠️ StageCode 空白或超出 1~5 的**一律不推斷**（空白代表「不知道走到哪」，
+//    硬猜只會冤枉一批舊資料）；結案（5 或 Status=Done）不提醒
+static (string Phase, string Label, string Side)? UnsetPhaseOf(Requirement r)
+{
+    if (StatusIs(r.status, "Done")) return null;
+    var code = NormStage(r.stageCode);
+    if (code.Length != 1 || code[0] < '1' || code[0] > '4') return null;   // 空／壞值／5 都不推斷
+    var stage = code[0] - '0';
+    var (side, end, _) = StageSideOf(r, stage);
+    if (NormDate(end) != "") return null;               // 有壓日期 → 不是這一種
+    if (StagePassed(r, stage)) return null;             // 已被下一階段接手 = 不用壓，不是還沒壓
+    var (phase, label, _) = StageDatesOf(stage);
+    return (phase, label, side);
+}
+
+// ─── 寄件者：按下按鈕的那個人本人（2026-08-31 / 第 39 批，使用者要求）───
+// 使用者把 dbo.Assignee 的 EMPO（工號）補齊了，而 Windows 帳號剝掉網域之後就是工號
+// （`UMC\00045896` → `00045896`，見 StripDomain）—— 那就是這張表與登入者之間唯一的接點。
+// 用操作者本人當寄件者，收件者可以直接**回信**給他，而不是回給一個沒人看的系統信箱。
+//
+// ⚠️ **只有 source == "windows" 才可以這樣用**。模擬帳號（AllowSimulation，開發環境開著）
+//    走這條路等於讓任何人挑一個名字、用他的身分把信寄出去 —— 那是真的冒名，
+//    比稽核列標一個 `simulated` 嚴重得多。模擬與取不到帳號時一律退回設定檔的 Mail:From。
+// ⚠️ 找不到（工號不在名單上、或那筆沒填 EMAIL）也退回 Mail:From，**不可以直接失敗** ——
+//    主管或不在指派名單上的人也會按這顆鈕，為了寄件者擋掉整封通知是本末倒置。
+static async Task<(string Email, string Name)> AssigneeByEmpNoAsync(SqlConnection conn, string empNo)
+{
+    var no = (empNo ?? "").Trim();
+    if (no == "") return ("", "");
+    using var cmd = new SqlCommand(
+        "SELECT TOP 1 EMAIL, NAME FROM dbo.Assignee WHERE LTRIM(RTRIM(EMPO)) = @No AND EMAIL IS NOT NULL", conn);
+    cmd.Parameters.AddWithValue("@No", no);
+    using var r = await cmd.ExecuteReaderAsync();
+    if (!await r.ReadAsync()) return ("", "");
+    return ((r.IsDBNull(0) ? "" : r.GetString(0)).Trim(), (r.IsDBNull(1) ? "" : r.GetString(1)).Trim());
+}
+
+// 指派人員的信箱。⚠️ 與前端 assigneeEmailOf() 同一套：(DEPT, NAME) 兩邊都 trim、
+// **不濾 IsActive** —— 這裡問的是「這個名字的信箱是什麼」，不是「可不可以指派給他」。
+// 控表存的是姓名字串、沒有外鍵，既有資料的負責人欄位帶著空白是常態
+static async Task<string> AssigneeEmailAsync(SqlConnection conn, string dept, string name)
+{
+    using var cmd = new SqlCommand(
+        "SELECT TOP 1 EMAIL FROM dbo.Assignee WHERE DEPT = @Dept AND LTRIM(RTRIM(NAME)) = @Name AND EMAIL IS NOT NULL", conn);
+    cmd.Parameters.AddWithValue("@Dept", dept);
+    cmd.Parameters.AddWithValue("@Name", (name ?? "").Trim());
+    var v = await cmd.ExecuteScalarAsync();
+    return v == null || v == DBNull.Value ? "" : ((string)v).Trim();
+}
+
+// 寄出一封純文字通知信。成功回 null，失敗回**看得懂的錯誤訊息**。
+// ⚠️ 用內建的 System.Net.Mail，刻意不引入 MailKit —— 這個專案不加未經同意的 NuGet 套件，
+//    而內網 Domino relay 用得上的功能（匿名或帳密、選配 SSL）它都有。
+async Task<string?> SendNotifyMailAsync(string fromEmail, string fromName, string toEmail, string ccEmail, string subject, string body)
+{
+    try
+    {
+        using var msg = new MailMessage();
+        msg.From = new MailAddress(fromEmail, fromName, System.Text.Encoding.UTF8);
+        msg.To.Add(new MailAddress(toEmail));
+        if (!string.IsNullOrWhiteSpace(ccEmail)) msg.CC.Add(new MailAddress(ccEmail));
+        msg.Subject = subject;
+        msg.Body = body;
+        msg.IsBodyHtml = false;
+        // Notes 客戶端對編碼很敏感，主旨與內文都明講 UTF-8，否則中文會變問號
+        msg.BodyEncoding = System.Text.Encoding.UTF8;
+        msg.SubjectEncoding = System.Text.Encoding.UTF8;
+
+        using var client = new SmtpClient(mailHost, mailPort) { EnableSsl = mailSsl };
+        if (mailUser != "")
+        {
+            client.UseDefaultCredentials = false;
+            client.Credentials = new NetworkCredential(mailUser, mailPass);
+        }
+        await client.SendMailAsync(msg);
+        return null;
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Notify mail send failed: {ex}");
+        // 把 SMTP 伺服器實際回的話帶到畫面上 —— 「寄信失敗」四個字查不出任何東西
+        return ex.Message + (ex.InnerException != null ? "（" + ex.InnerException.Message + "）" : "")
+             + $"\n\n（SMTP：{mailHost}:{mailPort}，寄件者：{fromEmail}）";
+    }
+}
+
+// ─── 通知下一棒來壓日期（2026-08-31 / 第 39 批）───
+// 使用者的原話：「在該階段的工作者完成自己的工作時，可以有自動寄信的方式告知已完成，
+// 請下一棒來壓日期。」觸發的狀態就是第 33 批做的「已到階段卻沒壓日期」——
+// 資料列上那格紅色的「⚠ 未壓日期」徽章。
+//
+// ⚠️ **收件者與階段一律由後端自己算，前端送什麼都不看**。這一支會真的把信寄給人，
+//    收件者若能由呼叫端指定，任何人都可以借系統的名義寄任意內容給指派名單上的人。
+//    前端那份 notifyPreview() 只負責「先給使用者看一眼要寄給誰」。
+app.MapPost("/api/requirements/{id}/notify-unset", async (int id, NotifyRequest? body, HttpContext ctx) =>
+{
+    // ⚠️ 這一支有對外副作用（真的寄信出去），所以跟 /api/import 一樣擋跨站。
+    //    JSON 端點本來就有 preflight 保護，這裡是第二道 —— 寄錯信收不回來。
+    if (IsCrossSiteRequest(ctx))
+        return Results.BadRequest(new { message = "偵測到跨站請求，已拒絕。請從系統本身的畫面操作。" });
+
+    if (!mailReady)
+        return Results.BadRequest(new
+        {
+            message = "尚未設定郵件伺服器，無法寄出通知。\n\n"
+                    + "請在 appsettings.json 的 Mail 區塊填入 Host（公司的 SMTP 主機位址）後重新啟動服務。"
+        });
+
+    using var conn = new SqlConnection(connectionString);
+    await conn.OpenAsync();
+
+    // ── 1. 讀出這筆需求（判定與信件內容都只用這裡讀到的值）──
+    Requirement? cur = null;
+    using (var readCmd = new SqlCommand(@"
+        SELECT NID, Status, StageCode, MainCat, SubCat, EmsOwner, MsdOwner, CurrentStatus,
+               SpecStart, SpecEnd, SpecActualEnd,
+               MsdConfirm, MsdConfirmActualEnd, MsdStart, MsdEnd, MsdActualEnd,
+               UatStart, UatEnd, UatActualEnd
+        FROM dbo.Controltable WHERE Id = @Id AND IsDeleted = 0", conn))
+    {
+        readCmd.Parameters.AddWithValue("@Id", id);
+        using var r = await readCmd.ExecuteReaderAsync();
+        if (await r.ReadAsync())
+            cur = new Requirement
+            {
+                Id = id,
+                nid = ReadString(r, "NID"),
+                status = ReadString(r, "Status"),
+                stageCode = ReadString(r, "StageCode"),
+                mainCat = ReadString(r, "MainCat"),
+                subCat = ReadString(r, "SubCat"),
+                emsOwner = ReadString(r, "EmsOwner"),
+                msdOwner = ReadString(r, "MsdOwner"),
+                currentStatus = ReadString(r, "CurrentStatus"),
+                spec = new Phase { start = ReadDate(r, "SpecStart"), end = ReadDate(r, "SpecEnd"), actualEnd = ReadDate(r, "SpecActualEnd") },
+                msd  = new MsdPhase {
+                    confirm = ReadDate(r, "MsdConfirm"), confirmActualEnd = ReadDate(r, "MsdConfirmActualEnd"),
+                    start = ReadDate(r, "MsdStart"), end = ReadDate(r, "MsdEnd"), actualEnd = ReadDate(r, "MsdActualEnd") },
+                uat  = new Phase { start = ReadDate(r, "UatStart"), end = ReadDate(r, "UatEnd"), actualEnd = ReadDate(r, "UatActualEnd") }
+            };
+    }
+    if (cur == null) return Results.NotFound(new { message = "找不到該筆需求（可能已被刪除）。" });
+
+    // ── 2. 後端自己判定「哪一個階段沒壓日期」──
+    var target = UnsetPhaseOf(cur);
+    if (target == null)
+        return Results.BadRequest(new
+        {
+            message = "這筆需求目前沒有「已到階段卻沒壓日期」的情況，不需要通知。\n\n"
+                    + "（可能是別人已經把日期壓上去了，請重新整理後再看一次。）"
+        });
+    var (phaseKey, phaseLabel, side) = target.Value;
+
+    // ── 3. 收件者：該階段的負責人；副本：另一邊的負責人 ──
+    // 使用者定義的規則：「發信通知並 cc 給另一個階段的需求者」——
+    // 例如 ④ EMS驗收 未壓日期 → 收件者是 EMS 負責人，副本給 MSD 負責人。
+    var toName = ((side == "MSD" ? cur.msdOwner : cur.emsOwner) ?? "").Trim();
+    var ccDept = side == "MSD" ? "EMS" : "MSD";
+    var ccName = ((side == "MSD" ? cur.emsOwner : cur.msdOwner) ?? "").Trim();
+    if (toName == "")
+        return Results.BadRequest(new { message = $"「{phaseLabel}」的負責人（{side}）還沒指派，無法決定要通知誰。" });
+
+    var toEmail = await AssigneeEmailAsync(conn, side, toName);
+    var ccEmail = ccName == "" ? "" : await AssigneeEmailAsync(conn, ccDept, ccName);
+    // ⚠️ 收件者沒有信箱就一定要擋下並講清楚要去哪裡補（EMAIL 欄是唯讀的，只能在 SSMS 改）。
+    //    靜靜寄一封沒有收件者的信 = 下一棒永遠不知道輪到他了。
+    if (toEmail == "")
+        return Results.BadRequest(new
+        {
+            message = $"指派人員主檔裡「{toName}／{side}」沒有填 EMAIL，無法寄出通知。\n\n"
+                    + "信箱欄位是唯讀的，請直接在 SSMS 的 dbo.Assignee 補上之後再試一次。"
+        });
+    // ⚠️ 副本查不到信箱時**照樣寄出**，只是回應裡要講出來 —— 副本是附帶的，
+    //    為了它擋住主要收件者的通知是本末倒置
+    var ccMissing = ccName != "" && ccEmail == "";
+
+    // ── 3b. 寄件者：按下按鈕的那個人本人（工號 → dbo.Assignee.EMPO → EMAIL）──
+    // 使用者要求：寄件者信箱從 dbo.Assignee 讀，不要另外設一個。收件者可以直接回信給他。
+    // ⚠️ 只有真的 Windows 登入（source == "windows"）才用本人身分；模擬帳號一律退回
+    //    設定檔的 Mail:From —— 讓模擬身分把信寄出去是真的冒名（見 AssigneeByEmpNoAsync）。
+    var (actor, actorSrc) = ResolveActor(new Requirement { actorEmpId = body?.actorEmpId, actorSource = body?.actorSource });
+    var fromEmail = ""; var fromName = ""; var fromIsSelf = false;
+    if (actorSrc == "windows" && !string.IsNullOrWhiteSpace(actor))
+    {
+        var (e, n) = await AssigneeByEmpNoAsync(conn, actor!);
+        if (e != "") { fromEmail = e; fromName = n == "" ? mailFromName : n; fromIsSelf = true; }
+    }
+    if (fromEmail == "") { fromEmail = mailFrom; fromName = mailFromName; }
+    if (fromEmail == "")
+        return Results.BadRequest(new
+        {
+            message = "找不到可用的寄件者信箱，無法寄出通知。\n\n"
+                    + $"你的工號（{(string.IsNullOrWhiteSpace(actor) ? "取不到 Windows 帳號" : actor)}）"
+                    + "在指派人員主檔（dbo.Assignee）裡查不到對應的 EMPO／EMAIL。\n\n"
+                    + "請在 SSMS 補上你的工號與信箱，或請管理者在 appsettings.json 的 Mail:From 設一個共用的系統信箱。"
+        });
+
+    // ── 4. 組信 ──
+    var who = string.Join(" / ", new[] { cur.nid == "" ? null : $"NID {cur.nid}", cur.mainCat, cur.subCat }
+                                 .Where(s => !string.IsNullOrWhiteSpace(s)));
+    var subject = $"[需求管控表] 請壓定「{phaseLabel}」日期：{who}";
+    var lines = new List<string>
+    {
+        $"{toName} 您好：",
+        "",
+        $"需求「{who}」目前已進入「{phaseLabel}」階段，但這個階段還沒有壓定日期。",
+        "請撥空進入需求管控表填寫，以利後續進度追蹤。",
+        "",
+        "──────────────────────────────",
+        $"NID        ：{(cur.nid == "" ? "（未填）" : cur.nid)}",
+        $"分類        ：{cur.mainCat} / {cur.subCat}",
+        $"目前 StatusID：{StageText(cur.stageCode)}",
+        $"待壓定階段  ：{phaseLabel}（{side} 負責）",
+        $"EMS 負責人  ：{(string.IsNullOrWhiteSpace(cur.emsOwner) ? "（未指派）" : cur.emsOwner)}",
+        $"MSD 負責人  ：{(string.IsNullOrWhiteSpace(cur.msdOwner) ? "（未指派）" : cur.msdOwner)}",
+        "──────────────────────────────"
+    };
+    if (!string.IsNullOrWhiteSpace(cur.currentStatus))
+    {
+        lines.Add("");
+        lines.Add("現況描述：");
+        lines.Add(cur.currentStatus!.Trim());
+    }
+    if (mailAppUrl != "")
+    {
+        lines.Add("");
+        lines.Add($"需求管控表：{mailAppUrl}");
+    }
+    lines.Add("");
+    // ⚠️ 落款要跟著寄件者是誰改口。寄件者是本人時「請勿回覆本信箱」是錯的 ——
+    //    用本人當寄件者的**理由**就是讓收件者可以直接回信問他
+    lines.Add(fromIsSelf
+        ? $"（本信由「{fromName}」透過需求管控表發出，有問題可以直接回覆本信。）"
+        : "（本信由需求管控表系統自動發出，請勿直接回覆本信箱。）");
+    var mailBody = string.Join("\r\n", lines);
+
+    // ── 5. 寄出 ──
+    var sendError = await SendNotifyMailAsync(fromEmail, fromName, toEmail, ccEmail, subject, mailBody);
+    if (sendError != null)
+        return Results.Json(new { message = "寄信失敗：" + sendError }, statusCode: 502);
+
+    // ── 6. 留稽核 ──
+    // ⚠️ 寄出之後才寫。順序不能反 —— 先寫紀錄再寄，寄失敗就會留下一筆「已通知」的假紀錄，
+    //    而收件者其實什麼都沒收到。反過來（寄了但紀錄寫失敗）最多是少一列，信仍然真的送到了。
+    // ⚠️ `通知寄送` **不算時程異動**（前端 isDateChange 只認 `日期異動`），
+    //    它不會讓資料列多掛一個 ⚠N，也不動三個計數欄。
+    var auditNote = $"通知「{phaseLabel}」尚未壓定日期 → 收件者 {toName} <{toEmail}>"
+                  + (ccEmail != "" ? $"，副本 {ccName} <{ccEmail}>" : ccMissing ? $"，副本 {ccName}（查無信箱，未寄送）" : "")
+                  // 寄件者也要記：日後查「這封信到底是誰的名義寄出去的」只有這裡查得到
+                  + $"；寄件者 {fromName} <{fromEmail}>" + (fromIsSelf ? "" : "（系統預設信箱）");
+    var empty = ((string?)null, (string?)null, (string?)null);
+    try
+    {
+        await InsertHistoryAsync(conn, id, cur.nid, phaseKey, "通知寄送", null, auditNote, actor, actorSrc, empty, empty);
+    }
+    catch (Exception ex)
+    {
+        // 信已經寄出去了，這裡不可以回失敗 —— 使用者會再按一次而收件者收到第二封
+        Console.WriteLine($"Notify audit insert failed (mail was already sent): {ex}");
+    }
+
+    var okMsg = $"已寄出通知給 {toName} <{toEmail}>"
+              + (ccEmail != "" ? $"，副本 {ccName} <{ccEmail}>" : "")
+              + (ccMissing ? $"\n\n⚠️ 副本 {ccName} 在指派人員主檔裡沒有信箱，這次沒有副本給他。" : "");
+    return Results.Ok(new
+    {
+        message = okMsg, phase = phaseKey, phaseLabel,
+        to = toEmail, toName, cc = ccEmail, ccName, ccMissing, subject,
+        from = fromEmail, fromName, fromIsSelf
+    });
+});
+
 // 匯出的表頭 = 匯入時的第一順位對應名稱，確保匯出的檔案可以原封不動匯回來
 var exportColumns = new (string Header, string Column)[]
 {
@@ -2544,8 +2893,8 @@ static async Task WriteAuditAsync(SqlConnection conn, int reqId, Requirement req
 
 app.Run();
 // Models
-// 指派人員（dbo.Assignee）。JSON 欄名為 id / empNo / name / dept / isActive。
-// DB 欄名刻意用使用者指定的 EMPO / NAME / DEPT（他會直接進 SSMS 維護），
+// 指派人員（dbo.Assignee）。JSON 欄名為 id / empNo / name / dept / email / isActive。
+// DB 欄名刻意用使用者指定的 EMPO / NAME / DEPT / EMAIL（他會直接進 SSMS 維護），
 // C# 這邊沿用專案的 PascalCase。
 public class Assignee
 {
@@ -2553,6 +2902,12 @@ public class Assignee
     public string? EmpNo { get; set; }      // 工號，可為空
     public string? Name { get; set; }
     public string? Dept { get; set; }       // EMS / MSD
+    // ⚠️ 信箱是**唯讀**的（2026-08-31 使用者要求）：`GET` 會回傳，
+    //    但 `POST` / `PUT` 的 SQL 刻意**不寫這一欄** —— 名單由使用者直接在 SSMS 維護。
+    //    這個欄位仍留在類別上，是因為前端拿到後會原樣送回；沒有它的話
+    //    JSON 反序列化雖然不會壞，但日後有人加進 UPDATE 就會靜靜覆寫成 NULL。
+    //    **要改成可編輯，必須同時動 POST / PUT 的 SQL 與 ValidateAssignee()。**
+    public string? Email { get; set; }
     public bool IsActive { get; set; } = true;
 }
 
@@ -2648,6 +3003,17 @@ public class DeleteRequest
 {
     // 刪除原因，必填。異動原因分類固定不帶（與 /rollback 同一個作法）
     public string? note { get; set; }
+    public string? actorEmpId { get; set; }
+    public string? actorSource { get; set; }
+}
+
+// POST /api/requirements/{id}/notify-unset 的請求內容（2026-08-31 / 第 39 批）。
+// ⚠️ 刻意**只有操作者資訊** —— 收件者、副本、階段、主旨、內文全部由後端自己算，
+//    呼叫端指定不了任何一項（見端點上方的說明）。
+// ⚠️ 宣告成可為 null（`NotifyRequest? body`）：完全沒帶 body 的呼叫端也要進得到端點裡，
+//    才不會拿到一個沒有訊息的 400（與 DeleteRequest 同一個理由）
+public class NotifyRequest
+{
     public string? actorEmpId { get; set; }
     public string? actorSource { get; set; }
 }

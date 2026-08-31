@@ -249,7 +249,7 @@
 | `RequirementId` | INT NOT NULL | 對應 `dbo.Controltable.Id` |
 | `NID` | NVARCHAR(50) | 當下的 NID 快照，查詢時不必 join |
 | `Phase` | NVARCHAR(20) NOT NULL | `spec` / `confirm` / `msd` / `uat`（與 `app.jsx` 的 `PHASES` key 一致）＋ **`stage`**（2026-08-22，手動調整 StatusID／Status 用；它不屬於任何一個階段，但這一欄是 NOT NULL） |
-| `ChangeType` | NVARCHAR(20) NOT NULL | `init` / `日期異動` / `提早完成` / `延期完成` / `規格回退` / **`手動調整`** / **`起日調整`**（2026-08-22 新增） / **`刪除`**（2026-08-23 新增，軟刪除時寫入，`Phase='stage'`） |
+| `ChangeType` | NVARCHAR(20) NOT NULL | `init` / `日期異動` / `提早完成` / `延期完成` / `規格回退` / **`手動調整`** / **`起日調整`**（2026-08-22 新增） / **`刪除`**（2026-08-23 新增，軟刪除時寫入，`Phase='stage'`） / **`重新排程`**（2026-08-27 / 第 35 批） / **`通知寄送`**（2026-08-31 / 第 39 批，`/notify-unset` 寄出「請來壓日期」的通知信之後寫入，`Phase` 是那個未壓日期的階段，日期欄全空、`ReasonCategory` 不帶，`Note` 記收件者與副本的姓名＋信箱） |
 | `ReasonCategory` | NVARCHAR(20) | `規格變更` / `優先級調整` / `技術問題` / `其他` |
 | `OldStart` `OldEnd` `OldConfirm` | DATE | 異動前的值 |
 | `NewStart` `NewEnd` `NewConfirm` | DATE | 異動後的值 |
@@ -277,6 +277,7 @@
      （`changeEntries` = 非 `init`），畫成「開始 未填 → 2026-09-01」。不影響計次，但分類是錯的。
    - 適用：資料列 `⚠N`、明細與編輯視窗的次數徽章、統計報表「時程異動」KPI、
      警示下拉「有時程異動」。**完成／回退／手動調整的紀錄仍完整列在軌跡裡**，只是不計次。
+   - ⚠️ **`通知寄送` 同樣不計次**（2026-08-31 / 第 39 批）：沒有任何日期被改動，計進 ⚠N 會讓「這筆被改過幾次」變成「被改過或被催過幾次」，兩件事混進同一個數字。但它一定要**留在軌跡上** —— 「這件事到底催過沒有、什麼時候、催了誰」是追進度時第一個會問的問題，而寄出去的信在系統裡查不到。
 2. **模擬帳號一定要標記**（`ChangedBySource = 'simulated'`）。
    讓假身分靜靜混進稽核紀錄，正是稽核表存在要防的事。
 3. **`StageCode` / `Status` 只要被 `PUT` 改動就一定要寫一筆 `手動調整`**（2026-08-22 / A5）。
@@ -382,9 +383,10 @@
 | 欄位 | 型別 | 說明 |
 |---|---|---|
 | `Id` | INT IDENTITY PK | |
-| `EMPO` | NVARCHAR(20) NULL | **工號**。初期一律留空，之後人工補。模擬帳號的挑選鈕有工號時會優先送工號 |
+| `EMPO` | NVARCHAR(20) NULL | **工號**。~~初期一律留空~~ → **2026-08-31 使用者已把 13 筆全部補齊**（8 位數字，如 `00045896`）。模擬帳號的挑選鈕有工號時會優先送工號。⚠️ 2026-08-31 / 第 39 批起這一欄是**這張表與登入者之間唯一的接點**：Windows 帳號剝掉網域（`UMC\00045896` → `00045896`，見 `StripDomain`）就是工號，`/notify-unset` 靠它查出「按下按鈕的人」的信箱來當**寄件者**。沒填的人寄信時會退回設定檔的 `Mail:From` |
 | `NAME` | NVARCHAR(100) NOT NULL | 姓名。**控表的 `EmsOwner` / `MsdOwner` 存的就是這個值**（字串比對，沒有外鍵） |
 | `DEPT` | NVARCHAR(10) NOT NULL | `EMS` 或 `MSD`，有 `CK_Assignee_Dept` 檢查限制 |
+| `EMAIL` | NVARCHAR(255) NULL | **信箱**（`15_add_assignee_email.sql`，2026-08-31）。與 `EMPO` 同一個定位：可空、由使用者在 SSMS 人工維護。⚠️ **唯讀**：`GET /api/assignees` 會回傳（JSON `email`），但 `POST`／`PUT` 的 SQL **刻意不寫這一欄**（2026-08-31 使用者要求：「若有新增或修改的，我直接從 DB 端修改就好」）。實測 `PUT` 帶 `email` 進去：`EMPO` 有被改到、`EMAIL` 原值不動。⚠️ 2026-08-31 / 第 39 批起這一欄**有實際用途**了：`POST /api/requirements/{id}/notify-unset` 的收件者與副本信箱就是查這裡（`(DEPT, NAME)` 比對，兩邊 trim、**不濾 `IsActive`**）。沒填的話那個人**收不到通知**，端點會回 400 明講「請在 SSMS 補上」而不是靜靜跳過 |
 | `IsActive` | BIT NOT NULL | `DEFAULT 1`。`0` = 不再出現在指派下拉（離職／轉調） |
 
 ### 索引
@@ -469,6 +471,7 @@
 | `12_drop_personnel.sql` | 2026-08-21 | **已執行** | `DROP TABLE dbo.Personnel`（已被 `dbo.Assignee` 取代）。刪除前先 SELECT 印出全部 3 筆留檔。實際執行：3 筆已印出、表已刪除，現存人員相關資料表只剩 `dbo.Assignee`；重跑確認 idempotent（走 `IF EXISTS` 跳過） |
 | `14_fix_reschedule_changetype.sql` | 2026-08-27 | **已執行** | **資料修正，非架構變更**：把「回退之後重新壓的日期」由 `init` 改判為 `重新排程`。判定＝同一個 `(RequirementId, Phase)` 之下前一筆是 `規格回退` 的 `init`（與 `Program.cs` 的 `rescheduled` 等價）。只改 `ChangeType`，日期／`ChangedAt`／`ChangedBy` 原封不動。**目前符合條件的只有 1 列**（`Id 242` / NID 4 / spec / 2026-08-27 22:21）。冪等（改完就不再符合條件） |
 | `13_nid_unique.sql` | 2026-08-22 | **已執行** | 建立 `UX_Controltable_NID_Active`（`UNIQUE (NID) WHERE IsDeleted = 0 AND NID IS NOT NULL`），並移除被它取代的 `IX_Controltable_Active`。**有重複 NID 時不建立索引，只印出待處理清單**。實際執行：62 筆 / 62 個相異 NID / 0 筆 NID 為空，**無重複**，索引建立成功、舊索引已移除；重跑確認 idempotent（兩段都走「已存在／不存在」跳過） |
+| `15_add_assignee_email.sql` | 2026-08-31 | **已執行** | `dbo.Assignee` 新增 `EMAIL NVARCHAR(255) NULL`，並回填「玉婷／MSD」＝`Sariel_Lin@UMCG`。回填比對 `(DEPT, NAME)`（＝`UX_Assignee_Dept_Name` 的鍵，**不用 `Id`** —— IDENTITY 各環境不保證一致），且只在 `EMAIL IS NULL` 時才寫，重跑不會蓋掉人工改過的值。實際執行：欄位已新增、回填 **1 筆**（`Id 9`），13 筆中僅該筆有值。⚠️ 本檔含中文，`sqlcmd` 要加 **`-f 65001`**，否則 `N'玉婷'` 會被當 ANSI 讀進去、比對不到任何一列，而且**不報錯只回填 0 筆** |
 
 > 📌 **第 14 批（階段順序 gating）沒有 DB 變更**，純前端 + 後端驗證，所以沒有它專屬的腳本。
 
@@ -484,7 +487,7 @@
 
 | | 內容 |
 |---|---|
-| ✅ bootstrap **補得到** | 純新增欄位：`StageCode`、`CreatedAt`、`UpdatedAt`、`MsdConfirmNote`、`NotesLink`、`RegDate`、`Remark`、`IsDeleted`、`DeletedAt`、`MsdConfirmHistory`、四個 `*ActualEnd`、`DelayCount` / `EarlyCount` / `RollbackCount`；以及 `dbo.Controltable_History` 與 `dbo.Assignee` 兩張表 |
+| ✅ bootstrap **補得到** | 純新增欄位：`StageCode`、`CreatedAt`、`UpdatedAt`、`MsdConfirmNote`、`NotesLink`、`RegDate`、`Remark`、`IsDeleted`、`DeletedAt`、`MsdConfirmHistory`、四個 `*ActualEnd`、`DelayCount` / `EarlyCount` / `RollbackCount`；`dbo.Assignee.EMAIL`；以及 `dbo.Controltable_History` 與 `dbo.Assignee` 兩張表 |
 | ❌ bootstrap **做不到**（一定要跑腳本） | ① 型別遷移：六個日期欄 `NVARCHAR(50)` → `DATE`、`MpSaving` `INT` → `NVARCHAR`（`01`/`02`/`03`）<br>② 既有資料正規化：`Status` 大小寫、`StageCode` 去括號、`YearMonth`、`RegDate` 回填（`04`~`07`）<br>③ `08` 的 `sp_rename`（舊 `NotesLink` 欄裝的其實是 `Remark` 的文字）與 `13` 的唯一索引 |
 
 > **刻意不碰 ❌ 那三類** —— 猜錯一次就是整表資料損毀，而腳本是可以先看過再執行的

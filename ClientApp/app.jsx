@@ -145,13 +145,31 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 ⚠ 未壓日期
             </span>
         );
+        // ─── 「通知下一棒來壓日期」的手動寄信鈕（第 39 批，2026-08-31，使用者要求）───
+        // 只出現在「⚠ 未壓日期」那一格 —— 它是唯一一個「這件事卡在誰身上」明確到
+        // 可以直接指名收件者的狀態（收件者＝這一階段的負責人、副本＝另一邊的負責人）。
+        // ⚠️ 一定要 stopPropagation：整列 <tr> 有 onClick 會展開明細，
+        //    不擋的話按一下寄信視窗跳出來、底下那一列同時被展開，看起來像按錯了。
+        // ⚠️ 用真的 <button>（不是 <span onClick>）—— 第 29 批那條可及性不變量：
+        //    只有 <tr onClick> 的話鍵盤按不到它。
+        const NotifyMailButton = ({ onNotify, label }) => !onNotify ? null : (
+            <button type="button"
+                    onClick={e => { e.stopPropagation(); onNotify(); }}
+                    className="text-[11px] leading-none px-1 py-0.5 rounded shrink-0 cursor-pointer"
+                    style={{color:ALERT_STYLES.unset.color, background:'transparent',
+                            border:`1px solid ${ALERT_STYLES.unset.border}`}}
+                    title={`寄信通知「${label}」的負責人進系統壓定日期（副本會給另一邊的負責人）`}
+                    aria-label={`寄信通知負責人壓定「${label}」的日期`}>
+                ✉
+            </button>
+        );
 
         // 整列的風險等級取三個階段裡最嚴重的那個
         // 資料列上的時程欄：日期 + 逾期／即將到期徽章 + 該階段的異動次數標記 (⚠N)
         // actual = 實際完成日（只有「延期完成」才有值）。原訂 End 刻意保留不動，
         // 所以這欄一定要同時顯示兩個日期 —— 只顯示原訂的話主管根本看不到延遲
         // unset = 這一格就是「已到階段卻沒壓日期」的那一格（見 unsetDuePhase）
-        const scheduleCell = ({ val, alert, changes, label, br, actual, unset }) => (
+        const scheduleCell = ({ val, alert, changes, label, br, actual, unset, onNotify }) => (
             <td className="px-2 py-2.5" style={{borderRight:br}}>
                 {!val && !changes && !unset
                     ? <span className="text-xs" style={{color:'var(--text-muted)'}}>-</span>
@@ -172,6 +190,13 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                 </span>
                             )}
                         </div>
+                        {/* ⚠️ ✉ 一定要**自己一行**，不可以貼在徽章右邊（第 39 批實測）。
+                            CLAUDE.md 的版面預算：16 欄表格壓縮到極限是這張表能不能不橫捲的
+                            唯一依據。內嵌時實測最小寬度 1254 → **1265px**（多 11px）；
+                            疊在下面則是 max(徽章, 按鈕) = 徽章寬 —— **一個 px 都不多**，
+                            而且這一格本來就是最矮的一種（沒有到期標籤也沒有實際完成日那行），
+                            多一行剛好與旁邊逾期的格子一樣高，列高不受影響 */}
+                        {unset && !val && <NotifyMailButton onNotify={onNotify} label={label} />}
                         {actual && (
                             <span className="text-[10px] font-bold whitespace-nowrap cursor-help"
                                   style={{color:'var(--tone-alert)'}}
@@ -196,7 +221,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
         //
         // 已結案沒有「目前階段」，改顯示最後一個排定的階段當結果，並標明已結案；
         // 完整四階段時程仍在展開明細裡，需要細節點開列即可（資訊沒有消失）。
-        const currentStageCell = ({ item, isDone, changeOf, br }) => {
+        const currentStageCell = ({ item, isDone, changeOf, br, onNotify }) => {
             const r = isDone ? (lastFilledPhase(item) ? { phase: lastFilledPhase(item), inferred: false } : null)
                              : resolveFocusPhase(item);
             if (!r) return (
@@ -210,6 +235,8 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 <td className="px-2 py-2.5" style={{borderRight:br}}>
                     <div className="flex flex-col gap-0.5 items-start">
                         <UnsetDateBadge label={r.phase.label} />
+                        {/* 與一般模式同一個理由：✉ 自己一行，不加寬欄位（見 scheduleCell 的說明） */}
+                        <NotifyMailButton onNotify={onNotify} label={r.phase.label} />
                         <span className="text-[10px] whitespace-nowrap" style={{color:'var(--text-muted)'}}>{r.phase.label}</span>
                     </div>
                 </td>
@@ -595,7 +622,13 @@ const { useState, useMemo, Fragment, useEffect } = React;
             '手動調整': { label:'手動調整', color:'var(--tone-warn)',   bg:'var(--tone-warn-bg)' },
             // 只改了 Start、End 沒動（2026-08-22）。**不算異動** —— 使用者定調
             // 「重點只看 End，改 Start 沒關係」。留紀錄但不掛 ⚠、不必填理由
-            '起日調整': { label:'起日調整', color:'var(--text-tertiary)', bg:'var(--bg-input)' }
+            '起日調整': { label:'起日調整', color:'var(--text-tertiary)', bg:'var(--bg-input)' },
+            // 「⚠ 未壓日期」時寄信通知下一棒（2026-08-31 / 第 39 批）。
+            // ⚠️ **不進 isDateChange**：沒有任何日期被改動，計進 ⚠N 只會讓
+            // 「這筆被改過幾次」變成「這筆被改過或被催過幾次」，兩件事混在同一個數字裡。
+            // 但它一定要留在軌跡上 —— 「有沒有通知過、什麼時候、通知了誰」正是
+            // 下一次追進度時第一個會問的問題，而寄出去的信在系統裡查不到
+            '通知寄送': { label:'通知寄送', color:'#0ea5e9',            bg:'rgba(14,165,233,0.12)' }
         };
         // 軌跡上的階段名稱。'stage' 不是四個階段之一，是整筆需求的狀態調整
         const timelineLabelOf = phase =>
@@ -1520,6 +1553,11 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     // 「畫面上這份資料是什麼時候抓的」。⚠️ 只在成功時更新 ——
                     // 失敗還往前帶的話，畫面顯示的會是一個從來沒發生過的抓取時間
                     setLastFetchedAt(new Date());
+                    // ⚠️ 回傳剛抓到的那一份（2026-08-31 / 第 39 批）。setRequirementsData 是非同步的，
+                    // 儲存成功後要立刻判斷「這筆現在是不是未壓日期」時讀 state 讀到的還是舊值 ——
+                    // 那會在使用者剛把 StatusID 推到下一階段時**漏掉**通知的提示。
+                    // 呼叫端不需要就直接忽略，行為與原本完全一樣
+                    return Array.isArray(data) ? data : [];
                 } catch (err) {
                     console.error(err);
                     // 不再退回假資料，明確告知讀取失敗
@@ -1527,6 +1565,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     setLoadError('無法讀取需求資料，請確認後端服務與資料庫連線是否正常。');
                     // 手上已經沒有資料了，下一次重試要走回「首次載入」的完整提示
                     loadedOnceRef.current = false;
+                    return null;
                 } finally {
                     if (first) setIsLoading(false); else setRefreshing(false);
                 }
@@ -2185,8 +2224,20 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     if (!res.ok) throw new Error(`HTTP ${res.status}`);
                     setEditingData(null);
                     setIsModalOpen(false);
-                    await Promise.all([fetchReqs(), fetchHistory()]);
+                    const [list] = await Promise.all([fetchReqs(), fetchHistory()]);
                     showToast(payload.id ? '已儲存變更' : '已新增需求');
+                    // ─── 存完之後，當前階段沒壓日期就問要不要通知下一棒（第 39 批）───
+                    // 使用者要的觸發點是「儲存成功後，只要當前階段未壓日期就問」。
+                    // ⚠️ 一定要用 fetchReqs() **剛回傳的那一份**去判斷，不可以讀
+                    //    requirementsData —— setState 是非同步的，這一行讀到的還是儲存前的值，
+                    //    而最常見的觸發路徑正好是「這次儲存把 StatusID 推到下一階段」，
+                    //    用舊值判斷會剛好每次都漏掉。抓取失敗（list 為 null）就不問。
+                    // ⚠️ 新增走 NID 比對（POST 之後前端還不知道新的 Id）
+                    const fresh = Array.isArray(list)
+                        ? list.find(d => payload.id ? d.id === payload.id
+                                                    : (d.nid || '').trim() === (payload.nid || '').trim())
+                        : null;
+                    if (fresh && unsetDuePhase(fresh)) askNotifyUnset(fresh);
                 } catch(err) {
                     console.error(err);
                     showToast('儲存失敗：' + err.message, 'error');
@@ -2599,6 +2650,132 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 const cur = (current || '').trim();
                 if (cur && !names.includes(cur)) names.push(cur);
                 return [...new Set(names)];
+            };
+
+            // 指派人員的信箱（2026-08-31）。**唯讀** —— 名單由使用者直接在 SSMS 的
+            // dbo.Assignee 維護，畫面上不提供新增／修改（後端 POST / PUT 也刻意不寫這一欄）。
+            // ⚠️ 比對 (dept, name) 兩邊都 trim：控表存的是姓名字串、沒有外鍵，
+            //    既有資料的負責人欄位帶著空白的情況本來就有（見 dbo.Assignee 的第 4 條規則）。
+            // ⚠️ 不濾 isActive：這裡問的是「這個名字的信箱是什麼」，不是「可不可以指派給他」。
+            //    停用的人仍掛在既有需求上（ownerSelectOptions 會把他補回選項），
+            //    濾掉的話那些需求打開就看不到信箱，而畫面上也不會說為什麼。
+            const assigneeEmailOf = (dept, name) => {
+                const n = (name || '').trim();
+                if (!n) return '';
+                const hit = assigneeList.find(a => a.dept === dept && (a.name || '').trim() === n);
+                return (hit?.email || '').trim();
+            };
+
+            // 下拉底下那行灰字。沒選人、或那個人沒填信箱時整個不顯示 ——
+            // 「（無信箱）」這種佔位字只會讓視窗更吵，而信箱本來就允許是空的
+            const OwnerEmailHint = ({ dept, name }) => {
+                const email = assigneeEmailOf(dept, name);
+                if (!email) return null;
+                return (
+                    <div className="mt-1 text-[11px] leading-tight break-all" style={{color:'var(--text-tertiary)'}}
+                         title={`${name} 的信箱（來自指派人員主檔 dbo.Assignee，唯讀）`}>
+                        <span aria-hidden="true">✉ </span>{email}
+                    </div>
+                );
+            };
+
+            // ─── 通知下一棒來壓日期（2026-08-31 / 第 39 批，使用者要求）───
+            // 使用者的原話：「在該階段的工作者完成自己的工作時，可以有自動寄信的方式
+            // 告知已完成，請下一棒來壓日期。」觸發狀態就是第 33 批的「⚠ 未壓日期」。
+            //
+            // 收件者規則（使用者定義）：**收件者＝這一階段的負責人，副本＝另一邊的負責人**。
+            // 例：④ EMS驗收 未壓 → 寄給 EMS 明翰、副本 MSD 宸詳。
+            // side 直接讀 DUE_PHASES（①④ = EMS、②③ = MSD），不另外寫一份對照表。
+            //
+            // ⚠️ 這一支**只是給使用者先看一眼**。真正的收件者、階段、主旨、內文
+            //    全部由後端 UnsetPhaseOf() 自己重算一次 —— 那一支會真的把信寄出去，
+            //    收件者若能由前端指定，任何人都可以借系統的名義寄信給指派名單上的人。
+            const notifyPreview = (item) => {
+                const ph = unsetDuePhase(item);
+                if (!ph) return null;
+                const side   = ph.side;                       // 這一階段該由誰壓日期
+                const ccDept = side === 'MSD' ? 'EMS' : 'MSD';
+                const toName = ((side === 'MSD' ? item.msdOwner : item.emsOwner) || '').trim();
+                const ccName = ((side === 'MSD' ? item.emsOwner : item.msdOwner) || '').trim();
+                const toEmail = toName ? assigneeEmailOf(side, toName) : '';
+                const ccEmail = ccName ? assigneeEmailOf(ccDept, ccName) : '';
+                // 寄件者＝按下按鈕的那個人本人（2026-08-31 使用者要求）：
+                // Windows 帳號剝掉網域就是工號，對 dbo.Assignee 的 EMPO 查出信箱。
+                // ⚠️ 只認 source === 'windows' —— 模擬帳號用本人身分寄信是真的冒名，
+                //    後端也是同一條界線（見 AssigneeByEmpNoAsync 的說明）。
+                // ⚠️ 查不到不是錯誤：後端會退回設定檔的 Mail:From，這裡就顯示成「系統預設信箱」
+                const me = (actor.source === 'windows' && actor.empId)
+                    ? assigneeList.find(a => (a.empNo || '').trim() === String(actor.empId).trim() && (a.email || '').trim())
+                    : null;
+                // ⚠️ 寄不出去的原因要講得夠具體到可以直接去修（EMAIL 欄是唯讀的，
+                //    只能在 SSMS 改）—— 只說「無法寄出」的話沒有人知道要去哪裡補
+                const problem = !toName
+                    ? `這筆需求的 ${side} 負責人還沒指派，無法決定要通知誰。\n\n請先在編輯視窗指派「${side} 負責人」。`
+                    : !toEmail
+                    ? `指派人員主檔（dbo.Assignee）裡「${toName}／${side}」沒有填 EMAIL，無法寄出通知。\n\n`
+                      + '信箱欄位是唯讀的，請直接在 SSMS 補上之後再試一次。'
+                    : '';
+                return { phase: ph, side, toName, toEmail, ccDept, ccName, ccEmail, problem,
+                         fromName: me ? me.name : '', fromEmail: me ? (me.email || '').trim() : '' };
+            };
+
+            const askNotifyUnset = (item) => {
+                const p = notifyPreview(item);
+                if (!p) {
+                    setAlertModal({
+                        title: '不需要通知',
+                        message: '這筆需求目前沒有「已到階段卻沒壓日期」的情況。\n\n（可能是別人已經把日期壓上去了，請按頁首的重新整理再看一次。）'
+                    });
+                    return;
+                }
+                // ⚠️ 寄不出去時**照樣要出聲**，不可以靜靜跳過 —— 使用者會把「沒有跳視窗」
+                //    讀成「這一階段已經壓好日期了」，那正好是相反的意思
+                if (p.problem) { setAlertModal({ title: '無法寄出通知', message: p.problem }); return; }
+
+                const who = [item.nid && `NID ${item.nid}`, item.mainCat, item.subCat].filter(Boolean).join(' / ');
+                const ccLine = p.ccEmail ? `副本　：${p.ccName} <${p.ccEmail}>`
+                             : p.ccName  ? `副本　：${p.ccName}（指派人員主檔裡沒有信箱，這次不會有副本）`
+                                         : `副本　：（${p.ccDept} 還沒指派負責人，這次不會有副本）`;
+                // 寄件者一定要寫在視窗上：這封信會用他的名義寄出去，
+                // 按下去之前看不到是誰寄的，等於替他簽了一個名
+                const fromLine = p.fromEmail
+                    ? `寄件者：${p.fromName} <${p.fromEmail}>（你本人，對方可以直接回信）`
+                    : '寄件者：系統預設信箱（你的工號在指派人員主檔裡查不到信箱）';
+                setConfirmModal({
+                    title: '寄信通知壓定日期',
+                    message: `需求「${who}」目前已經走到「${p.phase.label}」，但這個階段還沒有壓日期。\n\n`
+                           + `要寄信通知 ${p.side} 負責人進系統把日期壓上去嗎？\n\n`
+                           + `${fromLine}\n收件者：${p.toName} <${p.toEmail}>\n${ccLine}\n\n`
+                           + '按「確定」會立刻寄出，並在這筆需求的時程變更軌跡留下一筆「通知寄送」紀錄。',
+                    onConfirm: () => runExclusive(async () => {
+                        try {
+                            const res = await fetch(api(`/api/requirements/${item.id}/notify-unset`), {
+                                method: 'POST',
+                                headers: {'Content-Type': 'application/json'},
+                                body: JSON.stringify({ actorEmpId: actor.empId || '', actorSource: actor.source })
+                            });
+                            const b = await res.json().catch(() => ({}));
+                            if (!res.ok) {
+                                setAlertModal({ title: '無法寄出通知', message: b.message || `寄信被拒絕 (HTTP ${res.status})` });
+                                return;
+                            }
+                            // ⚠️ 只重抓稽核表就夠 —— 寄信不會動到 dbo.Controltable 的任何一欄
+                            //（連 UpdatedAt 都不動），把 fetchReqs 也叫進來只會讓整張表白閃一次
+                            await fetchHistory();
+                            showToast(`已寄出通知給 ${p.toName}`);
+                            // 副本寄不出去是使用者會想知道的事，而 toast 會自己消失，所以另外講一次
+                            if (b.ccMissing)
+                                setAlertModal({
+                                    title: '已寄出，但沒有副本',
+                                    message: `通知已寄給 ${b.toName} <${b.to}>。\n\n`
+                                           + `⚠️ 副本 ${b.ccName} 在指派人員主檔裡沒有填 EMAIL，這一封沒有副本給他。`
+                                });
+                        } catch (err) {
+                            console.error(err);
+                            showToast('寄信失敗：' + err.message, 'error');
+                        }
+                    })
+                });
             };
 
             // 警示徽章的篩選（第 17 批）。直接讀計數欄，不 parse 稽核表
@@ -3784,6 +3961,9 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                             左側色條＝該列最嚴重的到期風險
                                         </span>
                                         <span title="StatusID 已經走到那一階段，但那一階段的日期還是空的。沒有日期就不會有逾期提醒，所以「逾期優先」排序會把它排在最上面">⚠ 未壓日期＝已到該階段卻還沒壓日期</span>
+                                        {/* ✉ 只出現在「⚠ 未壓日期」旁邊（第 39 批）。同一件事在畫面上只有這一顆鈕，
+                                            儲存成功時跳出來的那個視窗走的也是同一支 askNotifyUnset() */}
+                                        <span className="cursor-help" title="點一下會問要不要寄信通知該階段的負責人進系統壓定日期，副本給另一邊的負責人（信箱來自指派人員主檔 dbo.Assignee）">✉＝通知負責人壓日期</span>
                                         {/* tooltip 與「警示」下拉那句是同一件事：畫面上沒有叫「延期」的按鈕，
                                             所以這個詞一定要在出現的地方就解釋掉（2026-08-27 / 第 34 批） */}
                                         <span className="cursor-help" title="按下「✓ 完成」時已超過原訂結束日就記一次。沒有獨立的「延期」功能 —— 那一刻原訂結束日會保留不動，只另外記下實際完成日">⏰ 延期完成次數（2 次以上轉紅）</span>
@@ -4069,6 +4249,9 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 const unsetPhase = unsetDuePhase(item);
                                                 const unsetAlert = unsetPhase
                                                     ? { level:'unset', ...ALERT_STYLES.unset, label:`${unsetPhase.label} 未壓日期` } : null;
+                                                // 那一格裡的 ✉ 手動寄信鈕（第 39 批）。沒有未壓日期就沒有這顆鈕 ——
+                                                // 「請下一棒來壓日期」這句話只有在有一個明確的空格時才成立
+                                                const notifyThis = unsetPhase ? () => askNotifyUnset(item) : null;
                                                 const rowAlert  = pickRowAlert(unsetAlert, specAlert, confirmAlert, msdAlert, uatAlert);
                                                 // 整列最左的風險色條。No 欄 2026-08-19 起永遠是第一欄，
                                                 // 色條就固定掛在它上面，不必再跟著模式換位置
@@ -4279,11 +4462,11 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                             {compact && stageIdCell}
                                                             {/* 精簡模式：只出一欄「目前階段時程」。四個階段的完整排程
                                                                 仍在展開明細裡，資訊沒有消失，只是不佔主管的視線 */}
-                                                            {compact ? currentStageCell({ item, isDone, changeOf, br:'2px solid var(--border-card)' }) : (<>
-                                                            {scheduleCell({ val:item.spec?.end, alert:specAlert, changes:changeOf('spec'),    label:'1_EMS規格確認', br:'1px solid var(--border-table)', actual:item.spec?.actualEnd,        unset:unsetPhase?.key==='spec' })}
-                                                            {scheduleCell({ val:item.msd?.confirm, alert:confirmAlert, changes:changeOf('confirm'), label:'2_MSD確認中', br:'1px solid var(--border-table)', actual:item.msd?.confirmActualEnd, unset:unsetPhase?.key==='confirm' })}
-                                                            {scheduleCell({ val:item.msd?.end,     alert:msdAlert,  changes:changeOf('msd'),     label:'3_MSD開發中', br:'1px solid var(--border-table)', actual:item.msd?.actualEnd,        unset:unsetPhase?.key==='msd' })}
-                                                            {scheduleCell({ val:item.uat?.end,     alert:uatAlert,  changes:changeOf('uat'),     label:'4_EMS驗收',   br:'2px solid var(--border-card)', actual:item.uat?.actualEnd,        unset:unsetPhase?.key==='uat' })}
+                                                            {compact ? currentStageCell({ item, isDone, changeOf, br:'2px solid var(--border-card)', onNotify:notifyThis }) : (<>
+                                                            {scheduleCell({ val:item.spec?.end, alert:specAlert, changes:changeOf('spec'),    label:'1_EMS規格確認', br:'1px solid var(--border-table)', actual:item.spec?.actualEnd,        unset:unsetPhase?.key==='spec',    onNotify:notifyThis })}
+                                                            {scheduleCell({ val:item.msd?.confirm, alert:confirmAlert, changes:changeOf('confirm'), label:'2_MSD確認中', br:'1px solid var(--border-table)', actual:item.msd?.confirmActualEnd, unset:unsetPhase?.key==='confirm', onNotify:notifyThis })}
+                                                            {scheduleCell({ val:item.msd?.end,     alert:msdAlert,  changes:changeOf('msd'),     label:'3_MSD開發中', br:'1px solid var(--border-table)', actual:item.msd?.actualEnd,        unset:unsetPhase?.key==='msd',     onNotify:notifyThis })}
+                                                            {scheduleCell({ val:item.uat?.end,     alert:uatAlert,  changes:changeOf('uat'),     label:'4_EMS驗收',   br:'2px solid var(--border-card)', actual:item.uat?.actualEnd,        unset:unsetPhase?.key==='uat',     onNotify:notifyThis })}
                                                             </>)}
                                                             {/* 現況描述（CurrentStatus）。精簡模式的最後一欄。
                                                                 ⚠️ 不可用 truncate：內容常是多行長文，nowrap 會讓這一欄的
@@ -4705,6 +4888,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 {ownerSelectOptions('EMS', editingData.emsOwner).map(name => <option key={name} value={name}>{name}</option>)}
                                             </select>
                                             <FieldErrorHint msg={errOf('emsOwner')} />
+                                            <OwnerEmailHint dept="EMS" name={editingData.emsOwner} />
                                             <AssigneeErrorHint error={assigneeError} />
                                         </div>
                                         <div className="col-span-1">
@@ -4713,6 +4897,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 <option value="">請選擇</option>
                                                 {ownerSelectOptions('MSD', editingData.msdOwner).map(name => <option key={name} value={name}>{name}</option>)}
                                             </select>
+                                            <OwnerEmailHint dept="MSD" name={editingData.msdOwner} />
                                             <AssigneeErrorHint error={assigneeError} />
                                         </div>
                                         {/* EMS 需求提供 */}

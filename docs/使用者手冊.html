@@ -200,7 +200,7 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
     <h1>MSD 需求管控表</h1>
     <p class="lede">EMS 提需求、MSD 開發、EMS 驗收 —— 這套系統把一筆需求從提出到結案的四個階段、每一次日期異動的理由、以及每週要 review 的逾期項目，全部收在同一張表裡。本手冊涵蓋日常操作、判讀規則與疑難排解。</p>
     <p class="meta">
-      <span><b>版本</b> 20260827006</span>
+      <span><b>版本</b> 20260831003</span>
       <span><b>適用</b> 需求列表 · 統計報表</span>
       <span><b>對象</b> EMS／MSD 負責人、主管</span>
       <span><b>權威規格</b> FIELD_SPEC.md</span>
@@ -357,6 +357,14 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
     <h2><span class="n">04</span><span>編輯需求與壓日期</span></h2>
     <p class="sub">按資料列最右邊的鉛筆圖示開啟編輯視窗。視窗裡的四個階段各自獨立：各自解鎖、各自填理由、各自寫軌跡。</p>
 
+    <h3>負責人與信箱</h3>
+    <p>EMS／MSD 負責人是下拉選單，名單來自<b>指派人員主檔</b>。選好之後，下拉底下會用灰字顯示這個人的信箱（例：<span class="mono" style="font-size:12.5px">✉ Sariel_Lin@UMCG</span>）—— 要聯絡負責人時不必再另外去查。</p>
+    <div class="note">
+      <span class="lb">信箱是唯讀的</span>
+      <p>信箱<b>不能在畫面上修改</b>，人員名單與信箱一律由管理者直接在資料庫維護。那個人沒填信箱時，這行灰字整個不出現。</p>
+      <p>下拉選單裡<b>一定找得到這筆目前已經指到的人</b>，就算他已經被停用 —— 否則一按儲存就會把指派靜靜清掉。</p>
+    </div>
+
     <h3>兩種「日期不能改」的狀態</h3>
     <div class="tw"><table>
       <thead><tr><th style="width:190px">看到的東西</th><th style="width:130px">意思</th><th>怎麼處理</th></tr></thead>
@@ -396,6 +404,12 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
     <div class="note warn">
       <span class="lb">關閉前會問你</span>
       <p>視窗裡有未儲存的變更時，按 <kbd>Esc</kbd>／✕／取消都會跳確認。改回原值再關則不會問。</p>
+    </div>
+
+    <div class="note">
+      <span class="lb">存檔之後可能會再問一句：要不要通知下一棒？</span>
+      <p>儲存成功後，只要這筆需求<b>當前那一階段還沒壓日期</b>，就會跳出一個視窗問要不要寄信通知該階段的負責人。
+         按「取消」不會寄任何東西。完整說明見<a href="#c10">第 10 章的「✉ 寄信通知下一棒來壓日期」</a>。</p>
     </div>
   </section>
 
@@ -585,6 +599,45 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
       <span class="lb">⚠ 未壓日期＝已經到那一階段，卻還沒排日期</span>
       <p>最常見的產生方式：按了「③ 完成」，StatusID 推進到 4，但 ④ 的驗收日還是空的。這種列<b>不受 7 日窗限制</b>，一定會被列入需關注，並排在「逾期優先」的最上面。資料列上那一格會同步標紅色的「⚠ 未壓日期」徽章 —— <b>每一件被算進去的，畫面上都看得見原因</b>。</p>
       <p>StatusID 空白或超出 1~5 的資料一律不推斷（空白代表「不知道走到哪」，硬猜會冤枉一批舊資料）。</p>
+    </div>
+
+    <h3>✉ 寄信通知下一棒來壓日期</h3>
+    <p>「⚠ 未壓日期」的意思就是「輪到某個人了，但他還沒排」。系統可以直接把這句話寄給他 ——
+       <b>收件者是那一階段的負責人，副本給另一邊的負責人</b>。例如 ④ EMS驗收 沒壓日期，
+       就寄給 EMS 負責人、副本給 MSD 負責人。信箱取自<b>指派人員主檔</b>（就是編輯視窗負責人下拉底下那行灰字的來源，見<a href="#c4">第 04 章</a>）。</p>
+    <div class="tw"><table>
+      <thead><tr><th style="width:200px">怎麼觸發</th><th>會發生什麼</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><b>儲存之後自動問</b></td>
+          <td>在編輯視窗按下「儲存變更」而且存檔成功之後，只要這筆需求<b>當前那一階段還沒壓日期</b>，就會跳出一個視窗問要不要通知。<b>按「取消」不會寄任何東西</b>，那一格的 ✉ 隨時可以再按。</td>
+        </tr>
+        <tr>
+          <td><b>那一格的 ✉ 手動寄</b></td>
+          <td>資料列上「⚠ 未壓日期」徽章正下方有一顆小小的 <span class="ui">✉</span>，點它會跳出<b>完全一樣</b>的視窗。精簡模式的「目前階段時程」欄也有同一顆。<b>點 ✉ 不會展開那一列</b>。</td>
+        </tr>
+      </tbody>
+    </table></div>
+    <div class="note">
+      <span class="lb">這封信是用「你本人」的名義寄出去的</span>
+      <p><b>寄件者就是按下按鈕的那個人</b> —— 系統拿你的 Windows 帳號（剝掉網域之後就是<b>工號</b>）去指派人員主檔比對 <span class="mono" style="font-size:12.5px">EMPO</span>，找出你的信箱。所以收件者<b>可以直接回信問你</b>，不是回給一個沒人看的系統信箱。</p>
+      <p>你的工號不在名單上、或那一筆沒填信箱時，會退回管理者設定的系統共用信箱，視窗上會直接寫「<b>系統預設信箱</b>」，信的落款也會改成「請勿直接回覆本信箱」。兩種都寄得出去，只是回信的對象不一樣。</p>
+      <p>用<b>模擬帳號</b>時一律走系統信箱，<b>不會</b>用被模擬的那個人的名義寄信。</p>
+    </div>
+
+    <p>視窗上會先把<b>寄件者、收件者與副本的姓名和信箱完整列出來</b>，確認過再按「確認」才會真的寄出。
+       寄出後會在那筆需求的「時程變更軌跡」留下一筆「<b>通知寄送</b>」紀錄，寫明什麼時候、誰按的、寄給了誰 ——
+       所以「這件事到底催過沒有」在系統裡查得到。</p>
+    <div class="note warn">
+      <span class="lb">寄不出去的時候，系統一定會說原因</span>
+      <ul>
+        <li><b>「尚未設定郵件伺服器」</b>—— 系統管理者還沒把公司的郵件主機填進設定檔。</li>
+        <li><b>「⋯沒有填 EMAIL」</b>—— 那個人在指派人員主檔裡沒有信箱。<b>信箱欄是唯讀的</b>，要請管理者直接在資料庫補上。</li>
+        <li><b>「負責人還沒指派」</b>—— 這筆需求那一邊的負責人是空的，請先在編輯視窗指派。</li>
+        <li><b>「找不到可用的寄件者信箱」</b>—— 你的工號不在指派人員主檔裡，而管理者也沒有設系統共用信箱。請補上其中一個。</li>
+        <li><b>副本</b>找不到信箱時<b>照樣會寄給主要收件者</b>，只是沒有副本，並且會另外跟你說一聲。</li>
+      </ul>
+      <p>「通知寄送」<b>不算時程異動</b>：它不會讓資料列多掛一個 ⚠，也不會影響任何統計數字。</p>
     </div>
 
     <h3>什麼情況不預警</h3>
@@ -778,8 +831,8 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
         <tr><td><code>SubCat</code></td><td>子項目分類</td><td>必填</td></tr>
         <tr><td><code>Remark</code></td><td>需求補充</td><td>子分類的描述補充（明細才顯示）</td></tr>
         <tr><td><code>NotesLink</code></td><td>Notes Link</td><td>超連結。整欄沒資料時自動收起</td></tr>
-        <tr><td><code>EMS</code></td><td>EMS</td><td>提需求 Spec 的 EMS Owner，<b>必填</b></td></tr>
-        <tr><td><code>MSD</code></td><td>MSD</td><td>負責開發的 MSD Owner</td></tr>
+        <tr><td><code>EMS</code></td><td>EMS</td><td>提需求 Spec 的 EMS Owner，<b>必填</b>。編輯視窗會在下拉底下顯示他的信箱（唯讀）</td></tr>
+        <tr><td><code>MSD</code></td><td>MSD</td><td>負責開發的 MSD Owner。同上會顯示信箱</td></tr>
         <tr><td><code>1_EMSStart</code></td><td>① 開始日</td><td>可不填，空白時自動帶成 <code>1_EMSEnd</code></td></tr>
         <tr><td><code>1_EMSEnd</code></td><td>EMS 提 Spec</td><td>① 的結束日，<b>新增時必填</b></td></tr>
         <tr><td><code>2_MSDConfirm</code></td><td>MSD 確認需求</td><td>② 的單一日期（＝它的 End）</td></tr>
