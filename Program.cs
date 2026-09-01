@@ -68,6 +68,26 @@ var connectionString = builder.Configuration.GetConnectionString("Controltable")
 //    **不可以靜靜當成寄成功** —— 那會讓下一棒永遠等不到通知，而且畫面上還顯示已通知。
 // ⚠️ Password 若真的需要（多數內網 Domino relay 是匿名的），請放 User Secrets 或
 //    環境變數（`Mail__Password`），不要寫進 appsettings.json 進版控。
+// ─── 兩種送信方式（2026-09-01 / 第 41 批，使用者選擇）───
+// `smtp`   ：這台主機自己連 relay（第 39 批做的，已完整測過）
+// `dbmail` ：呼叫 DB 主機上的 `msdb.dbo.sp_send_dbmail`，**借用 DB 主機到 relay 那條已經通的路**
+//
+// 為什麼會有第二種：網站跑在 p58esiap12、DB 在 p58esiap08，而 relay（10.20.30.12）
+// 是**依來源 IP 白名單**放行的 —— p58esiap08 早就在清單裡（它的 Database Mail 一直在用），
+// p58esiap12 是新的來源。使用者選擇不去測 p58esiap12 那條路，直接借道 p58esiap08。
+// ⚠️ 信的內容、收件者、副本、寄件者規則**兩種模式完全共用**，換的只有最後「怎麼送出去」。
+// ⚠️ dbmail 不需要 Mail:Host —— 它的傳輸就是本來就有的那條 SQL 連線。
+var mailMode     = (builder.Configuration["Mail:Mode"] ?? "smtp").Trim().ToLowerInvariant();
+var useDbMail    = mailMode == "dbmail";
+// Database Mail 的設定檔名稱。留空 = 交給 SQL Server 用預設設定檔
+//（先找目前使用者的預設私人設定檔，再找預設公用設定檔）。
+var dbMailProfile = (builder.Configuration["Mail:DbMailProfile"] ?? "").Trim();
+// ⚠️ 讓 sp_send_dbmail 用「操作者本人」當寄件者（`@from_address`）。
+//    有些 relay 只准設定檔裡那個帳戶當寄件者，被拒的話把這個設成 false ——
+//    那時寄件者會變成 Database Mail 帳戶本身，但 `@reply_to` 仍然是本人，
+//    收件者按「回覆」還是會回到他手上（使用者要的那件事沒有丟掉）。
+var dbMailOverrideFrom = builder.Configuration.GetValue<bool?>("Mail:DbMailOverrideFrom") ?? true;
+
 var mailHost     = (builder.Configuration["Mail:Host"] ?? "").Trim();
 var mailPort     = builder.Configuration.GetValue<int?>("Mail:Port") ?? 25;
 var mailSsl      = builder.Configuration.GetValue<bool>("Mail:UseSsl");
@@ -82,10 +102,18 @@ var mailFrom     = (builder.Configuration["Mail:From"] ?? "").Trim();
 var mailFromName = (builder.Configuration["Mail:FromName"] ?? "需求管控表").Trim();
 // 信裡那句「請至系統壓日期」要附的網址。空的就不附連結（總比附一個開不起來的好）
 var mailAppUrl   = (builder.Configuration["Mail:AppUrl"] ?? "").Trim();
+// ⚠️ **一定要設 Timeout**（2026-09-01 補）。`SmtpClient` 的預設是 **100 秒**，而防火牆擋掉
+//    SMTP 時最常見的行為是**把封包丟掉、不回 RST** —— 於是那一次點擊會整整卡 100 秒，
+//    畫面上沒有任何東西在動（按鈕 disabled、沒有 toast、沒有錯誤），使用者看到的就是
+//    「按了沒反應」，而真正的原因（連不到 relay）一個字都沒說。實際回報過。
+//    20 秒足夠內網 relay 回應，又短到使用者還願意等著看結果。
+var mailTimeout  = (builder.Configuration.GetValue<int?>("Mail:TimeoutSeconds") ?? 20) * 1000;
 // ⚠️ 只看 Host。寄件者現在由 dbo.Assignee 決定（見上面 Mail:From 的說明），
 //    所以 From 空著也算「設定好了」—— 拿不到寄件者是**那一次呼叫**的問題，
 //    在端點裡另外回一句講得出原因的 400，不是整個功能沒開
-var mailReady    = mailHost != "";
+// dbmail 模式的傳輸就是本來就有的那條 SQL 連線，沒有東西要設定；
+// smtp 模式則一定要有 Host
+var mailReady    = useDbMail || mailHost != "";
 
 // 指派人員主檔。正式的變更紀錄在 11_create_assignee.sql，
 // 這裡的 bootstrap 只是讓尚未跑過腳本的環境也能啟動（沿用下方 MsdConfirmHistory 的做法）。
@@ -1903,6 +1931,31 @@ static async Task<string> AssigneeEmailAsync(SqlConnection conn, string dept, st
 //    而內網 Domino relay 用得上的功能（匿名或帳密、選配 SSL）它都有。
 async Task<string?> SendNotifyMailAsync(string fromEmail, string fromName, string toEmail, string ccEmail, string subject, string body)
 {
+    // ─── 先用一個「逾時真的算數」的 TCP 探測（2026-09-01）───
+    // ⚠️ `SmtpClient.Timeout` **管不到 TCP 連線建立那一段**。實測：Timeout 設 8 秒、
+    //    連一個會把封包丟掉的位址，整整 **22 秒**才回來 —— 那是作業系統的 SYN 重試時間，
+    //    設定檔怎麼調都沒有用。使用者回報的「點了寄信 icon 沒反應」就是卡在這裡
+    //    （預設 Timeout 是 100 秒，畫面上又完全沒有東西在動）。
+    // ⚠️ 這也是「TimeoutSeconds 這個設定要真的有意義」的唯一辦法 ——
+    //    留一個調了卻管不到最常見那種失敗的設定，比沒有更難查。
+    // 代價是對 relay 多開一個馬上關掉的連線，內網 relay 對這個是無感的。
+    try
+    {
+        using var probe = new System.Net.Sockets.TcpClient();
+        await probe.ConnectAsync(mailHost, mailPort).WaitAsync(TimeSpan.FromMilliseconds(mailTimeout));
+    }
+    catch (Exception pex)
+    {
+        Console.WriteLine($"Notify mail probe failed ({mailHost}:{mailPort}): {pex}");
+        var psock = pex as System.Net.Sockets.SocketException ?? pex.InnerException as System.Net.Sockets.SocketException;
+        // TimeoutException = 我們自己的逾時；那和「被防火牆丟包」在現象上是同一件事
+        var reason = pex is TimeoutException
+            ? $"連線逾時（{mailTimeout / 1000} 秒內沒有回應）"
+            : pex.Message;
+        return reason + "\n\n" + MailFailureHint(psock, pex is TimeoutException, null)
+             + $"\n\n（SMTP：{mailHost}:{mailPort}，逾時 {mailTimeout / 1000} 秒）";
+    }
+
     try
     {
         using var msg = new MailMessage();
@@ -1916,7 +1969,7 @@ async Task<string?> SendNotifyMailAsync(string fromEmail, string fromName, strin
         msg.BodyEncoding = System.Text.Encoding.UTF8;
         msg.SubjectEncoding = System.Text.Encoding.UTF8;
 
-        using var client = new SmtpClient(mailHost, mailPort) { EnableSsl = mailSsl };
+        using var client = new SmtpClient(mailHost, mailPort) { EnableSsl = mailSsl, Timeout = mailTimeout };
         if (mailUser != "")
         {
             client.UseDefaultCredentials = false;
@@ -1930,8 +1983,158 @@ async Task<string?> SendNotifyMailAsync(string fromEmail, string fromName, strin
         Console.WriteLine($"Notify mail send failed: {ex}");
         // 把 SMTP 伺服器實際回的話帶到畫面上 —— 「寄信失敗」四個字查不出任何東西
         return ex.Message + (ex.InnerException != null ? "（" + ex.InnerException.Message + "）" : "")
-             + $"\n\n（SMTP：{mailHost}:{mailPort}，寄件者：{fromEmail}）";
+             + "\n\n" + MailFailureHint(ex.InnerException as System.Net.Sockets.SocketException, false, ex as SmtpException)
+             + $"\n\n（SMTP：{mailHost}:{mailPort}，逾時 {mailTimeout / 1000} 秒，寄件者：{fromEmail}）";
     }
+}
+
+// ─── 把「下一步該去查什麼」直接寫在畫面上（2026-09-01）───
+// 光印 .NET 的例外訊息（永遠是那句「Failure sending mail.」）看不出是位址錯、防火牆擋、
+// 還是 relay 不讓這台主機轉信 —— 那三種的處理方式完全不同，而且**都不在程式這一側**，
+// 訊息裡不講的話使用者只能回頭來問。
+// ⚠️ 判斷一律看 SocketException（SmtpException 自己的訊息沒有資訊量）。
+// ⚠️ 「連得上但被拒絕」與「連不上」要分開講：前者是 relay 的白名單問題（要找 IT 加 IP），
+//    後者是防火牆問題（要開 port）—— 兩邊找的人都不一樣。
+string MailFailureHint(System.Net.Sockets.SocketException? sock, bool selfTimeout, SmtpException? smtp)
+{
+    if (selfTimeout || sock?.SocketErrorCode is System.Net.Sockets.SocketError.TimedOut
+                    or System.Net.Sockets.SocketError.HostUnreachable
+                    or System.Net.Sockets.SocketError.NetworkUnreachable)
+        return $"連不到 {mailHost}:{mailPort}（沒有任何回應），最常見的原因是**防火牆擋住這台主機連郵件主機**。\n"
+             + $"請在「跑這個網站的那一台主機」上執行以下指令確認：\n"
+             + $"    Test-NetConnection -ComputerName {mailHost} -Port {mailPort}\n"
+             + "⚠️ 一定要在那台主機上跑，在自己的電腦上跑得通不代表它跑得通。";
+    if (sock?.SocketErrorCode == System.Net.Sockets.SocketError.ConnectionRefused)
+        return $"{mailHost} 明確拒絕了連線，代表那台主機上的 {mailPort} 埠沒有在聽。請確認 port 是否正確。";
+    if (sock?.SocketErrorCode == System.Net.Sockets.SocketError.HostNotFound)
+        return $"查不到主機 {mailHost}。若填的是主機名稱請改填 IP，或確認 DNS 設定。";
+    if (smtp != null && (int)smtp.StatusCode is 550 or 553 or 554)
+        return $"連線成功，但 relay 拒絕轉信（{smtp.StatusCode}）。內網 relay 多半是**依來源 IP 白名單**放行的 ——\n"
+             + "請把「跑這個網站的那一台主機」的 IP 也加進 relay 的允許清單（另一台已經能寄信的伺服器是因為早就在清單裡）。";
+    return "";
+}
+
+// ─── 送信方式二：呼叫 DB 主機的 msdb.dbo.sp_send_dbmail（2026-09-01 / 第 41 批）───
+// 借用「DB 主機 → relay」那條已經證實可以走的路，網站主機不必自己連得到 relay。
+//
+// ⚠️⚠️ **這一支最重要的是後半段的「確認真的寄出去了」，不可以拿掉。**
+//    `sp_send_dbmail` 是把信丟進 Service Broker 佇列就馬上回傳 —— 它回的是「已排入」
+//    不是「已送出」。寄失敗會躺在 `msdb.dbo.sysmail_faileditems`，**不會回到 API、
+//    也不會回到畫面**。少了這一段，畫面顯示「已寄出通知」而下一棒其實什麼都沒收到，
+//    正好打破第 39 批立的那條規則（寄不出去一定要當場說原因）。
+//    所以這裡拿 `@mailitem_id` 回來輪詢 `sysmail_allitems` 的 `sent_status`。
+//
+// 回傳：Error != null → 確定失敗；Queued == true → 還在佇列裡，**狀態未確認**（不可當成成功講）
+async Task<(string? Error, bool Queued, int MailItemId, string Detail)> SendViaDbMailAsync(
+    SqlConnection conn, string fromEmail, string fromName, string toEmail, string ccEmail,
+    string subject, string body)
+{
+    int mailItemId;
+    try
+    {
+        // ⚠️ @profile_name 傳 NULL 時 SQL Server 會用預設設定檔，所以設定檔名稱留空是合法的。
+        // ⚠️ @from_address 被 relay 拒絕的話可以用 Mail:DbMailOverrideFrom 關掉，
+        //    但 @reply_to 一律帶 —— 「收件者可以直接回信給按按鈕的人」是這個功能的重點之一。
+        using var cmd = new SqlCommand(@"
+            DECLARE @Id INT;
+            EXEC msdb.dbo.sp_send_dbmail
+                 @profile_name    = @Profile,
+                 @recipients      = @To,
+                 @copy_recipients = @Cc,
+                 @subject         = @Subject,
+                 @body            = @Body,
+                 @body_format     = 'TEXT',
+                 @from_address    = @From,
+                 @reply_to        = @ReplyTo,
+                 @mailitem_id     = @Id OUTPUT;
+            SELECT @Id;", conn);
+        cmd.CommandTimeout = Math.Max(30, mailTimeout / 1000);
+        cmd.Parameters.AddWithValue("@Profile", dbMailProfile == "" ? DBNull.Value : dbMailProfile);
+        cmd.Parameters.AddWithValue("@To", toEmail);
+        cmd.Parameters.AddWithValue("@Cc", string.IsNullOrWhiteSpace(ccEmail) ? DBNull.Value : ccEmail);
+        cmd.Parameters.AddWithValue("@Subject", subject);
+        cmd.Parameters.AddWithValue("@Body", body);
+        cmd.Parameters.AddWithValue("@From",
+            dbMailOverrideFrom ? $"{fromName} <{fromEmail}>" : (object)DBNull.Value);
+        cmd.Parameters.AddWithValue("@ReplyTo", fromEmail);
+        var res = await cmd.ExecuteScalarAsync();
+        if (res == null || res == DBNull.Value)
+            return ("sp_send_dbmail 沒有回傳 mailitem_id，無法確認這封信有沒有被收下。", false, 0, "");
+        mailItemId = Convert.ToInt32(res);
+    }
+    catch (SqlException ex)
+    {
+        Console.WriteLine($"sp_send_dbmail failed: {ex}");
+        // 這幾種是設定／權限問題，訊息要指得出該做什麼 —— 它們都不在程式這一側
+        var hint =
+            ex.Message.Contains("EXECUTE permission", StringComparison.OrdinalIgnoreCase)
+         || ex.Message.Contains("DatabaseMailUserRole", StringComparison.OrdinalIgnoreCase)
+            ? "\n\n連線用的帳號沒有權限呼叫 sp_send_dbmail。請 DBA 在 DB 主機上執行 `16_grant_dbmail_permission.sql`。"
+         : ex.Message.Contains("profile name is not valid", StringComparison.OrdinalIgnoreCase)
+        || ex.Message.Contains("No global profile", StringComparison.OrdinalIgnoreCase)
+            ? "\n\n找不到 Database Mail 設定檔。請把 appsettings.json 的 Mail:DbMailProfile 填上實際的設定檔名稱"
+            + "（在 DB 主機上查 `SELECT name FROM msdb.dbo.sysmail_profile`）。"
+         // ⚠️ 「元件被封鎖」是實測第一個會撞到的（Database Mail XPs 預設就是關的），
+         //    而 SQL Server 的原文只說「請用 sp_configure 啟用」，沒說要做的不只那一件事
+         : ex.Message.Contains("Database Mail XPs", StringComparison.OrdinalIgnoreCase)
+        || ex.Message.Contains("blocked access to procedure", StringComparison.OrdinalIgnoreCase)
+            ? "\n\nDB 主機上的 Database Mail 沒有啟用。請 DBA 執行：\n"
+            + "    EXEC sp_configure 'show advanced options', 1; RECONFIGURE;\n"
+            + "    EXEC sp_configure 'Database Mail XPs', 1; RECONFIGURE;\n"
+            + "並確認已經建立好設定檔與帳戶（`16_grant_dbmail_permission.sql` 開頭會把現有的列出來）。"
+         : ex.Message.Contains("Invalid object name", StringComparison.OrdinalIgnoreCase)
+            ? "\n\nDB 主機上找不到 Database Mail 的物件（SQL Server Express 不支援這個功能）。"
+            : "";
+        return (ex.Message + hint, false, 0, "");
+    }
+
+    // ── 輪詢送出狀態。sent_status：sent / unsent / retrying / failed ──
+    // ⚠️ 查不到狀態（權限不足）也**不可以當成成功** —— 要明講「送出了但確認不了」
+    var deadline = DateTime.UtcNow.AddMilliseconds(mailTimeout);
+    var status = "";
+    while (true)
+    {
+        try
+        {
+            using var q = new SqlCommand(
+                "SELECT sent_status FROM msdb.dbo.sysmail_allitems WHERE mailitem_id = @Id", conn);
+            q.Parameters.AddWithValue("@Id", mailItemId);
+            status = (await q.ExecuteScalarAsync() as string ?? "").Trim().ToLowerInvariant();
+        }
+        catch (SqlException ex)
+        {
+            Console.WriteLine($"sysmail_allitems query failed: {ex}");
+            return (null, true, mailItemId,
+                "已交給 Database Mail（mailitem_id = " + mailItemId + "），"
+              + "但連線帳號沒有權限查詢送出狀態，無法確認是否真的寄出。\n"
+              + "請 DBA 執行 `16_grant_dbmail_permission.sql` 補上 msdb 的查詢權限。");
+        }
+        if (status == "sent") return (null, false, mailItemId, "");
+        if (status == "failed")
+        {
+            var why = "";
+            try
+            {
+                using var e = new SqlCommand(@"
+                    SELECT TOP 1 description FROM msdb.dbo.sysmail_event_log
+                    WHERE mailitem_id = @Id ORDER BY log_id DESC", conn);
+                e.Parameters.AddWithValue("@Id", mailItemId);
+                why = await e.ExecuteScalarAsync() as string ?? "";
+            }
+            catch { /* 查不到細節就只回狀態，不要因為查日誌失敗而蓋掉「寄失敗」這件事 */ }
+            return ($"Database Mail 回報寄送失敗（mailitem_id = {mailItemId}）。\n{why}"
+                  + "\n\n若訊息提到 relay / 550 / 553 / 554，代表 DB 主機被拒絕轉信到這個收件者。",
+                    false, mailItemId, "");
+        }
+        if (DateTime.UtcNow >= deadline) break;
+        await Task.Delay(400);
+    }
+    // unsent / retrying：Database Mail 還在重試。**這不是成功**，要照實說
+    return (null, true, mailItemId,
+        $"已排入 Database Mail 佇列（mailitem_id = {mailItemId}），"
+      + $"但 {mailTimeout / 1000} 秒內還沒送出（目前狀態：{(status == "" ? "未知" : status)}）。\n"
+      + "它可能稍後才送出，也可能失敗。請在 DB 主機上查："
+      + $"\n    SELECT sent_status FROM msdb.dbo.sysmail_allitems WHERE mailitem_id = {mailItemId}");
 }
 
 // ─── 通知下一棒來壓日期（2026-08-31 / 第 39 批）───
@@ -2084,8 +2287,18 @@ app.MapPost("/api/requirements/{id}/notify-unset", async (int id, NotifyRequest?
         : "（本信由需求管控表系統自動發出，請勿直接回覆本信箱。）");
     var mailBody = string.Join("\r\n", lines);
 
-    // ── 5. 寄出 ──
-    var sendError = await SendNotifyMailAsync(fromEmail, fromName, toEmail, ccEmail, subject, mailBody);
+    // ── 5. 寄出（兩種傳輸方式，內容完全一樣）──
+    var queued = false; var queuedNote = ""; var mailItemId = 0;
+    string? sendError;
+    if (useDbMail)
+    {
+        var r = await SendViaDbMailAsync(conn, fromEmail, fromName, toEmail, ccEmail, subject, mailBody);
+        sendError = r.Error; queued = r.Queued; queuedNote = r.Detail; mailItemId = r.MailItemId;
+    }
+    else
+    {
+        sendError = await SendNotifyMailAsync(fromEmail, fromName, toEmail, ccEmail, subject, mailBody);
+    }
     if (sendError != null)
         return Results.Json(new { message = "寄信失敗：" + sendError }, statusCode: 502);
 
@@ -2097,7 +2310,10 @@ app.MapPost("/api/requirements/{id}/notify-unset", async (int id, NotifyRequest?
     var auditNote = $"通知「{phaseLabel}」尚未壓定日期 → 收件者 {toName} <{toEmail}>"
                   + (ccEmail != "" ? $"，副本 {ccName} <{ccEmail}>" : ccMissing ? $"，副本 {ccName}（查無信箱，未寄送）" : "")
                   // 寄件者也要記：日後查「這封信到底是誰的名義寄出去的」只有這裡查得到
-                  + $"；寄件者 {fromName} <{fromEmail}>" + (fromIsSelf ? "" : "（系統預設信箱）");
+                  + $"；寄件者 {fromName} <{fromEmail}>" + (fromIsSelf ? "" : "（系統預設信箱）")
+                  // ⚠️ 「排入佇列但沒確認送出」一定要在軌跡上跟「已確認送出」分得出來 ——
+                  //    這一列日後就是「到底通知了沒」的唯一依據，兩種混在一起等於這一列不能用
+                  + (queued ? $"；⚠ 已排入 Database Mail 佇列（mailitem_id={mailItemId}）但未確認送出" : "");
     var empty = ((string?)null, (string?)null, (string?)null);
     try
     {
@@ -2109,14 +2325,19 @@ app.MapPost("/api/requirements/{id}/notify-unset", async (int id, NotifyRequest?
         Console.WriteLine($"Notify audit insert failed (mail was already sent): {ex}");
     }
 
-    var okMsg = $"已寄出通知給 {toName} <{toEmail}>"
+    // ⚠️ 「已排入佇列」不可以講成「已寄出」（第 41 批）。Database Mail 是非同步的，
+    //    在確認到 sent_status = 'sent' 之前，那封信可能還在重試、也可能會失敗 ——
+    //    畫面上寫「已寄出」而下一棒其實沒收到，正是第 39 批那條規則要防的事。
+    var okMsg = (queued ? $"通知已交給郵件系統，但尚未確認送出（收件者 {toName} <{toEmail}>）"
+                        : $"已寄出通知給 {toName} <{toEmail}>")
               + (ccEmail != "" ? $"，副本 {ccName} <{ccEmail}>" : "")
               + (ccMissing ? $"\n\n⚠️ 副本 {ccName} 在指派人員主檔裡沒有信箱，這次沒有副本給他。" : "");
     return Results.Ok(new
     {
         message = okMsg, phase = phaseKey, phaseLabel,
         to = toEmail, toName, cc = ccEmail, ccName, ccMissing, subject,
-        from = fromEmail, fromName, fromIsSelf
+        from = fromEmail, fromName, fromIsSelf,
+        transport = useDbMail ? "dbmail" : "smtp", queued, mailItemId, queuedNote
     });
 });
 

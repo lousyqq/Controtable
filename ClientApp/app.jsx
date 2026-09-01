@@ -2748,6 +2748,11 @@ const { useState, useMemo, Fragment, useEffect } = React;
                            + `${fromLine}\n收件者：${p.toName} <${p.toEmail}>\n${ccLine}\n\n`
                            + '按「確定」會立刻寄出，並在這筆需求的時程變更軌跡留下一筆「通知寄送」紀錄。',
                     onConfirm: () => runExclusive(async () => {
+                        // ⚠️ 一定要先講「正在寄」（2026-09-01 補）。寄信是這個 App 裡**唯一**要等
+                        // 網路對方回應的動作，連不到 relay 時後端會等到逾時 —— 在此之前那段時間
+                        // 畫面上什麼都沒有（按鈕 disabled、沒有 toast），使用者看到的就是
+                        // 「按了沒反應」，實際回報過。結果回來時這個 toast 會被覆蓋掉
+                        showToast('寄送中…（連不到郵件主機時最多會等 20 秒）');
                         try {
                             const res = await fetch(api(`/api/requirements/${item.id}/notify-unset`), {
                                 method: 'POST',
@@ -2762,17 +2767,35 @@ const { useState, useMemo, Fragment, useEffect } = React;
                             // ⚠️ 只重抓稽核表就夠 —— 寄信不會動到 dbo.Controltable 的任何一欄
                             //（連 UpdatedAt 都不動），把 fetchReqs 也叫進來只會讓整張表白閃一次
                             await fetchHistory();
-                            showToast(`已寄出通知給 ${p.toName}`);
-                            // 副本寄不出去是使用者會想知道的事，而 toast 會自己消失，所以另外講一次
-                            if (b.ccMissing)
+                            // ⚠️ b.queued = 交給郵件系統了，但**還沒確認真的送出去**
+                            //（Database Mail 是非同步的，可能還在重試、也可能會失敗）。
+                            // 這種情況一律用彈窗、而且不可以說「已寄出」—— 說了就等於
+                            // 畫面在保證一件還沒發生的事，那正是這個功能最不能出錯的地方
+                            if (b.queued) {
                                 setAlertModal({
-                                    title: '已寄出，但沒有副本',
-                                    message: `通知已寄給 ${b.toName} <${b.to}>。\n\n`
-                                           + `⚠️ 副本 ${b.ccName} 在指派人員主檔裡沒有填 EMAIL，這一封沒有副本給他。`
+                                    title: '尚未確認送出',
+                                    message: (b.queuedNote || b.message || '')
+                                           + '\n\n這一筆已經記進軌跡，但標註了「未確認送出」。'
+                                           + '\n過一下請確認對方有沒有收到，沒收到就再按一次 ✉。'
                                 });
+                            } else {
+                                showToast(`已寄出通知給 ${p.toName}`);
+                                // 副本寄不出去是使用者會想知道的事，而 toast 會自己消失，所以另外講一次
+                                if (b.ccMissing)
+                                    setAlertModal({
+                                        title: '已寄出，但沒有副本',
+                                        message: `通知已寄給 ${b.toName} <${b.to}>。\n\n`
+                                               + `⚠️ 副本 ${b.ccName} 在指派人員主檔裡沒有填 EMAIL，這一封沒有副本給他。`
+                                    });
+                            }
                         } catch (err) {
+                            // ⚠️ 這裡用 alertModal 不用 toast：toast 會自己消失，而使用者可能
+                            // 已經等了十幾秒去做別的事，回頭什麼都沒看到就會以為信寄出去了
                             console.error(err);
-                            showToast('寄信失敗：' + err.message, 'error');
+                            setAlertModal({
+                                title: '寄信失敗',
+                                message: err.message + '\n\n連不到後端服務，或請求在中途被中斷。請重新整理後再試一次。'
+                            });
                         }
                     })
                 });

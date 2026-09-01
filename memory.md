@@ -1,6 +1,17 @@
 # memory.md — Controltable 專案進度記憶
 
-最後更新：2026-08-31（**第 39 批：⚠ 未壓日期 → 一鍵寄信通知下一棒來壓日期**，
+最後更新：2026-09-01（**第 41 批：送信方式改成可切換，使用者選擇走 DB 主機的 `sp_send_dbmail`**
+——`Mail:Mode` = `smtp` / `dbmail`，借用「p58esiap08 → relay」那條已經通的路，
+網站主機 p58esiap12 不必連得到 relay。**重點是補上「確認真的寄出去了」**
+（輪詢 `sysmail_allitems`），否則 `sp_send_dbmail` 的失敗是靜默的。
+**有動 `Program.cs`**，產出 **`16_grant_dbmail_permission.sql`（要 DBA 執行，尚未執行）**。
+⚠️ **本機的 SQL Server 沒啟用 Database Mail，完整寄信這一段還沒被實測過。**
+
+同一天先做了 **第 40 批：修「點了寄信 icon 沒反應」** ——
+`SmtpClient.Timeout` 管不到 TCP 連線建立那一段，改成寄信前先自己做一次有逾時的 TCP 探測，
+並把失敗原因與 `Test-NetConnection` 指令直接寫在畫面上。無 SQL 腳本。
+
+前一批是 2026-08-31（**第 39 批：⚠ 未壓日期 → 一鍵寄信通知下一棒來壓日期**，
 `POST /api/requirements/{id}/notify-unset`＋資料列那一格的 `✉`＋儲存成功後自動問。
 **寄件者＝按下按鈕的那個人本人**（工號 → `dbo.Assignee.EMPO` → `EMAIL`）。
 **有動 `Program.cs`**，沒有 SQL 腳本。
@@ -87,7 +98,7 @@ EMS 也可以先壓預設的驗收時間，或等開發完再填。
 |---|---|
 | DB 資料 | `dbo.Controltable` **62 筆** active；`dbo.Controltable_History` **232 筆**；`dbo.Assignee` **13 筆，`EMAIL` 已全部由使用者補齊**（EMS 8 / MSD 5，例：明翰 `Macgyver_Ho@UMCG`、宸詳 `Sw_Lee@UMCG`） |
 | 已執行腳本 | `01`~**`15`** 全部已執行（`14` 是資料修正、`15` 是 `dbo.Assignee.EMAIL`） |
-| `?v=` | **`20260831003`** |
+| `?v=` | **`20260901002`**（`20260901001`＝第 40 批、`20260831003`＝第 39 批） |
 | 未壓日期 | **2 筆**：NID 6（stage 4、EMS 智寬／MSD 政翰）與 **NID 20**（stage 4、EMS 明翰／MSD 宸詳，就是使用者截圖那一筆）。第 33 批當時是 0 筆、只能造暫時資料驗，**現在有真實資料可以直接測** |
 | 伺服器 | `dotnet run` 於 `http://localhost:5146`（`.claude/launch.json` 的 `controltable`，用 preview_start 啟動） |
 | 連線 | `sqlcmd -S Sariel -d Controltable -U testuser -P test -C -f 65001`（⚠️ 這台的 `python` 是 Windows Store 的假殼，一律 exit 49，**改用 PowerShell 的 `Invoke-RestMethod` / `ConvertFrom-Json`**） |
@@ -131,6 +142,122 @@ EMS 也可以先壓預設的驗收時間，或等開發完再填。
 5. **`Auth:WindowsDomainStripPrefix` 目前是 `UMC`**（沿用 `C:\Gantt` 的設定）。
    開發機是 `SARIEL\`，程式有 fallback 會剝掉反斜線前的任何網域所以能動；
    **正式部署時要改成實際網域**
+
+### ✅ 第 41 批（改走 DB 主機的 `sp_send_dbmail`）—— **完成，產出 `16_grant_dbmail_permission.sql`（尚未執行）**（2026-09-01）
+
+使用者的決定：**「如果我不想測試從 p58esiap12 直接發送，我想要透過呼叫 p58esiap08 的 sp 寄信可以嗎?」**
+—— 我先前提過這條路的缺點（非同步、失敗靜默、要 msdb 權限、Express 不支援），
+他仍然選這條，那就是他的決定。**缺點裡最要命的那一個我補起來了**（見下）。
+
+**做法：`Mail:Mode` 切換兩種傳輸，內容完全共用**
+
+| 值 | 誰去連 relay | 需要什麼 |
+|---|---|---|
+| `smtp`（預設） | **網站主機**（p58esiap12） | `Mail:Host`，而且那台要在 relay 的來源 IP 白名單裡 |
+| `dbmail` | **DB 主機**（p58esiap08，那條路已經證實可以走） | `16_grant_dbmail_permission.sql` |
+
+⚠️ **收件者／副本／寄件者／主旨／內文的產生完全不動**，換的只有最後「怎麼送出去」。
+⚠️ `dbmail` 不需要 `Mail:Host` —— 它的傳輸就是本來就有的那條 SQL 連線
+（`mailReady` 因此改成 `useDbMail || mailHost != ""`）。
+⚠️ SMTP 那條**刻意保留不刪**：已經完整測過，切回去只是改一個字。
+
+**⚠️⚠️ 這批真正的重點：不讓失敗變成靜默的**
+
+`sp_send_dbmail` 是丟進 Service Broker 佇列就馬上回傳 —— **它回的是「已排入」不是「已送出」**。
+寄失敗會躺在 `msdb.dbo.sysmail_faileditems`，不會回到 API、也不會回到畫面。
+少了這一段，畫面顯示「已寄出通知」而下一棒其實什麼都沒收到 ——
+那正好打破第 39 批立的規則。所以：
+
+- 拿 `@mailitem_id` OUTPUT 回來，輪詢 `msdb.dbo.sysmail_allitems` 的 `sent_status`
+  （每 400ms，最多 `Mail:TimeoutSeconds`）。
+- `sent` → 才算成功。`failed` → 502 並附上 `sysmail_event_log` 的實際原因。
+- **還在 `unsent`／`retrying`，或沒有 msdb 查詢權限 → 回 `queued: true`**：
+  API 訊息、前端彈窗、稽核列的 `Note` **三處都不可以出現「已寄出」**
+  （前端改用 `alertModal`、`Note` 加「⚠ 已排入 Database Mail 佇列但未確認送出」）。
+  「到底通知了沒」日後只靠稽核列那一行，兩種混在一起等於那一行不能用。
+- `@reply_to` **一律帶操作者本人**；`@from_address` 由 `Mail:DbMailOverrideFrom` 控制
+  （relay 只准設定檔帳戶當寄件者時關掉它，回覆位址仍然是本人 ——
+  「收件者可以直接回信給按按鈕的人」那件事不會因此丟掉）。
+
+**`16_grant_dbmail_permission.sql`（要 DBA 在 DB 主機以 sysadmin 執行，尚未執行）**
+
+在 `msdb` 建使用者 → 加入 `DatabaseMailUserRole` → `GRANT SELECT` 給
+`sysmail_allitems` / `sysmail_event_log`（**最後這個不可以省**，見上）。
+開頭會先印版本、`Database Mail XPs` 是否啟用、以及現有設定檔名稱
+（`Mail:DbMailProfile` 要填的就是那個）。結尾有一段**刻意註解掉**的手動寄信驗證。
+⚠️ 腳本裡 `@LoginName` 預設 `testuser`，正式環境要先改。
+
+**驗證方式**（`dotnet build` 0/0；`npm run build`；`?v=` → `20260901002`）
+
+- ⚠️ **完整寄信在本機測不了**：`Sariel` 是 Developer Edition，但
+  `Database Mail XPs = 0`、`sysmail_profile` **0 筆**。
+  刻意**沒有**去啟用它 —— 那是伺服器層級的設定變更，不該自作主張動使用者的環境。
+- 能測的都測了：`Mail:Mode = dbmail` 時**確實走了 dbmail 那條路**，
+  並把 SQL Server 的原文帶回畫面（「SQL Server 已封鎖元件 'Database Mail XPs'…」），
+  第一次跑時我的提示沒命中這一種，補上後訊息會接一段
+  「請 DBA 執行 `sp_configure 'Database Mail XPs', 1; RECONFIGURE;`」。
+- `16_grant_dbmail_permission.sql` 用 **`SET PARSEONLY ON`** 驗過語法（通過，未執行）。
+- 前端流程：`寄送中…` toast → 彈窗顯示完整原因。寄件者那一道仍然排在送信之前
+  （瀏覽器裡 `yu-tinglin` 不在名單上 + `Mail:From` 空 → 在碰到 Database Mail 之前就擋下）。
+
+**下一步（要使用者／DBA 做的）**
+
+1. DB 主機上確認 Database Mail 已啟用，並查出設定檔名稱
+2. 改 `16_grant_dbmail_permission.sql` 的 `@LoginName` 為實際帳號後執行
+3. `appsettings.json` 設 `"Mode": "dbmail"`、`DbMailProfile`、`AppUrl`，重啟
+
+### ✅ 第 40 批（修「點了寄信 icon 沒反應」）—— **完成，無 SQL 腳本**（2026-09-01）
+
+使用者在公司實測第 39 批：IIS 主機 **p58esiap12**、DB 在 **p58esiap08**，
+把 `Mail:Host` 設成 p58esiap08 的 Database Mail 在用的那台 relay（例：`10.20.30.12`），
+**「點選寄信 icon 時，還是會顯示無回應」**。
+
+**根因：`SmtpClient.Timeout` 管不到 TCP 連線建立那一段。**
+防火牆擋 SMTP 最常見的行為是**把封包丟掉、不回 RST**，於是那一次點擊卡在作業系統的
+SYN 重試裡。實測：`Timeout` 設 8 秒、連一個會丟包的位址，**整整 22 秒**才回來 ——
+而 `SmtpClient` 的**預設 Timeout 是 100 秒**。那段時間畫面上完全沒有東西在動
+（按鈕 disabled、沒有 toast、沒有錯誤），使用者看到的就是「按了沒反應」。
+
+**修了三件**
+
+1. **寄信前先做一個自己控制逾時的 `TcpClient` 連線探測**
+   （`ConnectAsync(...).WaitAsync(mailTimeout)`）。同一個情境改成 **8.4 秒**回來。
+   ⚠️ 這也是「`Mail:TimeoutSeconds` 這個設定要真的算數」的唯一辦法 ——
+   留一個調了卻管不到最常見那種失敗的設定，比沒有更難查。
+   代價是對 relay 多開一個馬上關掉的連線（內網 relay 對這個無感）。
+2. **`MailFailureHint()`：失敗訊息直接寫「下一步去查什麼」。** `.NET` 的例外永遠是
+   「Failure sending mail.」，分不出位址錯／防火牆擋／relay 不讓這台轉信 ——
+   而那三種**都不在程式這一側**，要找的人還不一樣（開 port vs 加來源 IP 白名單）。
+   判定看 `SocketException`，並把 `Test-NetConnection` 指令連同
+   「⚠️ 一定要在跑網站的那台主機上跑」一起印出來。
+3. **前端補「寄送中…」toast**，失敗改用 `alertModal` 不用 toast
+   （使用者可能已經等了十幾秒去做別的事，toast 自己消失後回頭什麼都沒看到，
+   會以為信寄出去了）。
+
+**同時回答的兩個架構問題**（`Mail:Host` 設 `10.20.30.12` 是對的）
+
+- **IIS 主機不需要安裝／設定任何 SMTP 服務。** `Mail:Host` 不是「本機的 SMTP 服務」，
+  是「要把信交給哪一台」，程式只是開一個 TCP 連線出去。
+- **不建議改走 `msdb.dbo.sp_send_dbmail`**：①Database Mail 自己也要填一個 SMTP 位址，
+  **沒有省掉那一步**，只是把「誰去連 relay」從 IIS 換成 SQL 那台
+  ②它是丟進 Service Broker 佇列就回傳，失敗躺在 `sysmail_faileditems`
+  **不會回到 API 也不會回到畫面** —— 正好打破第 39 批那條「寄不出去一定要當場說原因」
+  ③`testuser` 要加 `msdb` 的 `DatabaseMailUserRole`　④Express 版不支援。
+  **唯一值得改用的情境**：網路政策上只有 p58esiap08 連得到 relay、p58esiap12 被擋。
+
+> ⚠️ **p58esiap08 能寄不代表 p58esiap12 能寄。** 內網 relay 多半是**依來源 IP 白名單**
+> 放行的，p58esiap08 早就在清單裡。要 IT 把 **p58esiap12** 也加進去。
+> 判斷方式：在 **p58esiap12 上**跑 `Test-NetConnection -ComputerName 10.20.30.12 -Port 25`
+> —— `False` 是防火牆／port，`True` 但仍被拒（550/553/554）就是白名單。
+
+**驗證方式**（`dotnet build` 0/0；`npm run build`；`?v=` → `20260901001`；**沒有動資料庫**）
+
+- 被丟包的位址（`192.0.2.1:25`、`TimeoutSeconds=8`）→ **8.4 秒**回 502，
+  訊息是「連不到…最常見的原因是防火牆擋住這台主機連郵件主機」＋`Test-NetConnection` 指令。
+  **加探測之前同一個情境是 22 秒**。
+- 明確拒絕（`127.0.0.1:25` 沒有人在聽）→ **2.4 秒**回「明確拒絕了連線，代表那台主機上的
+  25 埠沒有在聽」。
+- 還原設定後（`Mail:Host` 空）→ 照舊回「尚未設定郵件伺服器」。
 
 ### ✅ 第 39 批（⚠ 未壓日期 → 一鍵寄信通知下一棒）—— **完成，無 SQL 腳本**（2026-08-31）
 
