@@ -1141,6 +1141,11 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // historyEntries 是 dbo.Controltable_History 的全部紀錄，
             // historyMap 依 requirementId 分組供資料列與明細查用
             const [historyEntries, setHistoryEntries] = useState([]);
+            // 明細裡「通知紀錄」摘要的展開狀態（第 45 批）。key = requirementId。
+            // ⚠️ 不寫進 localStorage：這是一次性的查看動作（「他到底催過幾次」），
+            //    不是使用者的偏好設定，記住它只會讓下次展開明細時多一段跟現在無關的東西
+            const [notifyOpen, setNotifyOpen] = useState({});
+            const toggleNotifyOpen = (id) => setNotifyOpen(m => ({ ...m, [id]: !m[id] }));
             // ⚠️ 稽核表讀取失敗一定要出聲（2026-08-23 / 第 24 批）。在此之前 fetchHistory()
             // 的 catch 只是 console.error + 清空清單 —— 畫面上的結果是「⚠N 全部消失、
             // 統計報表『時程異動』變 0、每一列展開都是無變更紀錄」，也就是主管會看到
@@ -1573,18 +1578,25 @@ const { useState, useMemo, Fragment, useEffect } = React;
 
             // 時程異動軌跡（dbo.Controltable_History）。整包載入後在前端依 requirementId 分組 ——
             // 每列展開時再打一次 API 會讓明細開起來有延遲，資料量也不大
+            // ⚠️ 一定要**回傳**剛抓到的那一份（失敗回 null），與 fetchReqs() 同一個理由：
+            // setHistoryEntries 是非同步的，呼叫端在 await 之後讀 historyEntries／historyMap
+            // 拿到的還是抓取**之前**的值。存檔後判斷「這個階段通知過了沒」就是踩這個坑
+            // （第 43 批），那條路必須用這裡回傳的新資料，不能讀 state
             const fetchHistory = async () => {
                 try {
                     const res = await fetch(api('/api/history'));
                     if (!res.ok) throw new Error(`HTTP ${res.status}`);
                     const data = await res.json();
-                    setHistoryEntries(Array.isArray(data) ? data : []);
+                    const list = Array.isArray(data) ? data : [];
+                    setHistoryEntries(list);
                     setHistoryError('');
+                    return list;
                 } catch (err) {
                     console.error('Failed to fetch history:', err);
                     setHistoryEntries([]);
                     // 「查不到軌跡」與「沒有被改過」在畫面上長得一模一樣，一定要講出差別
                     setHistoryError('時程異動軌跡讀取失敗，畫面上的異動次數（⚠ 與「時程異動」）暫時不是實際數字。');
+                    return null;
                 }
             };
 
@@ -1967,10 +1979,15 @@ const { useState, useMemo, Fragment, useEffect } = React;
 
             // 新增/編輯的必填欄位 (見 FIELD_SPEC.md「情況一」)，後端也會再擋一次。
             // orig = 這筆資料已儲存的值（新增時為 null / undefined）。
-            // ⚠️ Spec 結束日只在「新增」或「原本就有值」時必填（2026-08-22 / 第 21 批）——
-            // 規格回退到 ① 會把它清成 NULL，照舊一律必填的話那筆需求連改個現況描述
-            // 都會被擋，非得先重壓一個 Spec 結束日不可。寫成「原本有值」而不是直接不驗，
-            // 是為了仍然擋住「手動把既有的 Spec 結束日清空」。後端 MissingRequiredFields 同一套
+            // ⚠️ Spec 結束日**只在「原本就有值」時**必填（2026-09-02 / 第 42 批，使用者要求）——
+            // 新增時不再必填：註冊需求的當下常常還排不出 EMS 交規格的日子，硬要一個日期
+            // 只會逼使用者先隨手填一個，而那個假日期會流進逾期判定與統計。
+            // ⚠️ 沒壓日期不會變成沒人管 —— 新增的 StatusID 一律是 1，① 自己沒有日期就命中
+            //    unsetDuePhase()：資料列那一格標「⚠ 未壓日期」＋ ✉，存檔成功後還會直接問
+            //    要不要寄信通知 EMS 負責人（handleSave 最後那段）。放寬的前提就是那兩個出口。
+            // 規格回退到 ① 也會把它清成 NULL，同樣不擋（第 21 批）—— 照舊一律必填的話那筆
+            // 需求連改個現況描述都會被擋。寫成「原本有值」而不是直接不驗，是為了仍然擋住
+            // 「手動把既有的 Spec 結束日清空」。後端 MissingRequiredFields 同一套
             // key = 這個欄位在畫面上的識別（用來就地標紅，見 validateEdit / errOf）
             const requiredFieldsFor = (orig) => [
                 { key:'nid',      label:'NID',            get: d => d.nid },
@@ -1979,7 +1996,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 { key:'emsOwner', label:'EMS 負責人',      get: d => d.emsOwner },
                 // ⚠️ 開始日**不再是必填**（2026-08-22 使用者定調：Start 不重要，
                 // 沒填就等同 End 同一天，存檔時由 applyStartDefaults 自動補）
-                ...(!orig || isDateVal(orig?.spec?.end)
+                ...(orig && isDateVal(orig?.spec?.end)
                     ? [{ key:'spec.end', label:'1_EMS規格確認 結束日', get: d => d.spec?.end }]
                     : [])
             ];
@@ -2147,6 +2164,11 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // 不用 useMemo：相依項有 editingData / requirementsData / 三組解鎖 state，
             // 漏一個就會變成「改好了紅字還在」，那比多算幾次糟得多
             const editProblems = validateEdit();
+            // ① 結束日「這一次」是不是必填 —— 與 requiredFieldsFor() 同一條界線
+            // （只有原本就有值時才必填）。⚠️ 欄位旁的紅星一定要跟著這支走，不可以寫死：
+            // 標了紅星卻存得進去、或沒標紅星卻被擋下來，兩種都是使用者無從理解的
+            const specEndRequired = !!(editingData?.id
+                && isDateVal(requirementsData.find(d => d.id === editingData.id)?.spec?.end));
             // 按過一次儲存之後才顯示 —— 一開視窗就滿江紅是在罵人
             const errOf = k => showSaveErrors ? (editProblems.fields[k] || '') : '';
             const errBorder = k => errOf(k) ? 'var(--tone-alert)' : 'var(--border-table)';
@@ -2224,10 +2246,11 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     if (!res.ok) throw new Error(`HTTP ${res.status}`);
                     setEditingData(null);
                     setIsModalOpen(false);
-                    const [list] = await Promise.all([fetchReqs(), fetchHistory()]);
+                    const [list, hist] = await Promise.all([fetchReqs(), fetchHistory()]);
                     showToast(payload.id ? '已儲存變更' : '已新增需求');
                     // ─── 存完之後，當前階段沒壓日期就問要不要通知下一棒（第 39 批）───
-                    // 使用者要的觸發點是「儲存成功後，只要當前階段未壓日期就問」。
+                    // 觸發點是「儲存成功 + 當前階段未壓日期」（第 39 批），
+                    // 2026-09-02 起再加一個條件：**收件者查得到信箱**（見下方那段說明）。
                     // ⚠️ 一定要用 fetchReqs() **剛回傳的那一份**去判斷，不可以讀
                     //    requirementsData —— setState 是非同步的，這一行讀到的還是儲存前的值，
                     //    而最常見的觸發路徑正好是「這次儲存把 StatusID 推到下一階段」，
@@ -2237,7 +2260,29 @@ const { useState, useMemo, Fragment, useEffect } = React;
                         ? list.find(d => payload.id ? d.id === payload.id
                                                     : (d.nid || '').trim() === (payload.nid || '').trim())
                         : null;
-                    if (fresh && unsetDuePhase(fresh)) askNotifyUnset(fresh);
+                    // ⚠️ **只在真的寄得出去時才問**（2026-09-02 / 第 42 批，使用者要求：
+                    //    「有信箱時才詢問。我一定會補齊信箱」）。第 42 批把 ① 的結束日改成
+                    //    選填之後，這條路從「按過完成才偶爾走到」變成「每建一筆沒壓日期的
+                    //    需求都會走到」—— 收件者沒信箱時原本會跳一個他當下修不了的錯誤視窗
+                    //    （EMAIL 欄是唯讀的，只能在 SSMS 補），擋在每一次新增的最後一步。
+                    // ⚠️ 這**不是**把失敗吞掉：那一列的「⚠ 未壓日期」徽章與 ✉ 照樣在，
+                    //    使用者自己按下 ✉ 時仍然會看到「無法寄出通知」與該去補什麼
+                    //    —— 第 39 批「寄不出去照樣要出聲」那條界線只縮到「他主動要寄」的時候。
+                    //    差別在於**誰起的頭**：他自己按 ✉ 是在問「寄了沒」，非講不可；
+                    //    存完檔是系統插話，講一件他此刻無能為力的事只是噪音。
+                    // ⚠️ 2026-09-02 / 第 43 批再加一個條件：**這個階段、這個收件者還沒通知過**。
+                    //    停在同一個未壓日期的階段時，原本每存一次檔就再問一次同一件事
+                    //    （見 phaseNotifiedEntry 的說明）。手動 ✉ 完全不受影響。
+                    // ⚠️ 這裡一定要用 fetchHistory() **剛回傳的 hist**，不可以讀 historyEntries／
+                    //    historyMap —— 與上面 fresh 是同一個坑（setState 非同步）。抓取失敗時
+                    //    hist 是 null，此時 phaseNotifiedEntry 會退回讀 historyMap（舊的），
+                    //    最壞情況是多問一次，不會少問。
+                    if (fresh && unsetDuePhase(fresh)) {
+                        const preview = notifyPreview(fresh);
+                        if (preview && !preview.problem
+                            && !phaseNotifiedEntry(fresh.id, preview.phase.key, preview.toEmail, hist))
+                            askNotifyUnset(fresh);
+                    }
                 } catch(err) {
                     console.error(err);
                     showToast('儲存失敗：' + err.message, 'error');
@@ -2659,6 +2704,23 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // ⚠️ 不濾 isActive：這裡問的是「這個名字的信箱是什麼」，不是「可不可以指派給他」。
             //    停用的人仍掛在既有需求上（ownerSelectOptions 會把他補回選項），
             //    濾掉的話那些需求打開就看不到信箱，而畫面上也不會說為什麼。
+            // 信箱格式檢查（第 44 批）。⚠️ **刻意比後端的 MailAddress.TryCreate 寬鬆**：
+            // 這裡誤判成壞值會擋掉一封後端其實寄得出去的信，反過來只是讓後端再擋一次而已。
+            // ⚠️ **不可以要求網域裡一定有點**（`a@b.com` 那種）—— 公司內部信箱長得像
+            //    `Chih_Kuan_Chang@UMCG`，加了那條規則會把整份名單判成壞的。
+            // 擋的是實際會出事的那幾種：空白、逗號／分號串接、角括號夾姓名、兩個 @。
+            const MAIL_ADDR_RE = /^[^\s,;<>"()[\]\\@]+@[^\s,;<>"()[\]\\@]+$/;
+            const isMailAddr = (e) => {
+                let a = (e || '').trim();
+                // ⚠️ 從 Outlook 貼過來的「姓名 <位址>」後端**是接受的**（實測 MailAddress.TryCreate
+                //    收 `王小明 <a@x.com>`）—— 這裡不還原成內層位址就會比後端嚴，
+                //    把一個其實寄得出去的信箱標成「格式不正確」。角括號沒收尾的（`王小明 <a@x.com`）
+                //    兩邊都判壞，不必特別處理
+                const m = a.match(/<([^<>]*)>\s*$/);
+                if (m) a = m[1].trim();
+                return MAIL_ADDR_RE.test(a);
+            };
+
             const assigneeEmailOf = (dept, name) => {
                 const n = (name || '').trim();
                 if (!n) return '';
@@ -2690,6 +2752,54 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // ⚠️ 這一支**只是給使用者先看一眼**。真正的收件者、階段、主旨、內文
             //    全部由後端 UnsetPhaseOf() 自己重算一次 —— 那一支會真的把信寄出去，
             //    收件者若能由前端指定，任何人都可以借系統的名義寄信給指派名單上的人。
+            // ─── 「這個階段、這個人，已經通知過了嗎」（2026-09-02 / 第 43 批，使用者要求）───
+            // 使用者的原話：「若改成只要同一個狀態寄信一次成功、我就不強迫每次儲存都會跳出
+            // 視窗詢問，只寄信一次盡到通知的責任。」在此之前只要停在同一個未壓日期的階段，
+            // **每一次儲存**都會再問一次要不要通知 —— 講的是同一件已經做過的事。
+            // ⚠️ 重複跳窗的代價不是煩，是**把真正該響的那次一起消音**：手會學會看到這個視窗
+            //    就按取消，等到 ③ 變成新的未壓階段（收件者換人、是真的該寄的一封）也會被
+            //    一秒關掉。這與第 42 批「存完檔是系統插話」是同一條原則再往前一步。
+            // ⚠️ 這只收掉**自動詢問**。資料列的「⚠ 未壓日期」徽章、✉ 手動寄信鈕、需關注計數、
+            //    dueRank=0 排最前全部不動 —— 持續的催辦壓力本來就在那些地方，不在這個視窗上。
+            //
+            // 四條界線，少一條就會靜靜吞掉一封該寄的信：
+            //  1. 判定鍵是 **(需求, 階段)**，不是需求。② 通知過之後推進到 ③，③ 也沒壓日期時
+            //     收件者是另一個人、他從來沒被通知過，那一次必須照樣問。
+            //  2. 基準線是**同一階段最後一次 `規格回退` 之後**（與 phaseDoneEntry 同一套，
+            //     連「用 id 不用 changedAt 比先後」都一樣）。回退會把日期清成 NULL，那個階段
+            //     是真的要重壓一次；沿用回退前的紀錄等於這條路以後永遠不再問。
+            //     ⚠️ 基準線必須按 phase 過濾：回退只清「≥ 目標階段」，跨階段取 MAX(Id) 會把
+            //     前面沒被清的階段一起判成「要重新通知」。
+            //  3. 依據是**稽核列**（後端寄成功才寫的那一筆），不是 localStorage / component
+            //     state —— 否則 A 寄過、B 在另一台存檔還是會被問，重整之後答案又不一樣。
+            //  4. **收件者換人就重問**（2026-09-02 使用者要求：「變更的負責人沒收過信件，
+            //     完全不知道有這件事。我一定要盡到有通知的責任」）。比對稽核 Note 裡的
+            //     收件者信箱與現在該收信的人。
+            // ⚠️ 判不出來時一律回 null（＝當成沒通知過、照樣問）。這一支的兩種失敗方向差很多：
+            //    多問一次只是吵，少問一次是下一棒完全不知道有這件事 —— 那正是使用者最在意的。
+            //    所以 Note 格式對不上、信箱是空的、queued 未確認送出，全部往「還沒通知」倒。
+            // ⚠️ entries 傳進來時用傳進來的那一份（存檔後那條路要用 fetchHistory() 剛回傳的
+            //    新資料，historyMap 是 state 算出來的、那時候還是舊的）
+            const NOTIFY_TO_RE = /收件者\s*[^<]*<([^>]+)>/;
+            const phaseNotifiedEntry = (itemId, phaseKey, toEmail, entries) => {
+                const want = (toEmail || '').trim().toLowerCase();
+                if (!itemId || !phaseKey || !want) return null;
+                const all = entries ? entries.filter(h => h.requirementId === itemId)
+                                    : (historyMap.get(itemId) || []);
+                const lastRollbackId = all.reduce(
+                    (max, h) => (h.changeType === '規格回退' && h.phase === phaseKey && h.id > max) ? h.id : max, 0);
+                return [...all].reverse().find(h => {
+                    if (h.changeType !== '通知寄送' || h.phase !== phaseKey) return false;
+                    if (h.id <= lastRollbackId) return false;
+                    const note = h.note || '';
+                    // 「已排入佇列但未確認送出」不算寄過（使用者的用詞是「寄信一次**成功**」）。
+                    // 後端在 Note 上標了這句話就是為了讓這一列日後分得出來，dbmail 模式會用到
+                    if (note.includes('未確認送出')) return false;
+                    const m = note.match(NOTIFY_TO_RE);
+                    return !!m && m[1].trim().toLowerCase() === want;
+                }) || null;
+            };
+
             const notifyPreview = (item) => {
                 const ph = unsetDuePhase(item);
                 if (!ph) return null;
@@ -2698,7 +2808,11 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 const toName = ((side === 'MSD' ? item.msdOwner : item.emsOwner) || '').trim();
                 const ccName = ((side === 'MSD' ? item.emsOwner : item.msdOwner) || '').trim();
                 const toEmail = toName ? assigneeEmailOf(side, toName) : '';
-                const ccEmail = ccName ? assigneeEmailOf(ccDept, ccName) : '';
+                const ccEmailRaw = ccName ? assigneeEmailOf(ccDept, ccName) : '';
+                // 格式壞掉的副本在預覽裡就當成沒有（後端也會這樣降級），
+                // 否則視窗會顯示「副本：宸詳 <a@x.com;b@y.com>」像是真的會寄給他
+                const ccEmail = isMailAddr(ccEmailRaw) ? ccEmailRaw : '';
+                const ccBadFormat = ccEmailRaw !== '' && ccEmail === '';
                 // 寄件者＝按下按鈕的那個人本人（2026-08-31 使用者要求）：
                 // Windows 帳號剝掉網域就是工號，對 dbo.Assignee 的 EMPO 查出信箱。
                 // ⚠️ 只認 source === 'windows' —— 模擬帳號用本人身分寄信是真的冒名，
@@ -2709,13 +2823,23 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     : null;
                 // ⚠️ 寄不出去的原因要講得夠具體到可以直接去修（EMAIL 欄是唯讀的，
                 //    只能在 SSMS 改）—— 只說「無法寄出」的話沒有人知道要去哪裡補
+                // ⚠️ 「格式打錯」也要算進 problem（第 44 批）。它與「沒填」的後果一模一樣：
+                //    後端會回 400、信寄不出去，而使用者當下修不了（EMAIL 欄唯讀，只能在 SSMS 改）
+                //    —— 少了這一條，存檔後的自動詢問又會跳出來問一件他無能為力的事，
+                //    正是第 42 批要收掉的那種噪音。判定與後端的 IsValidMailAddress() 同一組界線，
+                //    但**刻意寫得寬鬆一點**：這裡誤判成壞值會擋掉一封後端其實寄得出去的信。
                 const problem = !toName
                     ? `這筆需求的 ${side} 負責人還沒指派，無法決定要通知誰。\n\n請先在編輯視窗指派「${side} 負責人」。`
                     : !toEmail
                     ? `指派人員主檔（dbo.Assignee）裡「${toName}／${side}」沒有填 EMAIL，無法寄出通知。\n\n`
                       + '信箱欄位是唯讀的，請直接在 SSMS 補上之後再試一次。'
+                    : !isMailAddr(toEmail)
+                    ? `指派人員主檔（dbo.Assignee）裡「${toName}／${side}」的 EMAIL 格式不正確，無法寄出通知。\n\n`
+                      + `目前的值：${toEmail}\n\n`
+                      + '信箱欄位是唯讀的，請直接在 SSMS 修正之後再試一次。\n'
+                      + '常見打錯：夾雜全形字元、多個信箱用逗號或分號串在一起、前後多了角括號或姓名。'
                     : '';
-                return { phase: ph, side, toName, toEmail, ccDept, ccName, ccEmail, problem,
+                return { phase: ph, side, toName, toEmail, ccDept, ccName, ccEmail, ccBadFormat, problem,
                          fromName: me ? me.name : '', fromEmail: me ? (me.email || '').trim() : '' };
             };
 
@@ -2733,19 +2857,29 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 if (p.problem) { setAlertModal({ title: '無法寄出通知', message: p.problem }); return; }
 
                 const who = [item.nid && `NID ${item.nid}`, item.mainCat, item.subCat].filter(Boolean).join(' / ');
-                const ccLine = p.ccEmail ? `副本　：${p.ccName} <${p.ccEmail}>`
-                             : p.ccName  ? `副本　：${p.ccName}（指派人員主檔裡沒有信箱，這次不會有副本）`
-                                         : `副本　：（${p.ccDept} 還沒指派負責人，這次不會有副本）`;
+                const ccLine = p.ccEmail    ? `副本　：${p.ccName} <${p.ccEmail}>`
+                             : p.ccBadFormat ? `副本　：${p.ccName}（信箱格式不正確，這次不會有副本）`
+                             : p.ccName     ? `副本　：${p.ccName}（指派人員主檔裡沒有信箱，這次不會有副本）`
+                                            : `副本　：（${p.ccDept} 還沒指派負責人，這次不會有副本）`;
                 // 寄件者一定要寫在視窗上：這封信會用他的名義寄出去，
                 // 按下去之前看不到是誰寄的，等於替他簽了一個名
                 const fromLine = p.fromEmail
                     ? `寄件者：${p.fromName} <${p.fromEmail}>（你本人，對方可以直接回信）`
                     : '寄件者：系統預設信箱（你的工號在指派人員主檔裡查不到信箱）';
+                // 已經通知過同一個人時，把上一次的時間講出來（2026-09-02 / 第 43 批）。
+                // ⚠️ **只告知、不擋**：存檔後的自動詢問已經因為這一列而不再跳，所以走到這裡
+                //    就代表他是自己按了 ✉ —— 那多半正是「對方沒回，我要再催一次」。擋下來
+                //    等於把「通知過了沒」這個他唯一查得到答案的地方改成一道關卡。
+                const prev = phaseNotifiedEntry(item.id, p.phase.key, p.toEmail);
+                const againLine = prev
+                    ? `⚠️ 這個階段已經在 ${prev.changedAt} 通知過 ${p.toName} 了，這會是第二封。\n\n`
+                    : '';
                 setConfirmModal({
                     title: '寄信通知壓定日期',
                     message: `需求「${who}」目前已經走到「${p.phase.label}」，但這個階段還沒有壓日期。\n\n`
                            + `要寄信通知 ${p.side} 負責人進系統把日期壓上去嗎？\n\n`
                            + `${fromLine}\n收件者：${p.toName} <${p.toEmail}>\n${ccLine}\n\n`
+                           + againLine
                            + '按「確定」會立刻寄出，並在這筆需求的時程變更軌跡留下一筆「通知寄送」紀錄。',
                     onConfirm: () => runExclusive(async () => {
                         // ⚠️ 一定要先講「正在寄」（2026-09-01 補）。寄信是這個 App 裡**唯一**要等
@@ -2753,11 +2887,22 @@ const { useState, useMemo, Fragment, useEffect } = React;
                         // 畫面上什麼都沒有（按鈕 disabled、沒有 toast），使用者看到的就是
                         // 「按了沒反應」，實際回報過。結果回來時這個 toast 會被覆蓋掉
                         showToast('寄送中…（連不到郵件主機時最多會等 20 秒）');
+                        // ⚠️ **這個 AbortController 不可以拿掉**（第 44 批，2026-09-02）。
+                        // 這是整個 App 裡唯一沒有上限的等待：後端寄信卡住時（見
+                        // SendNotifyMailAsync 的說明）這次 fetch 會**無限期地等下去**，
+                        // 而整段包在 runExclusive() 裡 —— submittingRef 永遠放不掉，
+                        // 那個分頁的儲存／完成／回退／刪除會**一起被鎖死**，只能重新整理。
+                        // ⚠️ 90 秒是**保險絲，不是主要的逾時**：後端自己已經有 20 秒的上限
+                        // （TCP 探測 20 + SMTP 對話 20，dbmail 是 SQL 逾時 + 輪詢 20），
+                        // 正常情況輪不到它。設太短會把「後端其實正要成功」的那次砍掉。
+                        const ctl = new AbortController();
+                        const fuse = setTimeout(() => ctl.abort(), 90000);
                         try {
                             const res = await fetch(api(`/api/requirements/${item.id}/notify-unset`), {
                                 method: 'POST',
                                 headers: {'Content-Type': 'application/json'},
-                                body: JSON.stringify({ actorEmpId: actor.empId || '', actorSource: actor.source })
+                                body: JSON.stringify({ actorEmpId: actor.empId || '', actorSource: actor.source }),
+                                signal: ctl.signal
                             });
                             const b = await res.json().catch(() => ({}));
                             if (!res.ok) {
@@ -2781,22 +2926,40 @@ const { useState, useMemo, Fragment, useEffect } = React;
                             } else {
                                 showToast(`已寄出通知給 ${p.toName}`);
                                 // 副本寄不出去是使用者會想知道的事，而 toast 會自己消失，所以另外講一次
+                                // ⚠️ 理由由後端給（b.ccReason，第 44 批）——「沒填」與「格式打錯」
+                                // 要做的動作不一樣：前者是去補一個值，後者是那一格已經有東西、
+                                // 要去看它到底打成什麼樣。寫死成「沒有填 EMAIL」會害人去找一個
+                                // 空欄位，而它其實有值、只是壞的
                                 if (b.ccMissing)
                                     setAlertModal({
                                         title: '已寄出，但沒有副本',
                                         message: `通知已寄給 ${b.toName} <${b.to}>。\n\n`
-                                               + `⚠️ 副本 ${b.ccName} 在指派人員主檔裡沒有填 EMAIL，這一封沒有副本給他。`
+                                               + '⚠️ ' + (b.ccReason
+                                                   || `副本 ${b.ccName} 在指派人員主檔裡沒有填 EMAIL，這一封沒有副本給他。`)
                                     });
                             }
                         } catch (err) {
                             // ⚠️ 這裡用 alertModal 不用 toast：toast 會自己消失，而使用者可能
                             // 已經等了十幾秒去做別的事，回頭什麼都沒看到就會以為信寄出去了
                             console.error(err);
-                            setAlertModal({
-                                title: '寄信失敗',
-                                message: err.message + '\n\n連不到後端服務，或請求在中途被中斷。請重新整理後再試一次。'
-                            });
-                        }
+                            // ⚠️ 保險絲燒掉時**絕對不可以說「沒有寄出」**（第 44 批）：abort 只是
+                            // 前端不等了，後端那次請求還在跑，信很可能照樣寄出去、稽核列也照樣寫。
+                            // 講成失敗會讓使用者再按一次，對方就收到第二封 —— 與後端「未確認送出」
+                            // 那條路是同一個道理，措辭必須留在「不確定」這一邊
+                            if (err.name === 'AbortError')
+                                setAlertModal({
+                                    title: '等太久，已停止等待',
+                                    message: '超過 90 秒還沒有收到結果，畫面先不等了。\n\n'
+                                           + '⚠️ 這不代表信沒有寄出 —— 後端可能仍在處理，也可能已經寄出去了。\n\n'
+                                           + '請按頁首的重新整理，看這筆需求的「時程變更軌跡」有沒有多一列「通知寄送」：\n'
+                                           + '有 → 已經寄出，不用再按。\n沒有 → 才需要再按一次 ✉。'
+                                });
+                            else
+                                setAlertModal({
+                                    title: '寄信失敗',
+                                    message: err.message + '\n\n連不到後端服務，或請求在中途被中斷。請重新整理後再試一次。'
+                                });
+                        } finally { clearTimeout(fuse); }
                     })
                 });
             };
@@ -4284,8 +4447,29 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 // 用「下一筆的原日期」把新日期反推回來。
                                                 // 真正的異動與「首次填寫」分開呈現：這個面板叫「時程變更軌跡」，
                                                 // 主管要看的是「改了什麼」，初始值只是對照用的背景資料，所以沉到下面
-                                                const changeEntries = shownHist.filter(h => h.changeType !== 'init');
+                                                // ─── 通知寄送抽出來，不進時間軸（第 45 批，2026-09-03 使用者要求）───
+                                                // 這個面板叫「時程變更軌跡」，其他每一筆回答的是「這個日期為什麼變了」，
+                                                // 而 `通知寄送` 回答的是「催過了沒」—— 它本來就不是時程變更
+                                                //（早就被排除在 isDateChange 與 ⚠N 之外），卻還是被畫成同一種卡。
+                                                // ⚠️ 實測 7 筆通知的實際代價：軌跡總高度 365px → **951px**，
+                                                //    通知獨佔 **586px（62%）**，而面板可視高度只有 224px ——
+                                                //    真正的時程變更被擠到要捲四個畫面。每張通知卡 74~91px，
+                                                //    和一張「日期異動」卡一樣大，但七張講的是同一句話。
+                                                // ⚠️ 第 35 批的 changeGroups 對它**完全沒有作用**：合併條件含
+                                                //    「時間相同」與「說明相同」，而每次通知的時間必然不同 ——
+                                                //    催五次就是五張卡，一張都併不掉。
+                                                // ⚠️ 精簡的是**顯示**，不是**紀錄**：稽核列一筆都沒有少，
+                                                //    完整的 Note（收件者信箱／副本／寄件者）掛在每一行的 title 上。
+                                                //    使用者的原話：「手動寄信不用限制使用者要寄幾封，但寄信需要留下歷史紀錄」
+                                                const notifyEntries = shownHist.filter(h => h.changeType === '通知寄送');
+                                                const changeEntries = shownHist.filter(h => h.changeType !== 'init' && h.changeType !== '通知寄送');
                                                 const initEntries   = shownHist.filter(h => h.changeType === 'init');
+                                                // 摘要行要用的資料。⚠️ 收件者從 Note 解析（後端格式見 Program.cs 的 auditNote）——
+                                                //    解析不到就不顯示那一段，**不可以讓整行壞掉**（Note 是自由文字，
+                                                //    舊資料或日後改格式都可能對不上，而這一行只是導覽用的摘要）
+                                                const notifyToOf = h => ((h.note || '').match(/收件者\s*([^<]*)</) || [])[1]?.trim() || '';
+                                                const notifyUnsure = h => (h.note || '').includes('未確認送出');
+                                                const lastNotify = notifyEntries[notifyEntries.length - 1] || null;
                                                 // 四筆 init 通常是同一次匯入寫進去的，時間與來源完全一樣 ——
                                                 // 那就抽到區塊標題上講一次，不必每行重複。真的不一致時退回逐行顯示
                                                 const initStamps = [...new Set(initEntries.map(h =>
@@ -4309,6 +4493,11 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                     if (last && last.key === k) last.rows.push(h);
                                                     else changeGroups.push({ key: k, rows: [h] });
                                                 });
+                                                // ⚠️ 時間軸空不空要看**時間軸自己的內容**，不可以再用 hasHist
+                                                //（第 45 批）：通知抽走之後，「只有通知紀錄、沒有任何時程變更」
+                                                // 是做得出來的（新建一筆沒壓日期的需求 → 通知 → 還沒改過任何日期）。
+                                                // 沿用 hasHist 的話那種需求會落到 else 分支，畫出一個空白的捲動區
+                                                const hasTimeline = changeGroups.length > 0 || initEntries.length > 0;
                                                 // 已結案的列改用淡底色標示，不再整列 opacity:0.5 —— 那會連文字
                                                 // 一起變淡，對比度掉到不易閱讀
                                                 // 投影模式加斑馬紋：投出來的對比比螢幕低得多，
@@ -4585,12 +4774,88 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                                                         {histCount} 次
                                                                                     </span>
                                                                                 )}
+                                                                                {/* ✉ 已通知 N 次（第 45 批）。⚠️ 這個數字本身就是訊號 ——
+                                                                                    催了五次還沒壓日期是該升級處理的事，做成一個計數遠比
+                                                                                    做成五張卡看得出來（舊版要自己數卡片才知道催過幾次） */}
+                                                                                {notifyEntries.length > 0 && (
+                                                                                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded cursor-help"
+                                                                                          style={{color:changeTypeStyle('通知寄送').color,
+                                                                                                  background:changeTypeStyle('通知寄送').bg,
+                                                                                                  border:`1px solid ${changeTypeStyle('通知寄送').color}`}}
+                                                                                          title="寄信通知下一棒來壓日期的次數。通知不算時程變更，所以不計入左邊那個次數，明細列在下方">
+                                                                                        ✉ 已通知 {notifyEntries.length} 次
+                                                                                    </span>
+                                                                                )}
                                                                             </h4>
-                                                                            {!hasHist
+                                                                            {/* ─── 通知紀錄摘要（第 45 批，2026-09-03 使用者要求）───
+                                                                                收合成一行，不再各佔一張 74~91px 的卡。
+                                                                                ⚠️ 一筆稽核列都沒有少，完整的 Note（收件者信箱／副本／寄件者／
+                                                                                是否未確認送出）掛在每一行的 title 上 ——
+                                                                                精簡的是顯示，不是紀錄 */}
+                                                                            {notifyEntries.length > 0 && (
+                                                                                <div className="mb-3 rounded-lg overflow-hidden"
+                                                                                     style={{background:'var(--bg-input)', border:'1px solid var(--bg-input-border)'}}>
+                                                                                    <button type="button"
+                                                                                            onClick={e => { e.stopPropagation(); toggleNotifyOpen(item.id); }}
+                                                                                            aria-expanded={!!notifyOpen[item.id]}
+                                                                                            aria-label={`${notifyOpen[item.id] ? '收合' : '展開'} NID ${item.nid || item.id} 的通知紀錄（共 ${notifyEntries.length} 次）`}
+                                                                                            className="w-full flex items-center gap-1.5 text-left text-[11px] px-2 py-1.5 cursor-pointer"
+                                                                                            style={{color:'var(--text-tertiary)', background:'transparent', border:'none'}}>
+                                                                                        <span aria-hidden="true" style={{color:changeTypeStyle('通知寄送').color}}>✉</span>
+                                                                                        <span className="font-bold" style={{color:'var(--text-secondary)'}}>
+                                                                                            已通知 {notifyEntries.length} 次
+                                                                                        </span>
+                                                                                        {lastNotify && (
+                                                                                            <span className="truncate">
+                                                                                                · 最後 {lastNotify.changedAt}
+                                                                                                {lastNotify.changedBy ? ` · ${lastNotify.changedBy}` : ''}
+                                                                                                {notifyToOf(lastNotify) ? ` → ${notifyToOf(lastNotify)}` : ''}
+                                                                                            </span>
+                                                                                        )}
+                                                                                        <span className="ml-auto shrink-0 font-bold"
+                                                                                              style={{color:changeTypeStyle('通知寄送').color}}>
+                                                                                            {notifyOpen[item.id] ? '收合 ▲' : '展開 ▼'}
+                                                                                        </span>
+                                                                                    </button>
+                                                                                    {notifyOpen[item.id] && (
+                                                                                        <div className="px-2 pb-1.5 max-h-32 overflow-y-auto scrollbar-thin"
+                                                                                             style={{borderTop:'1px solid var(--bg-input-border)'}}>
+                                                                                            {/* 最新的排最前 —— 這一區問的是「最近催過沒」，
+                                                                                                與下方時間軸（依時序）的用途不同 */}
+                                                                                            {[...notifyEntries].reverse().map(h => (
+                                                                                                <div key={h.id} className="flex items-center gap-1.5 py-1 text-[11px] leading-tight"
+                                                                                                     title={h.note || ''}
+                                                                                                     style={{color:'var(--text-tertiary)'}}>
+                                                                                                    <span style={{color:'var(--text-muted)'}}>{h.changedAt}</span>
+                                                                                                    {h.changedBy && (
+                                                                                                        <span style={{color:'var(--text-muted)'}}>
+                                                                                                            · {h.changedBy}
+                                                                                                            {h.changedBySource === 'simulated' && <span title="這筆是用模擬帳號寫入的">（模擬）</span>}
+                                                                                                        </span>
+                                                                                                    )}
+                                                                                                    <span>→ {notifyToOf(h) || '（收件者不明）'}</span>
+                                                                                                    <span className="shrink-0" style={{color:(PHASES[h.phase]||{}).color||'var(--text-muted)'}}>
+                                                                                                        {timelineLabelOf(h.phase)}
+                                                                                                    </span>
+                                                                                                    {/* ⚠️ 「未確認送出」一定要看得見：那一列就是「到底通知了沒」
+                                                                                                        日後唯一的依據，收在 tooltip 裡等於看不到 */}
+                                                                                                    {notifyUnsure(h) && (
+                                                                                                        <span className="shrink-0 font-bold" style={{color:'var(--tone-alert)'}}
+                                                                                                              title="這一封交給郵件系統了，但沒有確認到真的送出去">⚠ 未確認送出</span>
+                                                                                                    )}
+                                                                                                </div>
+                                                                                            ))}
+                                                                                        </div>
+                                                                                    )}
+                                                                                </div>
+                                                                            )}
+                                                                            {!hasTimeline
                                                                                 /* 「讀不到」不可以長得跟「沒有被改過」一樣（第 24 批） */
                                                                                 ? <div className="text-xs italic py-4 text-center"
                                                                                        style={{color: historyError ? 'var(--tone-alert)' : 'var(--text-muted)'}}>
-                                                                                    {historyError ? '軌跡讀取失敗，這不代表沒有變更' : '無變更紀錄'}
+                                                                                    {historyError ? '軌跡讀取失敗，這不代表沒有變更'
+                                                                                     : notifyEntries.length > 0 ? '沒有時程變更紀錄（上方是通知紀錄）'
+                                                                                     : '無變更紀錄'}
                                                                                   </div>
                                                                                 : <div className="space-y-3 max-h-56 overflow-y-auto scrollbar-thin pr-1">
                                                                                     {changeGroups.map((g,gi)=>{
@@ -4941,9 +5206,22 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                     <StartDefaultHint start={editingData.spec?.start} end={editingData.spec?.end} />
                                                 </div>
                                                 <div>
-                                                    <label className="block text-xs mb-1" style={{color:'var(--text-secondary)'}}>End Date <span className="text-red-500">*</span></label>
+                                                    {/* ① 的 End 2026-09-02 起只在「原本就有值」時必填（第 42 批）——
+                                                        新增與回退後都是選填。⚠️ 紅星走 specEndRequired，
+                                                        不可以寫死：標了紅星卻存得進去、或沒標卻被擋下來，兩種都沒人看得懂 */}
+                                                    <label className="block text-xs mb-1" style={{color:'var(--text-secondary)'}}>End Date {specEndRequired
+                                                        ? <span className="text-red-500">*</span>
+                                                        : <span className="font-normal" style={{color:'var(--text-muted)'}}>(可不填)</span>}</label>
                                                     <input type="date" min={editingData.spec?.start||undefined} disabled={isFieldLocked('spec', 'end')} className="w-[160px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-amber-500/50 disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800" style={{background:isFieldLocked('spec','end')?undefined:'var(--bg-main)', borderColor:errBorder('spec.end')}} value={editingData.spec?.end||''} onChange={e=>setEditingData({...editingData, spec:{...editingData.spec, end:e.target.value}})} />
                                                     <FieldErrorHint msg={errOf('spec.end')} />
+                                                    {/* 「可不填」單獨看會讀成「這一格不重要」，但它其實是唯一會讓這筆需求
+                                                        一存檔就掛上紅色警示的欄位 —— 把後果一起講完，使用者才知道留空
+                                                        不等於沒事、也不必為了避開警示先隨手填一個假日期 */}
+                                                    {!specEndRequired && !isDateVal(editingData.spec?.end) && (
+                                                        <div className="mt-1 text-[11px] leading-relaxed" style={{color:'var(--text-muted)'}}>
+                                                            留空的話這筆會標成「⚠ 未壓日期」，存檔後會問你要不要寄信通知 EMS 負責人。
+                                                        </div>
+                                                    )}
                                                 </div>
 
                                             </div>
@@ -5214,8 +5492,12 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         <div className="p-2.5 rounded-lg text-[11px]" style={{background:'var(--tone-alert-bg)', color:'var(--tone-alert)'}}>
                                             將清空以下階段的日期（含實際完成日）：<br/>
                                             <span className="font-bold">{clearedByRollback(rollbackModal.target).join('、')}</span>
+                                            {/* ⚠️ 這裡原本寫「起訖日是必填欄位，清空後必須重新填寫才能儲存」——
+                                                那句話從第 21 批起就不成立了（系統自己清掉的空值不擋儲存），
+                                                第 42 批把新增也改成選填之後更是完全反過來。留著會讓使用者
+                                                以為回退之後這筆需求整個卡住，不敢按 */}
                                             {rollbackModal.target === 1 && (
-                                                <div className="mt-1">⚠️ 1_EMS規格確認 的起訖日是必填欄位，清空後必須重新填寫才能儲存這筆需求。</div>
+                                                <div className="mt-1">清空後 ① 會變成「⚠ 未壓日期」，資料列上會出現紅色徽章與 ✉ 通知鈕。這筆需求仍然可以正常儲存，重新壓日期時也不必填異動理由（會記成「重新排程」）。</div>
                                             )}
                                         </div>
                                         <div>

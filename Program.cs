@@ -830,12 +830,21 @@ static string[] MissingRequiredFields(Requirement req, Requirement? before = nul
     // ⚠️ 開始日**不再是必填**（2026-08-22 使用者定調：Start 不重要，沒填就等同 End 同一天）。
     // ApplyStartDefaults() 會在驗證之前補好，所以這裡只要求 End
     //
-    // ⚠️ Spec 結束日只在「新增」或「原本就有值」時必填（2026-08-22 / 第 21 批）。
-    // 規格回退到 ① 會把 SpecStart / SpecEnd 清成 NULL，若照舊一律必填，那筆需求
-    // 連改個現況描述都會被擋下，非得先重壓一個 Spec 結束日不可 —— 就是第 14 批
-    // 刻意避開的「有值卻改不動」。條件寫成「原本有值」而不是直接不驗，
-    // 是為了仍然擋住「手動把既有的 Spec 結束日清空」。
-    if (before == null || !string.IsNullOrWhiteSpace(before.spec?.end))
+    // ⚠️ Spec 結束日**只在「原本就有值」時**必填（2026-09-02 / 第 42 批，使用者要求）。
+    //
+    // 新增時不再必填 —— 註冊需求的當下常常還排不出 EMS 交規格的日子，硬要一個日期
+    // 只會逼使用者先隨手填一個，而那個假日期會直接流進逾期判定與統計，
+    // 比「沒有日期」更難查（沒有日期至少看得出來是沒排）。
+    // ⚠️ 沒壓日期**不會變成沒人管**：新增時 StatusID 一律是 1，① 這一階段自己沒有日期
+    //    就正好命中第 33 批的「⚠ 未壓日期」—— 資料列上那一格會標紅色徽章並附一顆 ✉，
+    //    儲存成功後前端也會直接問要不要寄信通知 EMS 負責人（見 app.jsx 的 askNotifyUnset）。
+    //    這條規則能放寬的前提就是那兩個出口，動它們之前先回來看這一段。
+    //
+    // 規格回退到 ① 會把 SpecStart / SpecEnd 清成 NULL，同樣不擋（2026-08-22 / 第 21 批）——
+    // 否則那筆需求連改個現況描述都會被擋下，非得先重壓一個 Spec 結束日不可，
+    // 就是第 14 批刻意避開的「有值卻改不動」。
+    // 條件寫成「原本有值」而不是直接不驗，是為了仍然擋住「手動把既有的 Spec 結束日清空」。
+    if (before != null && !string.IsNullOrWhiteSpace(before.spec?.end))
         Need(req.spec?.end, "EMS 提 Spec 結束日");
     return missing.ToArray();
 }
@@ -1926,10 +1935,13 @@ static async Task<string> AssigneeEmailAsync(SqlConnection conn, string dept, st
     return v == null || v == DBNull.Value ? "" : ((string)v).Trim();
 }
 
-// 寄出一封純文字通知信。成功回 null，失敗回**看得懂的錯誤訊息**。
+// 寄出一封純文字通知信。
+// 回傳：Error != null → **確定失敗**；Uncertain == true → 送出去了但**狀態未確認**
+//（與 dbmail 的 Queued 同一個語意，端點兩邊共用同一組變數與同一種措辭）。
 // ⚠️ 用內建的 System.Net.Mail，刻意不引入 MailKit —— 這個專案不加未經同意的 NuGet 套件，
 //    而內網 Domino relay 用得上的功能（匿名或帳密、選配 SSL）它都有。
-async Task<string?> SendNotifyMailAsync(string fromEmail, string fromName, string toEmail, string ccEmail, string subject, string body)
+async Task<(string? Error, bool Uncertain, string Detail)> SendNotifyMailAsync(
+    string fromEmail, string fromName, string toEmail, string ccEmail, string subject, string body)
 {
     // ─── 先用一個「逾時真的算數」的 TCP 探測（2026-09-01）───
     // ⚠️ `SmtpClient.Timeout` **管不到 TCP 連線建立那一段**。實測：Timeout 設 8 秒、
@@ -1952,8 +1964,8 @@ async Task<string?> SendNotifyMailAsync(string fromEmail, string fromName, strin
         var reason = pex is TimeoutException
             ? $"連線逾時（{mailTimeout / 1000} 秒內沒有回應）"
             : pex.Message;
-        return reason + "\n\n" + MailFailureHint(psock, pex is TimeoutException, null)
-             + $"\n\n（SMTP：{mailHost}:{mailPort}，逾時 {mailTimeout / 1000} 秒）";
+        return (reason + "\n\n" + MailFailureHint(psock, pex is TimeoutException, null)
+             + $"\n\n（SMTP：{mailHost}:{mailPort}，逾時 {mailTimeout / 1000} 秒）", false, "");
     }
 
     try
@@ -1975,17 +1987,64 @@ async Task<string?> SendNotifyMailAsync(string fromEmail, string fromName, strin
             client.UseDefaultCredentials = false;
             client.Credentials = new NetworkCredential(mailUser, mailPass);
         }
-        await client.SendMailAsync(msg);
-        return null;
+        // ⚠️⚠️ **這個 CancellationToken 不可以拿掉**（第 44 批，2026-09-02）。
+        //    `SmtpClient.Timeout` 對 `SendMailAsync` **完全無效** —— 實測：Timeout 設 3 秒、
+        //    對一個「接受 TCP 連線之後就不回話」的假 relay 寄信，**60 秒後仍然沒有返回**
+        //    （而且看不出上限，等下去可能永遠不回來）。上面那個 TcpClient 探測攔不到這一種：
+        //    它只涵蓋「TCP 連線建立」，連上之後 relay 不講話就完全在它的守備範圍之外。
+        //    真實情境：relay 接了連線但 payload 被 IPS 吃掉、relay 過載沒送 220、
+        //    白名單外的來源被靜默 hold 住。
+        // ⚠️ 後果不只是「等很久」：前端那次 fetch 也跟著無限等，而整個動作包在
+        //    `runExclusive()` 裡 —— 那個分頁的儲存／完成／回退／刪除會**一起被鎖死**，
+        //    使用者只能重新整理。第 40 批修的「按了沒反應」就是同一個病的另一條路。
+        // ⚠️ 用 token 版而不是 `.WaitAsync()`：兩種都會在時限內返回（實測 3.05 秒 vs 3.00 秒），
+        //    但 `WaitAsync` 只是不等了，底層那個作業還會繼續佔著連線跑下去。
+        using var cts = new CancellationTokenSource(mailTimeout);
+        await client.SendMailAsync(msg, cts.Token);
+        return (null, false, "");
+    }
+    // ⚠️ 一定要排在下面那個 catch (Exception) **前面**。
+    // ⚠️ 逾時**不可以當成「確定失敗」**：對話是在中途被我們自己切斷的，
+    //    若 relay 早就把整封信收下了（卡在最後那個 250 回應），信其實已經送出去了。
+    //    回「寄信失敗」→ 不寫稽核列 → 使用者再按一次 → 對方收到第二封。
+    //    所以這裡走與 dbmail 完全相同的「未確認送出」那條路：照樣寫稽核列（標明未確認）、
+    //    畫面用彈窗、而且措辭不可以是「已寄出」。
+    catch (OperationCanceledException)
+    {
+        Console.WriteLine($"Notify mail send timed out after {mailTimeout} ms ({mailHost}:{mailPort})");
+        return (null, true,
+            $"已經連上 {mailHost}:{mailPort} 並開始傳送，但 {mailTimeout / 1000} 秒內沒有完成。\n"
+          // ⚠️ 這是給使用者看的純文字彈窗，不要在這裡用 ** 之類的 markdown 記號 ——
+          //    畫面上不會變粗體，只會原樣多出兩個星號
+          + "這封信可能已經寄出，也可能沒有 —— 對方是否收到請直接確認，不要先假設沒寄成功。\n\n"
+          + "郵件主機回應太慢時會這樣。若經常發生，請 IT 檢查 relay 的負載或這台主機到 relay 的網路品質。");
     }
     catch (Exception ex)
     {
         Console.WriteLine($"Notify mail send failed: {ex}");
         // 把 SMTP 伺服器實際回的話帶到畫面上 —— 「寄信失敗」四個字查不出任何東西
-        return ex.Message + (ex.InnerException != null ? "（" + ex.InnerException.Message + "）" : "")
+        return (ex.Message + (ex.InnerException != null ? "（" + ex.InnerException.Message + "）" : "")
              + "\n\n" + MailFailureHint(ex.InnerException as System.Net.Sockets.SocketException, false, ex as SmtpException)
-             + $"\n\n（SMTP：{mailHost}:{mailPort}，逾時 {mailTimeout / 1000} 秒，寄件者：{fromEmail}）";
+             + $"\n\n（SMTP：{mailHost}:{mailPort}，逾時 {mailTimeout / 1000} 秒，寄件者：{fromEmail}）", false, "");
     }
+}
+
+// ─── 信箱格式檢查（第 44 批，2026-09-02）───
+// ⚠️ **一定要在端點層驗、兩種送信方式共用**，不可以只靠 System.Net.Mail 自己丟例外：
+//  1. `dbo.Assignee.EMAIL` 是使用者**自己在 SSMS 手動維護**的（那一欄唯讀，程式不寫），
+//     打錯是可預期的，不是意外。
+//  2. smtp 模式下壞值會變成 `FormatException`，訊息是一句英文
+//     （「The specified string is not in the form required for an e-mail address.」），
+//     而 `MailFailureHint()` 對它回空字串（它只認 SocketException / SmtpException）——
+//     使用者看到的是**不知道是誰的信箱、也不知道要去哪裡改**的一句話。
+//  3. ⚠️ 更要緊的是兩種模式**行為不一樣**：`a@x.com;b@y.com` 這種值 smtp 會被 .NET 擋下，
+//     但 `sp_send_dbmail` 的 `@recipients` 本來就吃分號分隔的清單 —— dbmail 模式會
+//     **真的寄給兩個人**。同一份資料在兩種模式下結果不同，那是最難查的一種問題。
+// ⚠️ `MailAddress.TryCreate` 會連 `,` `;` `<` `@@` 這些一起擋掉（實測），正是要防的那些。
+static bool IsValidMailAddress(string? addr)
+{
+    var a = (addr ?? "").Trim();
+    return a != "" && MailAddress.TryCreate(a, out _);
 }
 
 // ─── 把「下一步該去查什麼」直接寫在畫面上（2026-09-01）───
@@ -2223,29 +2282,62 @@ app.MapPost("/api/requirements/{id}/notify-unset", async (int id, NotifyRequest?
             message = $"指派人員主檔裡「{toName}／{side}」沒有填 EMAIL，無法寄出通知。\n\n"
                     + "信箱欄位是唯讀的，請直接在 SSMS 的 dbo.Assignee 補上之後再試一次。"
         });
+    // ⚠️ 格式壞掉要與「沒填」分開講（第 44 批）：「沒填」是去補一個值，
+    //    「格式不對」是那一格已經有東西、要去看它到底打成什麼樣 —— 兩件事要做的動作不同
+    if (!IsValidMailAddress(toEmail))
+        return Results.BadRequest(new
+        {
+            message = $"指派人員主檔裡「{toName}／{side}」的 EMAIL 格式不正確，無法寄出通知。\n\n"
+                    + $"目前的值：{toEmail}\n\n"
+                    + "請直接在 SSMS 的 dbo.Assignee 修正（信箱欄位是唯讀的，畫面上改不了）。\n"
+                    + "常見打錯：夾雜全形字元、多個信箱用逗號或分號串在一起、前後多了角括號或姓名。"
+        });
     // ⚠️ 副本查不到信箱時**照樣寄出**，只是回應裡要講出來 —— 副本是附帶的，
-    //    為了它擋住主要收件者的通知是本末倒置
+    //    為了它擋住主要收件者的通知是本末倒置。格式壞掉的副本同理（降級成沒有副本），
+    //    但理由要分得出來，否則使用者會去 dbo.Assignee 找一個「空的」欄位而它其實有值
+    var ccBadFormat = ccEmail != "" && !IsValidMailAddress(ccEmail);
+    var ccBadValue = ccBadFormat ? ccEmail : "";
+    if (ccBadFormat) ccEmail = "";
     var ccMissing = ccName != "" && ccEmail == "";
+    var ccReason = !ccMissing ? ""
+                 : ccBadFormat ? $"副本 {ccName} 在指派人員主檔裡的 EMAIL 格式不正確（目前的值：{ccBadValue}），這一封沒有副本給他。"
+                               : $"副本 {ccName} 在指派人員主檔裡沒有填 EMAIL，這一封沒有副本給他。";
 
     // ── 3b. 寄件者：按下按鈕的那個人本人（工號 → dbo.Assignee.EMPO → EMAIL）──
     // 使用者要求：寄件者信箱從 dbo.Assignee 讀，不要另外設一個。收件者可以直接回信給他。
     // ⚠️ 只有真的 Windows 登入（source == "windows"）才用本人身分；模擬帳號一律退回
     //    設定檔的 Mail:From —— 讓模擬身分把信寄出去是真的冒名（見 AssigneeByEmpNoAsync）。
     var (actor, actorSrc) = ResolveActor(new Requirement { actorEmpId = body?.actorEmpId, actorSource = body?.actorSource });
-    var fromEmail = ""; var fromName = ""; var fromIsSelf = false;
+    var fromEmail = ""; var fromName = ""; var fromIsSelf = false; var fromBad = "";
     if (actorSrc == "windows" && !string.IsNullOrWhiteSpace(actor))
     {
         var (e, n) = await AssigneeByEmpNoAsync(conn, actor!);
-        if (e != "") { fromEmail = e; fromName = n == "" ? mailFromName : n; fromIsSelf = true; }
+        // ⚠️ 自己的信箱格式壞掉時**退回 Mail:From，不可以直接失敗**（第 44 批）——
+        //    與上面「查不到 EMPO／沒填 EMAIL」同一條界線：為了寄件者擋掉整封通知是本末倒置，
+        //    卡住的是「下一棒不知道輪到他了」，而寄件者只影響「回信會回到誰手上」。
+        //    真的擋住（連後備也沒有）時，下面那句 400 會把這個值講出來。
+        if (e != "" && IsValidMailAddress(e)) { fromEmail = e; fromName = n == "" ? mailFromName : n; fromIsSelf = true; }
+        else if (e != "") fromBad = e;
     }
     if (fromEmail == "") { fromEmail = mailFrom; fromName = mailFromName; }
     if (fromEmail == "")
         return Results.BadRequest(new
         {
             message = "找不到可用的寄件者信箱，無法寄出通知。\n\n"
-                    + $"你的工號（{(string.IsNullOrWhiteSpace(actor) ? "取不到 Windows 帳號" : actor)}）"
-                    + "在指派人員主檔（dbo.Assignee）裡查不到對應的 EMPO／EMAIL。\n\n"
-                    + "請在 SSMS 補上你的工號與信箱，或請管理者在 appsettings.json 的 Mail:From 設一個共用的系統信箱。"
+                    + (fromBad != ""
+                        ? $"你在指派人員主檔（dbo.Assignee）裡的 EMAIL 格式不正確（目前的值：{fromBad}）。\n\n"
+                        : $"你的工號（{(string.IsNullOrWhiteSpace(actor) ? "取不到 Windows 帳號" : actor)}）"
+                          + "在指派人員主檔（dbo.Assignee）裡查不到對應的 EMPO／EMAIL。\n\n")
+                    + "請在 SSMS 修正你的工號與信箱，或請管理者在 appsettings.json 的 Mail:From 設一個共用的系統信箱。"
+        });
+    // 後備的 Mail:From 自己被打錯時也要講清楚 —— 否則畫面上會冒出一句
+    // 「The specified string is not in the form required for an e-mail address.」，
+    // 而真正該去改的是 appsettings.json，不是任何人的 dbo.Assignee 資料
+    if (!IsValidMailAddress(fromEmail))
+        return Results.BadRequest(new
+        {
+            message = $"寄件者信箱的格式不正確（{fromEmail}），無法寄出通知。\n\n"
+                    + "這個值來自 appsettings.json 的 Mail:From，請管理者修正後重新啟動服務。"
         });
 
     // ── 4. 組信 ──
@@ -2297,7 +2389,10 @@ app.MapPost("/api/requirements/{id}/notify-unset", async (int id, NotifyRequest?
     }
     else
     {
-        sendError = await SendNotifyMailAsync(fromEmail, fromName, toEmail, ccEmail, subject, mailBody);
+        // ⚠️ smtp 也會回「未確認送出」（第 44 批）：對話逾時是被我們自己切斷的，
+        //    信可能已經送出去了 —— 與 dbmail 的佇列狀態共用同一組變數與同一種措辭
+        var r = await SendNotifyMailAsync(fromEmail, fromName, toEmail, ccEmail, subject, mailBody);
+        sendError = r.Error; queued = r.Uncertain; queuedNote = r.Detail;
     }
     if (sendError != null)
         return Results.Json(new { message = "寄信失敗：" + sendError }, statusCode: 502);
@@ -2308,12 +2403,18 @@ app.MapPost("/api/requirements/{id}/notify-unset", async (int id, NotifyRequest?
     // ⚠️ `通知寄送` **不算時程異動**（前端 isDateChange 只認 `日期異動`），
     //    它不會讓資料列多掛一個 ⚠N，也不動三個計數欄。
     var auditNote = $"通知「{phaseLabel}」尚未壓定日期 → 收件者 {toName} <{toEmail}>"
-                  + (ccEmail != "" ? $"，副本 {ccName} <{ccEmail}>" : ccMissing ? $"，副本 {ccName}（查無信箱，未寄送）" : "")
+                  + (ccEmail != "" ? $"，副本 {ccName} <{ccEmail}>"
+                     : ccMissing ? $"，副本 {ccName}（{(ccBadFormat ? "信箱格式不正確" : "查無信箱")}，未寄送）" : "")
                   // 寄件者也要記：日後查「這封信到底是誰的名義寄出去的」只有這裡查得到
                   + $"；寄件者 {fromName} <{fromEmail}>" + (fromIsSelf ? "" : "（系統預設信箱）")
                   // ⚠️ 「排入佇列但沒確認送出」一定要在軌跡上跟「已確認送出」分得出來 ——
                   //    這一列日後就是「到底通知了沒」的唯一依據，兩種混在一起等於這一列不能用
-                  + (queued ? $"；⚠ 已排入 Database Mail 佇列（mailitem_id={mailItemId}）但未確認送出" : "");
+                  // ⚠️ 「未確認送出」這四個字是這一列日後唯一分得出兩種狀態的依據，
+                  //    前端的 phaseNotifiedEntry()（第 43 批）也是靠它判斷「不算寄過」——
+                  //    兩種傳輸方式都必須寫進去，措辭不可以各寫一套
+                  + (queued ? (useDbMail
+                        ? $"；⚠ 已排入 Database Mail 佇列（mailitem_id={mailItemId}）但未確認送出"
+                        : $"；⚠ SMTP 對話在 {mailTimeout / 1000} 秒內未完成，未確認送出") : "");
     var empty = ((string?)null, (string?)null, (string?)null);
     try
     {
@@ -2331,11 +2432,11 @@ app.MapPost("/api/requirements/{id}/notify-unset", async (int id, NotifyRequest?
     var okMsg = (queued ? $"通知已交給郵件系統，但尚未確認送出（收件者 {toName} <{toEmail}>）"
                         : $"已寄出通知給 {toName} <{toEmail}>")
               + (ccEmail != "" ? $"，副本 {ccName} <{ccEmail}>" : "")
-              + (ccMissing ? $"\n\n⚠️ 副本 {ccName} 在指派人員主檔裡沒有信箱，這次沒有副本給他。" : "");
+              + (ccMissing ? $"\n\n⚠️ {ccReason}" : "");
     return Results.Ok(new
     {
         message = okMsg, phase = phaseKey, phaseLabel,
-        to = toEmail, toName, cc = ccEmail, ccName, ccMissing, subject,
+        to = toEmail, toName, cc = ccEmail, ccName, ccMissing, ccReason, subject,
         from = fromEmail, fromName, fromIsSelf,
         transport = useDbMail ? "dbmail" : "smtp", queued, mailItemId, queuedNote
     });
