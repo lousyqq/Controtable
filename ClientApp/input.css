@@ -19,6 +19,31 @@
     color: var(--text-secondary);
   }
 
+  /* ── 框架跟著內容一起變寬（2026-09-05 / 第 46 批第三段，使用者要求）──
+     使用者放大（瀏覽器 Ctrl＋滾輪／字級／投影）之後回報「版面破圖」。
+     真正壞掉的**不是表格**，是框架：
+     `<header>` 與 `<main>` 都是一般的區塊，寬度＝**視窗**寬；而表格比視窗寬時
+     它只是溢出去。於是往右捲時看到的是：表格還在延伸，頁首那塊白底、工具列卡片、
+     KPI 卡、圖例列卻在半空中就切斷了 —— 那道切齊視窗寬度的邊界就是「破圖」。
+
+     解法是讓最外層的容器改用 shrink-to-fit：
+       width: fit-content   → 內容比視窗寬時，容器跟著長到內容的寬度
+       min-width: 100%      → 內容比視窗窄時，容器仍然滿版（否則整頁會縮成一小條）
+     `<header>` / `<main>` 是它的子區塊，寬度自動跟著變成同一個值，
+     所以橫捲時整頁一起平移，每一塊卡片都完整、沒有任何一條邊被切在半空中。
+
+     ⚠️ 這是**唯一**不必犧牲欄數的解法。曾經試過「放不下就自動收成 9 欄」，
+        使用者當天否決：「我也不能夠強迫其他人若放大只能看精簡模式的資料」。
+     ⚠️ **不可以改成把表格包進 overflow-x:auto** —— 那會變成新的捲動容器，
+        兩層 sticky 表頭與左側凍結欄整套都會失效（見 app.jsx 表格上方的註解）。
+     ⚠️ **不可以寫死寬度**（例如 min-width: 1281px）：欄位增刪與字級都會改變它，
+        而寫死的值一旦過期就是「永遠橫捲」或「又切回去」。fit-content 自己會算。
+     ⚠️ 列印時一定要還原成 auto：紙張沒有捲軸，fit-content 撐出來的寬度會被直接裁掉。 */
+  .page-shell {
+    width: fit-content;
+    min-width: 100%;
+  }
+
   :root {
     /* ⚠️ color-scheme 一定要宣告。沒宣告時瀏覽器一律把原生控制項當淺色渲染，
        深色模式下 <select> 的下拉清單會變成「白底 + 繼承來的淺灰字」，
@@ -189,6 +214,25 @@
     display: inline-block;
     width: 140px;
     text-overflow: ellipsis;
+  }
+
+  /* ── 沒生效的篩選下拉降成安靜樣式（2026-09-05 / 第 50 批）──
+     五顆下拉裡通常只有一顆在做事（`進度：進行中`），其餘四顆停在「全部／不限」，
+     卻與生效中的那顆一樣是滿框滿底色，佔掉工具列 560px 的視覺重量。
+     ⚠️ 只動顏色，**寬度仍然固定 140px**（第 36 批）—— 讓寬度隨狀態變的話，
+     選了任何一顆篩選整條工具列都會跟著跳位。
+     選擇器用 `select.ctl.ctl-mute` (0,2,1)，高於上面的 `select.ctl` (0,1,1)。
+     hover / focus 時把框線還回來 —— 安靜不等於「看不出這裡可以點」。 */
+  select.ctl.ctl-mute {
+    background: transparent;
+    border-color: transparent;
+    color: var(--text-muted);
+    font-weight: 600;
+  }
+  select.ctl.ctl-mute:hover, select.ctl.ctl-mute:focus {
+    background: var(--bg-input);
+    border-color: var(--bg-input-border);
+    color: var(--text-secondary);
   }
 
   /* 分段控制列（頁首的「需求列表／統計報表」）。
@@ -456,6 +500,18 @@
 /* 只在紙上出現的元素（列印抬頭）。螢幕上一律隱藏 */
 .print-only { display: none; }
 
+/* ── 螢幕上收起、紙上照印（2026-09-05 / 第 50 批）──
+   ⚠️ 這兩個一定要寫在 @layer 外面：unlayered 的規則會贏過 @layer 裡的 Tailwind
+   工具類（`flex`），寫進 @layer 的話 display:none 會被 `flex` 蓋掉而完全不生效。
+   `.legend-strip.is-collapsed`：圖例是「第一次要看、之後再也不看」的內容，
+     每天卻佔著表格上方 61px。收起來只是螢幕上不顯示 —— **紙本一定要有**
+     （傳閱的人手上沒有 tooltip，⏰／🔄／⚠ 那幾個符號在紙上只剩圖例解釋得了）。
+   `.chips-print`：條件晶片只剩「預設那一顆」時併回上一排（省一整張卡），
+     但那一排是 no-print 的 —— 這張卡因此保留在 DOM 裡專供列印，
+     否則紙上會出現「64 筆只印了 19 筆」而沒有任何線索（第 28 批的規則）。 */
+.legend-strip.is-collapsed { display: none; }
+.chips-print { display: none; }
+
 @media print {
   /* ── 1. 紙上一律白底黑字 ──
      深淺色兩組色盤同時覆寫（`.dark` 掛在 body 上，選擇器要一起收）。
@@ -491,12 +547,18 @@
 
   .no-print { display: none !important; }
   .print-only { display: block !important; }
+  /* 螢幕上收起的兩塊在紙上一定要回來（見上面 .legend-strip / .chips-print 的說明） */
+  .legend-strip.is-collapsed, .chips-print { display: flex !important; }
 
   /* 卡片在紙上不需要陰影與圓角（雷射印表機的淡陰影只會變成一圈髒點） */
   .t-card, .t-table-card { box-shadow: none !important; border-radius: 0 !important; }
 
   /* 投影模式與字級的放大在紙上都要拿掉，否則右邊直接被裁掉 */
   .present-zoom, .ui-zoom { zoom: 1 !important; }
+
+  /* 框架的 fit-content 在紙上要還原（見上方 .page-shell）：
+     紙張沒有橫向捲軸，撐出來的寬度會被直接裁掉而不是變成可捲動 */
+  .page-shell { width: auto !important; min-width: 0 !important; }
 
   /* ── 2. 表頭每一頁重複 ──
      ⚠️ sticky 一定要還原成 static：印表機沒有捲軸，position:sticky 在部分

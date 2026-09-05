@@ -137,14 +137,33 @@ const { useState, useMemo, Fragment, useEffect } = React;
         // 這一格在此之前是一個灰色的「-」，與「這個階段還很遠、當然還沒排」長得一模一樣。
         // 差別在於 StatusID 已經走到這一階段了 —— 它現在就該有日期，而且它不會有任何
         // 逾期提醒（沒有日期就沒有到期日可比），所以只有這個徽章會讓人看見它
-        const UnsetDateBadge = ({ label }) => (
-            <span className="text-[10px] font-black px-1 py-0.5 rounded whitespace-nowrap cursor-help"
-                  style={{color:ALERT_STYLES.unset.color, background:ALERT_STYLES.unset.bg,
-                          border:`1px solid ${ALERT_STYLES.unset.border}`}}
-                  title={`目前已經走到「${label}」，但這一階段還沒壓日期。\n沒有到期日就不會有逾期提醒，所以列在「逾期優先」排序的最上面`}>
-                ⚠ 未壓日期
-            </span>
-        );
+        // ─── 「⚠ 未壓日期」徽章 ───
+        // onSetDate 有給時整顆變成按鈕：點下去直接開編輯視窗並跳到**那一階段的日期欄**。
+        // 在此之前它是 cursor-help 的 <span>，旁邊的 ✉（催別人壓）反而是唯一可按的東西 ——
+        // 「自己去壓那個日期」要關掉精簡模式 → 找那一列 → ✎ → 在四個區塊裡自己找出是哪一階段。
+        // 而 unsetDuePhase() 早就算出是哪一階段了，那段找路完全是白走的。
+        // ⚠️ **就地換元素，class 與 style 一個字都不改** —— 這一格的寬度是 96px 欄寬的來源之一
+        //    （第 39、52 批實測過兩次），加 padding／圖示／文字都會加寬整張表。
+        // ⚠️ 一定要 stopPropagation（同 NotifyMailButton）：外層 <tr> 有展開明細的 onClick。
+        // ⚠️ 精簡模式**不給** onSetDate —— 那是唯讀的主管檢視，操作欄整欄收起是刻意的，
+        //    這裡塞一個編輯入口進去等於把它從後門加回來（見 currentStageCell 的呼叫處）。
+        const UnsetDateBadge = ({ label, onSetDate }) => {
+            const cls = "text-[10px] font-black px-1 py-0.5 rounded whitespace-nowrap";
+            const sty = {color:ALERT_STYLES.unset.color, background:ALERT_STYLES.unset.bg,
+                         border:`1px solid ${ALERT_STYLES.unset.border}`};
+            const tip = `目前已經走到「${label}」，但這一階段還沒壓日期。\n沒有到期日就不會有逾期提醒，所以列在「逾期優先」排序的最上面`;
+            if (!onSetDate) return (
+                <span className={cls + ' cursor-help'} style={sty} title={tip}>⚠ 未壓日期</span>
+            );
+            return (
+                <button type="button" onClick={e => { e.stopPropagation(); onSetDate(); }}
+                        className={cls + ' cursor-pointer'} style={sty}
+                        title={tip + `\n\n點一下開啟編輯視窗，並直接跳到「${label}」的日期欄`}
+                        aria-label={`壓定「${label}」的日期`}>
+                    ⚠ 未壓日期
+                </button>
+            );
+        };
         // ─── 「通知下一棒來壓日期」的手動寄信鈕（第 39 批，2026-08-31，使用者要求）───
         // 只出現在「⚠ 未壓日期」那一格 —— 它是唯一一個「這件事卡在誰身上」明確到
         // 可以直接指名收件者的狀態（收件者＝這一階段的負責人、副本＝另一邊的負責人）。
@@ -169,14 +188,16 @@ const { useState, useMemo, Fragment, useEffect } = React;
         // actual = 實際完成日（只有「延期完成」才有值）。原訂 End 刻意保留不動，
         // 所以這欄一定要同時顯示兩個日期 —— 只顯示原訂的話主管根本看不到延遲
         // unset = 這一格就是「已到階段卻沒壓日期」的那一格（見 unsetDuePhase）
-        const scheduleCell = ({ val, alert, changes, label, br, actual, unset, onNotify }) => (
+        // onSetDate = 「⚠ 未壓日期」那顆按下去要做的事（開編輯視窗並跳到這一階段的日期欄）。
+        // 精簡模式那條路（currentStageCell）刻意不傳，見 UnsetDateBadge 的說明
+        const scheduleCell = ({ val, alert, changes, label, br, actual, unset, onNotify, onSetDate }) => (
             <td className="px-2 py-2.5" style={{borderRight:br}}>
                 {!val && !changes && !unset
                     ? <span className="text-xs" style={{color:'var(--text-muted)'}}>-</span>
                     : <div className="flex flex-col gap-0.5 items-start">
                         <div className="flex items-center gap-1">
                             {(unset && !val)
-                                ? <UnsetDateBadge label={label} />
+                                ? <UnsetDateBadge label={label} onSetDate={onSetDate} />
                                 : <span className="text-xs whitespace-nowrap"
                                       style={{color: actual ? 'var(--text-muted)' : alert ? alert.color : 'var(--text-secondary)',
                                               fontWeight: (alert && !actual) ? 700 : 500}}>
@@ -234,10 +255,23 @@ const { useState, useMemo, Fragment, useEffect } = React;
             if (r.unset) return (
                 <td className="px-2 py-2.5" style={{borderRight:br}}>
                     <div className="flex flex-col gap-0.5 items-start">
+                        {/* ⚠️ 刻意**不傳** onSetDate（＝維持不可點的 <span>）：精簡模式是唯讀的
+                            主管檢視，「操作」欄整欄收起是刻意的（見 COMPACT_HIDDEN），
+                            在這裡放一個開編輯視窗的入口等於把它從後門加回來。
+                            要改資料就是把精簡模式關掉，一般模式那顆徽章才是可點的 */}
                         <UnsetDateBadge label={r.phase.label} />
                         {/* 與一般模式同一個理由：✉ 自己一行，不加寬欄位（見 scheduleCell 的說明） */}
                         <NotifyMailButton onNotify={onNotify} label={r.phase.label} />
-                        <span className="text-[10px] whitespace-nowrap" style={{color:'var(--text-muted)'}}>{r.phase.label}</span>
+                        {/* ⚠️ 這裡以前還印一行階段名（第 52 批移除，2026-09-05 使用者問「三列是不是太浪費」）。
+                            它**必然**與右邊 StatusID 欄那一格一模一樣 —— `unset` 的定義就是
+                            「StatusID 走到哪一階段、那一階段自己沒壓日期」，所以印出來的永遠是同一個值。
+                            底下那一段（line 279 起）本來就立了「階段名 StatusID 欄已經寫著，這裡不重複，
+                            只有『結案』與『顯示的不是 StatusID 那一階』才標」這條規則，**只有這個分支漏套**。
+                            實測（精簡模式、96px 欄寬）：三行 57px／列高 78px → 兩行 39px／列高 60px，
+                            與同欄的「逾期」格一樣高，**欄寬一個 px 都沒有變**。
+                            階段名沒有消失：徽章的 tooltip 就寫著「目前已經走到「④ EMS驗收」…」。
+                            ⚠️ 不要改成「把 ✉ 併到徽章右邊」省那一行 —— 那是第 39 批實測過的加寬
+                            （徽章 82px + ✉ 24px > 96px 的欄寬），欄寬是由最寬的那一格撐出來的。 */}
                     </div>
                 </td>
             );
@@ -685,8 +719,13 @@ const { useState, useMemo, Fragment, useEffect } = React;
             const active = value !== 'All';
             return (
                 <div className="relative">
+                    {/* ⚠️ 沒生效時降成安靜的樣式（第 50 批，2026-09-05 使用者要求「更乾淨簡潔」）：
+                        五顆下拉裡通常只有一顆在做事，其餘四顆頂著滿框滿底色佔掉工具列
+                        560px 的視覺重量卻什麼都沒過濾。生效的那顆維持藍色實心 ——
+                        兩者拉開差距之後，「現在有幾條在過濾」變成一眼的事。
+                        ⚠️ 寬度仍然是固定的 140px（第 36 批），這裡只動顏色 */}
                     <select value={value} onChange={e=>onChange(e.target.value)}
-                        className={`ctl appearance-none pr-8 focus:outline-none focus:ring-2 focus:ring-indigo-500/40${active ? ' ctl-on' : ''}`}
+                        className={`ctl appearance-none pr-8 focus:outline-none focus:ring-2 focus:ring-indigo-500/40${active ? ' ctl-on' : ' ctl-mute'}`}
                         title={`依 ${label} 篩選${hint ? `\n${hint}` : ''}`}>
                         <option value="All">{allLabel}</option>
                         {options.map(o => <option key={o.value} value={o.value}>{label}：{o.label}</option>)}
@@ -1177,7 +1216,18 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // 進度篩選：'All' | 'ongoing' | 'done'。定義與統計報表的 KPI 卡完全一致 ——
             // ongoing = 非 Done（含 Init），不是 OverallStatus 剛好等於 Ongoing 的那些。
             // 兩邊若各算各的，主管點了「進行中 17」卻看到 9 筆會直接不信任這張表
-            const [progressFilter, setProgressFilter] = useState(() => urlOne('prog', ['ongoing','done']));
+            //
+            // ─── 預設「只看進行中」（第 49 批，2026-09-05 使用者要求）───
+            // 63 筆裡有 45 筆是 Done —— 預設畫面有 71% 的列是使用者今天不會處理的東西。
+            // 在此之前只是把它們「沉到下面」（doneLast），但它們照樣佔捲軸、佔搜尋結果、佔視線。
+            // ⚠️ **刻意不做新的分段控制**（未結案／已結案／全部）：那與 StatusID 那排的
+            // 「5 結案 45」是同一群資料的兩組字，踩到第 37 批「同一個概念只能有一組字」，
+            // 而且兩個控制項會互相打架（點了 `5 結案`、分段控制卻停在未結案 → 0 筆又看不出原因）。
+            // 這裡改用**現成的機制**：預設值 + 條件晶片（第 28 批：每個生效中的條件都看得見、
+            // 可單獨移除，而且會印出來）。畫面上淨增加一顆晶片，淨減少 45 列。
+            // ⚠️ 白名單要含 `All`，否則網址上的 `prog=All`（＝使用者剛剛把晶片移掉）
+            // 會過不了白名單而退回 'ongoing' —— 那就是第 23 批那條「關掉之後又自己回來」
+            const [progressFilter, setProgressFilter] = useState(() => urlOne('prog', ['ongoing','done','All'], 'ongoing'));
             // Done 一律沉到最下面。做成可關閉的 toggle，否則使用者點欄位排序時
             // 會覺得「排序壞掉了」——Done 列永遠不動
             // 網址用 `dl=0` 表示關掉（預設開著，所以只有關掉時才需要帶）
@@ -1187,12 +1237,51 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // localStorage（`ct.compactMode`）。理由寫的是「精簡模式＝主管檢視，預設就該這樣排」，
             // 但實際行為是：使用者把「逾期優先」關掉、重新整理之後它**又自己打開**，
             // 而畫面上沒有任何東西解釋為什麼列序變了。兩個不同的偏好共用一個 key 遲早會踩到。
-            // 改成單純的 false（不持久化）—— 它也會被「需關注」KPI 卡以程式設成 true，
-            // 那種程式設定的狀態更不該被記起來帶到下一次開啟。
-            // ⚠️ 網址（`dp=1`）是**另一回事**，不違反上面那條：網址永遠等於「現在畫面的狀態」
-            // （每次變更都 replaceState 覆蓋），關掉它網址上的 dp 就跟著不見，
-            // 不會有「明明關掉了，重新整理又自己回來」那種現象
-            const [duePriority, setDuePriority] = useState(() => URL_PARAMS.get('dp') === '1');
+            //
+            // ⚠️ 2026-09-05（第 48 批，使用者要求）：**預設打開**，並且有自己的 key
+            //（`ct.duePriority`）。上面那條禁令講的是「兩個偏好共用一個 key」與「關不掉」——
+            // 不是「不可以持久化」。這裡兩件事都避開了：
+            //   ① 自己的 key，不與精簡模式（`ct.compactMode`）互相干擾；
+            //   ② **只有使用者親手按的那兩個入口才寫進去**（排序面板的晶片、精簡模式的
+            //      「目前階段時程」表頭）—— 關掉之後重新整理它就是關著的，不會自己回來。
+            // 程式設的那幾處（需關注 KPI 卡／晶片、切進精簡模式、openListWith）一律**不寫**：
+            // 那是「這一次點擊的副作用」，記起來帶到下一次開啟只會讓列序莫名其妙。
+            // ⚠️ 讀不到 storage（工廠 PC 會鎖）就用預設值，不要讓它炸掉整個 App。
+            const readDuePriorityPref = () => {
+                try {
+                    const v = localStorage.getItem('ct.duePriority');
+                    return v === null ? true : v === '1';   // 沒設定過＝預設打開
+                } catch (e) { return true; }
+            };
+            // ⚠️ 網址（`dp`）優先於 localStorage：別人貼給你的連結要能重現他當下的畫面，
+            // 而那條連結不該被你這台機器的偏好蓋掉
+            const [duePriority, setDuePriority] = useState(() => {
+                const q = URL_PARAMS.get('dp');
+                if (q === '1') return true;
+                if (q === '0') return false;
+                return readDuePriorityPref();
+            });
+            // 使用者親手切換的入口走這一支（會記起來），程式設的直接用 setDuePriority
+            const toggleDuePriority = (next) => {
+                setDuePriority(next);
+                try { localStorage.setItem('ct.duePriority', next ? '1' : '0'); } catch (e) { /* 鎖了就算了 */ }
+            };
+            // ─── 圖例列（第 50 批，2026-09-05 使用者要求「更乾淨簡潔」）───
+            // 預設收起：它是「第一次要看、之後再也不看」的內容，卻每天佔著表格上方 61px。
+            // ⚠️ 收起的是**螢幕**，紙本照印（見 input.css 的 .legend-strip）。
+            // ⚠️ 也不要改成整個刪掉 —— 新接手的人第一次看這張表需要它，
+            // 而且每個符號在資料列上都還有 tooltip，收起來不等於資訊消失。
+            const [legendOpen, setLegendOpen] = useState(() => {
+                try { return localStorage.getItem('ct.legendOpen') === '1'; } catch (e) { return false; }
+            });
+            const toggleLegend = () => setLegendOpen(v => {
+                const next = !v;
+                try { localStorage.setItem('ct.legendOpen', next ? '1' : '0'); } catch (e) { /* 鎖了就算了 */ }
+                return next;
+            });
+            // ⚠️ 軌跡讀取失敗的那句紅字就掛在圖例列裡（第 24 批）——
+            // 收起來會讓「⚠N 全部消失」這件事回到靜默失敗，所以那時強制展開
+            const legendShown = legendOpen || !!historyError;
             // 各年月案件數要顯示幾個年月（0 = 全部）。資料一路累積下去，19 個月全部攤開時
             // 每根柱子只剩幾 px、月份標籤還撐著不縮，整張卡會把版面推爆。
             // 預設只看最近 12 個年月 —— 主管要看的是「最近的走勢」，兩年前的細節可以自己切
@@ -1242,6 +1331,13 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     window.removeEventListener('resize', sync);
                 };
             }, []);
+            // ⚠️ **不要再加「放不下就自動收成 9 欄」那種強制**（2026-09-05 / 第 46 批第三段）。
+            // 第二段曾經做過（`tight`：量到 16 欄放不下就把 compact 推成 true），使用者當天就否決：
+            // 「非精簡模式下若我想要看到全貌、放大看還是會破圖」「**我也不能夠強迫其他人
+            // 若放大只能看精簡模式的資料**」。放大是為了**看清楚**，不是為了少看七欄 ——
+            // 收欄等於把他要的東西拿走再說「這樣就不會破了」。
+            // 真正的解法在 `.page-shell`（見 input.css）：讓**框架跟著內容一起變寬**，
+            // 橫捲時整頁一起平移，頁首、工具列、卡片全部完整 —— 破的是版面，不是欄數。
             const compact = compactPref || narrow;
             // 切進精簡模式時一併套上「到期日近的在上面」。切出去不動它 ——
             // 使用者在一般模式自己開的排序不該被這顆開關收走
@@ -1273,15 +1369,15 @@ const { useState, useMemo, Fragment, useEffect } = React;
             const [presentZoom, setPresentZoom] = useState(readPresentZoom);
             // 字級（見 UI_SCALES 上方的說明）。點一下換下一級，繞回 100%
             const [uiScale, setUiScale] = useState(readUiScale);
+            // ⚠️ **放大一律放行，不要再加「塞不下就先問你」那道關卡**
+            //（2026-09-05 / 第 46 批第三段）。第一段做過（塞不下就跳一則帶
+            // 「切精簡模式再放大」的 toast），與第二段的自動收欄一起被使用者否決 ——
+            // 那顆鈕的主要動作是「切精簡模式」，等於每放大一次就勸他少看七欄一次。
+            // 放大後最多就是需要橫向捲動，而框架現在會跟著一起變寬（見 .page-shell），
+            // 橫捲已經是完整而且看得懂的畫面，沒有什麼要先攔下來問的。
             const cycleUiScale = () => setUiScale(prev => {
                 const i = UI_SCALES.indexOf(prev);
                 return UI_SCALES[(i + 1) % UI_SCALES.length];
-            });
-            // 降一級（不繞回）。給「⚠ 右邊被切掉」那顆用 —— 它要的是「變小」，
-            // 用 cycleUiScale 的話在 130% 按下去會繞回 100%（碰巧對），但在 115% 會跳到 130%（更糟）
-            const stepUiScaleDown = () => setUiScale(prev => {
-                const i = UI_SCALES.indexOf(prev);
-                return UI_SCALES[Math.max(0, (i < 0 ? 0 : i) - 1)];
             });
             useEffect(() => {
                 try { localStorage.setItem('ct.uiScale', String(uiScale)); } catch (e) { /* 鎖了就算了 */ }
@@ -1337,25 +1433,32 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 if (dark) setDark(false);
             }, []);
 
-            // ─── 「右邊被切掉」偵測（第 30 批起，第 31 批推廣到整個需求列表）───
-            // 表格是整頁唯一會超出視窗的東西，而**整頁捲動**是 2026-08-19 拍板的
-            // （表格不可再包 overflow，否則兩層 sticky 表頭失效）——
-            // 所以一旦超出，頁首與工具列會跟著一起滑出畫面左邊，看起來就是「版面跑掉」。
+            // ─── 「右邊被切掉」偵測（第 30 批起；第 46 批第四段起**只剩投影模式**）───
+            // 它原本是為了解釋「版面跑掉」而存在的（第 30、31 批）：整頁捲動時頁首與工具列
+            // 會一起滑出畫面左邊，而使用者看不出那是為什麼。
+            // 第 46 批第三段把框架改成跟著內容一起變寬（`.page-shell`）之後，
+            // **那個現象已經不存在** —— 橫捲是一個完整、看得懂的畫面，而瀏覽器自己的
+            // 橫向捲軸就已經在說「右邊還有東西」。這時候還跳一顆紅色警告等於在說
+            // 「你的畫面壞了」，而畫面其實好好的。
             //
-            // 兩條會踩到的路徑，**都是把可用寬度變小**（可用寬度 = 視窗寬 ÷ zoom 倍率）：
-            //   1. 投影模式的倍率（第 30 批）
-            //   2. 字級（第 29 批加的，**使用者實際回報的第二次「跑掉」就是它**）
-            // 實測 1440 螢幕 / 16 欄：表格壓到極限是 **1237px**，
-            //   100% → 可用 1425，overflow 0
-            //   115% → 可用 1239，overflow 30
-            //   130% → 可用 1096，overflow **216**
-            // 9 欄（901px）在同樣條件下全部塞得下。
+            // ⚠️ 使用者 2026-09-05 回報：**那顆浮動提示正好蓋在資料列的編輯／刪除鈕上面**
+            //（「嚴重影響操作的 UX 體驗」）。頁首那顆也白白佔掉工具列的寬度 ——
+            // 而它出現的時機，剛好就是版面最擠、最不該再多一顆東西的時候。
             //
-            // ⚠️ 不自動幫使用者改設定 —— 放大字級是他自己按的，靜靜把欄位收起來更難理解。
-            // 改成講清楚 + 一鍵修正（依情境給最有效的那一個）。
+            // ⚠️⚠️ **投影模式是唯一保留的例外，不要順手把它一起拿掉**（第 30 批的原話）：
+            // 「台上的人看自己的螢幕，不會發現布幕右邊少了幾欄」。那裡沒有人會去捲，
+            // 捲軸也不在觀眾的視線裡 —— 少掉的欄位是**靜靜地**消失的。
+            // 投影模式一定是精簡模式（第 32 批），而精簡模式沒有「操作」欄，
+            // 所以浮動那顆在投影下也不會蓋到任何按鈕。
+            //
+            // ⚠️ 投影模式下這個數字會**略為低估**（實測 131 vs 實際 267）：頁首那顆按鈕
+            // 自己也有寬度，出現之後會把 `.page-shell` 的 fit-content 再撐寬一點。
+            // **不要把 clipPx 加進相依陣列去「修正」它** —— 那會做出
+            // 「沒有按鈕就不溢出 → 顯示按鈕 → 溢出 → 隱藏按鈕」的無窮翻轉。
+            // 這裡要的只是「右邊還有東西、大概多少」，不是精準值。
             const [clipPx, setClipPx] = useState(0);
             useEffect(() => {
-                if (activeView !== 'table') { setClipPx(0); return; }
+                if (activeView !== 'table' || !present) { setClipPx(0); return; }
                 // ⚠️ 直接同步量，**不要包 requestAnimationFrame**：useEffect 跑的時候
                 // DOM 已經 commit 了，讀 scrollWidth 本來就會強制排版一次，rAF 是多的；
                 // 而且分頁在背景時 rAF 根本不會被呼叫 —— 實測就是這樣讓警告永遠不出現
@@ -1368,6 +1471,27 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 window.addEventListener('resize', check);
                 return () => window.removeEventListener('resize', check);
             }, [activeView, present, presentZoom, uiScale, compact, showColFilters, requirementsData.length]);
+
+            // ─── 頁面是否已經橫捲（2026-09-05 / 第 46 批）───
+            // 「⚠ 右邊被切掉」那顆掛在頁首裡，而頁首**自己就是會被橫捲帶走的東西** ——
+            // 使用者往右捲去看被切掉的欄位時，那顆解釋兼修正的鈕跟著滑出畫面左邊，
+            // 最需要它的那一刻反而看不到。橫捲之後把它改成畫面右下角的浮動鈕
+            //（position:fixed 相對視窗，不受橫捲影響；zoom 只掛在 header／main 上，
+            //  這一顆渲染在更外層，所以不會被縮放連累）。
+            // ⚠️ 存的是**布林**不是捲動量：這個元件底下掛著 63 列 × 16 欄，
+            //    每一個 scroll 事件都 setState 一次數字的話，連垂直捲動都會整片重繪。
+            //    值沒變時 useState 會自己 bail out，只有「跨過門檻」那一刻才真的 render。
+            const [scrolledX, setScrolledX] = useState(false);
+            useEffect(() => {
+                const onScroll = () => setScrolledX((window.scrollX || window.pageXOffset || 0) > 8);
+                onScroll();
+                window.addEventListener('scroll', onScroll, { passive: true });
+                window.addEventListener('resize', onScroll);
+                return () => {
+                    window.removeEventListener('scroll', onScroll);
+                    window.removeEventListener('resize', onScroll);
+                };
+            }, []);
 
             const stepZoom = d => setPresentZoom(z => {
                 const i = PRESENT_ZOOMS.indexOf(z);
@@ -1400,10 +1524,29 @@ const { useState, useMemo, Fragment, useEffect } = React;
             const [frzLeft, setFrzLeft] = useState(44);
             useEffect(() => {
                 const measure = () => {
-                    const h = appHeaderRef.current?.offsetHeight || 56;
-                    const g = groupHeadRef.current?.offsetHeight || 34;
+                    // ⚠️ 頁首在 <main> **外面**，兩邊的 zoom 不一樣時一定要換算
+                    //（2026-09-05 / 第 47 批，使用者回報「捲動時看起來像網頁哪邊壞了」）。
+                    // 字級（.ui-zoom）只掛在 <main> 上、頁首沒有，而 sticky 的 top 是在
+                    // **zoom 之後**的座標系裡算的：top:65px 在 1.15 倍底下會落在畫面的
+                    // 74.75px，頁首底緣卻還停在 65px —— 中間那條縫會漏出正在捲動的資料列，
+                    // 看起來就是「表頭破圖」。實測 115% 漏 9.75px、130% 漏 19.5px。
+                    // 投影模式兩邊掛的是同一個 .present-zoom（倍率相同），所以以前只有字級踩得到。
+                    // ⚠️ 頁首一律用 getBoundingClientRect()（畫面上的實際高度）再除以倍率 ——
+                    // offsetHeight 給的是元素自己座標系的值（實測 1.15 倍下仍是 65），
+                    // 跨過 zoom 邊界之後換算不回來，也就是這個 bug 的來源。
+                    const zoom = (present ? presentZoom : uiScale) || 1;
+                    const hVis = appHeaderRef.current?.getBoundingClientRect().height || 56;
+                    // 群組表頭在 <main> 裡面，與 top 同一個座標系，除回倍率就是它的本地高度。
+                    // ⚠️ 這裡也不用 offsetHeight：它會四捨五入成整數（實測本地高度 38.93 → 39），
+                    // 兩層表頭中間因此多出 0.08~0.16px 的細縫
+                    const gLocal = (groupHeadRef.current?.getBoundingClientRect().height || 34) / zoom;
+                    // 刻意讓表頭往上多疊 0.5px：頁首是 z-50、表頭 z-20，疊進去看不出來；
+                    // 反過來只要差半個像素，那裡就是一條會跟著捲動的細縫
+                    const px = v => Math.round(v * 100) / 100;
+                    const group = px((hVis - 0.5) / zoom);
+                    const col = px(group + gLocal);
                     setHeadOffsets(prev =>
-                        (prev.group === h && prev.col === h + g) ? prev : { group: h, col: h + g });
+                        (prev.group === group && prev.col === col) ? prev : { group, col });
                     const w = noHeadRef.current?.offsetWidth || 44;
                     setFrzLeft(prev => prev === w ? prev : w);
                 };
@@ -1434,7 +1577,10 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 // 高度變化本來就由 ResizeObserver 接手，不必靠 render 去重量
                 // uiScale 也要在裡面（2026-08-24 / 第 29 批）：它與投影倍率是同一個 zoom 機制，
                 // 改了之後表頭高度與 No 欄寬度都會變
-            }, [activeView, compact, present, requirementsData.length, showColFilters, uiScale]);
+                // ⚠️ presentZoom 也要（2026-09-05 / 第 47 批）：measure() 現在會拿倍率去除，
+                // 而 ResizeObserver 回報的是**本地**尺寸 —— 投影倍率改了它不會叫，
+                // 少了這個相依就會拿舊倍率去換算，剛好又漏出上面那條縫
+            }, [activeView, compact, present, presentZoom, requirementsData.length, showColFilters, uiScale]);
 
             // ─── 版面寬度（2026-08-24 / 第 27 批）───
             // 需求列表一般模式 16 欄的自然寬度約 1524px，卡在 max-w-[1440px] 裡等於
@@ -2345,7 +2491,13 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 });
             };
 
-            const openEdit = (item) => {
+            // focusPhase = 開窗之後要把游標送到哪一階段的日期欄（'spec'|'confirm'|'msd'|'uat'）。
+            // 目前唯一的來源是資料列上的「⚠ 未壓日期」徽章。
+            // ⚠️ 用 ref 不用 state：這是一次性的動作，做成 state 會讓整個編輯視窗
+            //    在開起來之後再多 render 一次（20 幾個欄位）。
+            const focusPhaseRef = React.useRef(null);
+            const openEdit = (item, phaseKey = null) => {
+                focusPhaseRef.current = PHASES[phaseKey] ? phaseKey : null;
                 setEditingData(item);
                 editSnapshot.current = JSON.stringify(item);
                 setUnlockedSections({ spec: false, confirm: false, msd: false, uat: false });
@@ -2439,6 +2591,23 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 // 沒有人接手時聚焦視窗容器本身（tabIndex=-1），不是「第一個可聚焦元素」：
                 // 那同樣會把游標塞進某個輸入框裡
                 if (top && !top.contains(document.activeElement)) { try { top.focus(); } catch (e) { /* noop */ } }
+            }, [openModalCount]);
+            // ─── 開窗後跳到指定階段的日期欄（「⚠ 未壓日期」那顆按進來的）───
+            // ⚠️ 這個 effect **一定要宣告在上面那個之後**：兩個吃同一個相依（openModalCount），
+            //    而 React 依宣告順序執行 —— 寫在前面的話，上面那句「沒人接手就聚焦視窗容器」
+            //    會把游標從日期欄搶走，看起來就像這顆按鈕沒有作用。
+            // ⚠️ 對位一律等 React commit 完成（effect 本身就是），**不要用 requestAnimationFrame**
+            //    （分頁在背景時不會被呼叫，見 CLAUDE.md 第 30 批那個坑）。
+            useEffect(() => {
+                const key = focusPhaseRef.current;
+                if (!key || openModalCount === 0) return;
+                focusPhaseRef.current = null;          // 一次性，關窗後不會再跳
+                const el = document.querySelector(`[data-ct-focus="${key}"]`);
+                if (!el) return;
+                // 先捲到定位再聚焦。gate 沒過的欄位是 disabled（focus 無效），
+                // 但捲過去仍然有意義 —— 那顆鎖旁邊就寫著「要先填完前一階段」
+                try { el.scrollIntoView({ block:'center' }); } catch (e) { /* noop */ }
+                if (!el.disabled) { try { el.focus(); } catch (e) { /* noop */ } }
             }, [openModalCount]);
             useEffect(() => {
                 if (openModalCount === 0) return;
@@ -2990,14 +3159,25 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // StatusID 以外的所有篩選條件。抽出來是為了讓上方的 StatusID 統計卡能算出
             // 「套用其他條件後」的分佈 —— 否則點了 EMS=王小明，上面的統計還是全域數字，
             // 兩邊對不起來會讓人以為篩選沒生效
-            const matchExceptStage = (item) => {
-                const ms = !searchQuery || [item.nid,item.mainCat,item.subCat,item.emsOwner,item.msdOwner,item.currentStatus].some(v=>v?.toLowerCase().includes(searchQuery.toLowerCase()));
+            // ⚠️ `ignoreProgress`（第 49 批）：StatusID 那排的數字要**跳過進度篩選**，
+            // 見下方 stageFacets 的說明 —— 預設「只看進行中」時，`5 結案` 會變成一個
+            // 永遠寫著 0、按下去也沒東西的按鈕
+            const matchExceptStage = (item, ignoreProgress = false) => {
+                // ⚠️ 搜尋範圍改了，搜尋框的 placeholder 與 title 要一起改（第 55 批，2026-09-05）。
+                // `remark`（需求補充）原本不在裡面 —— 它是明細裡看得到、也印得出來的一整段文字，
+                // 使用者用裡面的字去找卻是 0 筆，而畫面上沒有任何地方說得出搜尋比對到哪幾欄
+                // （placeholder 只寫「NID、項目、負責人...」，那個「...」還暗示著不只這些）。
+                // ⚠️ `notesLink` 刻意**不**收進來：那欄存的是網址，比對只會撞到 http／網域這種
+                // 到處都有的字串，做出一堆看不出為什麼會中的列。
+                // 日期與 StatusID 也不收 —— 那些是漏斗（欄位篩選）的守備範圍，
+                // 一個關鍵字同時比對日期字串只會製造巧合命中（例如打 "2026"）
+                const ms = !searchQuery || [item.nid,item.mainCat,item.subCat,item.emsOwner,item.msdOwner,item.currentStatus,item.remark].some(v=>v?.toLowerCase().includes(searchQuery.toLowerCase()));
                 if (!ms) return false;
                 if (!matchOwner(item.emsOwner, emsFilter)) return false;
                 if (!matchOwner(item.msdOwner, msdFilter)) return false;
                 if (!matchDueFilter(item, dueFilter)) return false;
                 if (!matchAlertFilter(item, alertFilter)) return false;
-                if (!matchProgressFilter(item, progressFilter)) return false;
+                if (!ignoreProgress && !matchProgressFilter(item, progressFilter)) return false;
                 return Object.entries(colFilters).every(([k, v]) => {
                     if (!v) return true;
                     let val = item[k];
@@ -3026,13 +3206,25 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // StatusID 統計卡的數字（連動：已套用其他篩選，但不含 StatusID 本身）。
             // 注意：1~5 的加總不一定等於 ALL —— StatusID 沒填、或超出 1~5 的舊資料
             // 不屬於任何一格，這是刻意讓那些資料在數字上「露出來」
-            const stageFacets = useMemo(() => {
-                const base = requirementsData.filter(matchExceptStage);
+            // ⚠️ **這一排的數字一律不含進度篩選**（第 49 批，2026-09-05）。
+            // 預設「只看進行中」之後，含進度篩選算出來的 `5 結案` 永遠是 **0** ——
+            // 一顆寫著 0、按下去也沒東西的按鈕，比看不到還糟。
+            // 這不是「數字與清單對不起來」：搭配下面那條連動（選一個被進度篩選整群擋掉的
+            // 階段時會自動解除進度篩選），**每個數字剛好就是「按下去會得到幾筆」** ——
+            // 包含 ALL（它同時清掉階段與進度，所以顯示的是不含進度的總數）。
+            const buildStageFacets = (ignoreProgress) => {
+                const base = requirementsData.filter(it => matchExceptStage(it, ignoreProgress));
                 const counts = { All: base.length };
                 Object.keys(STAGE_CODES).forEach(k => { counts[k] = 0; });
                 base.forEach(it => { const c = effStageCode(it); if (counts[c] !== undefined) counts[c]++; });
                 return counts;
-            }, [requirementsData, searchQuery, emsFilter, msdFilter, dueFilter, alertFilter, progressFilter, colFilters, dueInfo, changedIdSet]);
+            };
+            const stageFacets = useMemo(() => buildStageFacets(true),
+                [requirementsData, searchQuery, emsFilter, msdFilter, dueFilter, alertFilter, colFilters, dueInfo, changedIdSet]);
+            // 同一份數字但**含**進度篩選。只用來判斷「這一階段是不是整群被進度篩選擋住了」——
+            // 是的話點它就順手把進度篩選解除（否則使用者會點到一個必然 0 筆的組合）
+            const stageFacetsUnderProgress = useMemo(() => buildStageFacets(false),
+                [requirementsData, searchQuery, emsFilter, msdFilter, dueFilter, alertFilter, progressFilter, colFilters, dueInfo, changedIdSet]);
 
             const filteredData = useMemo(
                 () => requirementsData.filter(item =>
@@ -3045,6 +3237,31 @@ const { useState, useMemo, Fragment, useEffect } = React;
             const hasActiveFilter = searchTerm || stageFilter.length > 0 || emsFilter !== 'All'
                                  || msdFilter !== 'All' || dueFilter !== 'All' || alertFilter !== 'All'
                                  || progressFilter !== 'All' || colFilterCount > 0;
+            // ⚠️ 工具列那顆紅色「✕ 清除全部」看的是**這一支**（第 49 批）：
+            // 「進度＝進行中」現在是**預設值**，用 hasActiveFilter 的話一進來就會有一顆
+            // 紅鈕掛在工具列上，等於對著乾淨的畫面說「你套了篩選」。
+            // 預設狀態的出口是那顆晶片自己的 ✕（就在表格正上方），不需要第二個。
+            // ⚠️ 空狀態（0 筆）的說明**仍然用 hasActiveFilter** —— 那裡要回答的是
+            // 「資料是被篩掉的還是真的沒有」，預設值也是原因之一
+            // ⚠️ 進度只認 `done`：`ongoing` 是**預設值**（不該掛紅鈕），而 `All` 正好等於
+            // 「清除全部」之後的結果 —— 那時候顯示這顆鈕，按下去畫面一格都不會變
+            const hasNonDefaultFilter = searchTerm || stageFilter.length > 0 || emsFilter !== 'All'
+                                 || msdFilter !== 'All' || dueFilter !== 'All' || alertFilter !== 'All'
+                                 || progressFilter === 'done' || colFilterCount > 0;
+            // ─── 搜尋穿透提示（第 49 批，2026-09-05）───
+            // 預設「只看進行中」時，搜尋一筆已結案的需求會少幾筆甚至 0 筆，
+            // 而使用者不會知道少的那幾筆是被**預設值**擋掉的 —— 那就是「查詢時看不到資料」。
+            // ⚠️ 刻意**不做**「一打字就自動改成全部」：筆數會自己跳動，使用者搞不清楚
+            // 當下看的是哪個範圍。這裡只出聲、由他按下去 —— 範圍永遠是他自己決定的。
+            const searchBlockedCount = useMemo(() => {
+                if (!searchQuery || progressFilter === 'All') return 0;
+                return requirementsData.filter(it =>
+                    matchExceptStage(it, true)
+                    && (stageFilter.length === 0 || stageFilter.includes(effStageCode(it)))
+                    && !matchProgressFilter(it, progressFilter)).length;
+            }, [requirementsData, searchQuery, stageFilter, emsFilter, msdFilter, dueFilter,
+                alertFilter, progressFilter, colFilters, dueInfo, changedIdSet]);
+
             const clearAllFilters = () => {
                 setSearchTerm(''); setStageFilter([]); setEmsFilter('All');
                 setMsdFilter('All'); setDueFilter('All'); setAlertFilter('All');
@@ -3068,7 +3285,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 if (msdFilter !== 'All') out.push({ id:'msd', label:'MSD', value:msdFilter, onRemove:()=>setMsdFilter('All') });
                 if (dueFilter !== 'All') out.push({ id:'due', label:'到期', value:DUE_FILTER_LABEL[dueFilter] || dueFilter,
                     // 「需關注」是連著「逾期優先」排序一起被打開的（見那顆鈕），拿掉時要一起還原
-                    onRemove:()=>{ setDueFilter('All'); if (dueFilter === 'attention') setDuePriority(false); } });
+                    onRemove:()=>{ setDueFilter('All'); if (dueFilter === 'attention') setDuePriority(readDuePriorityPref()); } });
                 if (progressFilter !== 'All') out.push({ id:'prog', label:'進度', value:PROG_FILTER_LABEL[progressFilter] || progressFilter, onRemove:()=>setProgressFilter('All') });
                 if (alertFilter !== 'All') out.push({ id:'alert', label:'警示', value:ALERT_FILTER_LABEL[alertFilter] || alertFilter, onRemove:()=>setAlertFilter('All') });
                 COL_FILTER_KEYS.forEach(k => {
@@ -3081,6 +3298,43 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 return out;
             }, [searchTerm, stageFilter, emsFilter, msdFilter, dueFilter, progressFilter, alertFilter, colFilters, compact]);
             const hiddenChipCount = activeChips.filter(c => c.hidden).length;
+            // ─── 只剩「預設的進度」那一顆時，晶片列在螢幕上不出現（第 50→51 批，2026-09-05）───
+            // 為了一顆晶片撐起一張 49px 的卡，是這個畫面最貴的一行（實測第一列資料
+            // 的起點 489px，而一列只有 79px）。有第二個條件時仍然展開成獨立一列 ——
+            // 那時它要解釋的事情變多了，而且可能含警示色的隱藏欄位晶片。
+            // ⚠️ **第 51 批起連「併到筆數旁邊」都不做了**：第 50 批讓沒生效的下拉變淡之後，
+            // 工具列那顆藍色的「進度：進行中 (19)」已經是畫面上最顯眼的東西，而且它自己
+            // 就是移除的入口（改成「不限進度」）—— 再放一顆晶片是同一個概念的兩組字（第 37 批），
+            // 而且那 97px 正是把那一排推成兩行的元兇之一。
+            // ⚠️ **這不違反第 28 批**（每個生效中的條件都要看得見、可單獨移除）：那條規則是為了
+            // 「條件的控制項被收起來或散在三個地方」而立的，而 `進度` 的控制項就在正上方一張卡
+            // 的距離、而且是全畫面唯一的藍色實心控制項，數字（19）也寫在上面。
+            // ⚠️ **紙本仍然要印**：紙上沒有工具列（`no-print`），所以晶片列的卡片**保留在 DOM 裡
+            // 專供列印**（`chips-print`，見 input.css）—— 否則會出現「64 筆只印了 19 筆」
+            // 而完全沒有線索，那正是第 28 批要求它印出來的理由。
+            const chipsInline = activeChips.length === 1 && activeChips[0].id === 'prog' && progressFilter === 'ongoing';
+            // ⚠️ 兩個位置共用同一份晶片標記 —— 複製一份出去改，日後一定只會改到其中一邊
+            const renderChip = (c) => (
+                <span key={c.id}
+                      className="inline-flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-lg text-[11px] font-bold"
+                      style={c.hidden
+                          ? {color:'var(--tone-alert)', background:'var(--tone-alert-bg)', border:'1px solid var(--tone-alert-border)'}
+                          : {color:'var(--text-secondary)', background:'var(--bg-input)', border:'1px solid var(--bg-input-border)'}}
+                      title={c.hidden
+                          ? `這個條件正在生效，但「${c.label}」欄在目前的模式下被收起來了，所以看不到它的輸入框 —— 筆數變少的原因就是它。點 ✕ 可以直接移除`
+                          : `${c.label}：${c.value}（點 ✕ 只移除這一條）`}>
+                    {c.hidden && <span aria-hidden="true">⚠</span>}
+                    {/* 階段色點：與上面那排 StatusID 鈕同一套顏色，一眼對得起來 */}
+                    {c.color && <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{background:c.color}}></span>}
+                    <span style={{color: c.hidden ? 'inherit' : 'var(--text-muted)'}}>{c.label}</span>
+                    <span>{c.value}</span>
+                    <button onClick={c.onRemove}
+                            className="w-4 h-4 rounded flex items-center justify-center text-[12px] leading-none no-print hover:bg-black/10"
+                            style={{color:'inherit', opacity:0.7}}
+                            aria-label={`移除篩選條件：${c.label} ${c.value}`}
+                            title={`移除這一條（${c.label}）`}>✕</button>
+                </span>
+            );
 
             // ─── 篩選與排序 → 網址（第 28 批，2026-08-24）───
             // 單向：state 變了就把網址覆蓋掉。⚠️ replaceState 不是 pushState
@@ -3096,12 +3350,18 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 if (emsFilter !== 'All') p.set('ems', emsFilter);
                 if (msdFilter !== 'All') p.set('msd', msdFilter);
                 if (dueFilter !== 'All') p.set('due', dueFilter);
-                if (progressFilter !== 'All') p.set('prog', progressFilter);
+                // ⚠️ `prog` 與 `dp` 一樣**兩個方向都要寫**（第 49 批）：它的預設值是
+                // `ongoing` 不是 `All` —— 只寫非預設值的話，使用者把「進度：進行中」那顆
+                // 晶片移掉之後網址就沒有 `prog`，重新整理它又自己回來（第 23 批那條坑）
+                p.set('prog', progressFilter);
                 if (alertFilter !== 'All') p.set('alert', alertFilter);
                 COL_FILTER_KEYS.forEach(k => { if (colFilters[k]) p.set('f_' + k, colFilters[k]); });
                 if (sortConfig.key) p.set('sort', `${sortConfig.key}:${sortConfig.direction}`);
                 if (!doneLast) p.set('dl', '0');
-                if (duePriority) p.set('dp', '1');
+                // ⚠️ `dp` 兩個方向都要寫出來（第 48 批）：它的預設值現在來自 localStorage，
+                // **每台機器可能不一樣** —— 只在「非預設」時帶參數的寫法（像上面的 dl）
+                // 會讓同一條連結在別人的瀏覽器上排出不同的列序
+                p.set('dp', duePriority ? '1' : '0');
                 const qs = p.toString();
                 const next = window.location.pathname + (qs ? '?' + qs : '') + window.location.hash;
                 if (next === window.location.pathname + window.location.search + window.location.hash) return;
@@ -3112,9 +3372,11 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // 統計報表的 KPI 卡 → 需求列表。每張卡都先把畫面上的篩選清乾淨再套自己那一條，
             // 否則上一張卡留下的條件會疊上來，列表筆數與卡片數字對不起來。
             // 「逾期優先」排序也一併歸位 —— 只有「需關注」那張卡需要它
+            // ⚠️ 歸位＝回到**使用者自己的預設**，不是寫死的 false（第 48 批預設改成開著之後，
+            // 寫死 false 會讓「點一張 KPI 卡」變成一個把偏好關掉的隱藏開關）
             const openListWith = (apply) => {
                 clearAllFilters();
-                setDuePriority(false);
+                setDuePriority(readDuePriorityPref());
                 if (apply) apply();
                 setActiveView('table');
             };
@@ -3345,11 +3607,55 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 );
             };
 
+            // ═══ ⚠ 右邊被切掉（第 30 批；第 46 批第四段起**只出現在投影模式**）═══
+            // 為什麼平常不再出現，見 clipPx 那一段的說明（框架已經會跟著內容一起變寬，
+            // 橫捲是完整而且看得懂的畫面，捲軸自己就在說「右邊還有東西」；而這顆
+            // 出現的時機剛好是版面最擠的時候，浮動那顆還會蓋到資料列的操作鈕）。
+            // 投影模式保留的理由是第 30 批的原話：**台上的人看自己的螢幕，
+            // 不會發現布幕右邊少了幾欄** —— 那裡沒有人會去捲，捲軸也不在觀眾的視線裡。
+            // ⚠️ 投影中一定是精簡模式（第 32 批），所以動作只有「降投影倍率」一種；
+            //    倍率已經最低時就真的沒有可按的了 → 純提示，不給點。
+            // floating＝已經橫捲，頁首那顆看不到了，改成畫面右下角的浮動鈕（見 scrolledX）。
+            // ⚠️ 兩個位置**只是位置不同**：文案、判斷、動作全部共用這一支 ——
+            //    複製一份出去改，日後一定只會改到其中一邊。
+            const renderClipWarning = (floating) => {
+                if (clipPx <= 0) return null;
+                const atMinZoom = presentZoom <= PRESENT_ZOOMS[0];
+                const head = `布幕右邊有 ${clipPx}px 在畫面外（台下不會自己去捲，最右邊那幾欄等於沒出現）`;
+                const tip = atMinZoom
+                    ? `${head}。\n投影倍率已經是最低、而且已經是精簡模式了，請把瀏覽器視窗拉寬（或改用解析度更高的輸出）`
+                    : `${head}。\n點一下降一級投影倍率`;
+                const act = atMinZoom ? undefined : () => stepZoom(-1);
+                return (
+                    <button onClick={act}
+                            disabled={!act}
+                            className={floating
+                                ? 'ctl-sm fixed bottom-6 right-6 z-[70] no-print shadow-2xl disabled:cursor-default present-zoom'
+                                : 'ctl-sm flex-shrink-0 disabled:cursor-default'}
+                            style={floating
+                                // ⚠️ --tone-alert-bg 是半透明的（淺色 0.08／深色 0.12）。浮在資料列上時
+                                // 底下的字會直接透出來 —— 與凍結欄同一招：先鋪一層不透明的卡片色，
+                                // 再用 background-image 把警示色疊上去，合成結果與頁首那顆一致
+                                ? {color:'var(--tone-alert)', borderColor:'var(--tone-alert-border)',
+                                   backgroundColor:'var(--bg-card)',
+                                   backgroundImage:'linear-gradient(var(--tone-alert-bg), var(--tone-alert-bg))'}
+                                : {color:'var(--tone-alert)', background:'var(--tone-alert-bg)', borderColor:'var(--tone-alert-border)'}}
+                            aria-label={act ? `布幕右邊有 ${clipPx} 像素在畫面外，點擊降低投影倍率`
+                                            : `布幕右邊有 ${clipPx} 像素在畫面外，請把視窗拉寬`}
+                            title={tip}>
+                        ⚠ 右邊被切掉
+                    </button>
+                );
+            };
+
             // 投影模式只在最外層掛 .present（提高對比的變數覆寫），
             // 真正的放大 .present-zoom 掛在 header 與 main 上 ——
-            // 100vh 不會被 zoom 縮放，掛在這層會多出一整條空白捲軸
+            // 100vh 不會被 zoom 縮放，掛在這層會多出一整條空白捲軸。
+            // ⚠️ 同一層還掛著 `page-shell`（第 46 批第三段，見 input.css）：框架跟著內容
+            // 一起變寬。表格比視窗寬時，頁首與工具列卡片會跟著長到同一個寬度 ——
+            // 橫捲時整頁一起平移，不會再出現「表格還在延伸、卡片卻切在半空中」
             return (
-                <div className={`min-h-screen${present ? ' present' : ''}`}
+                <div className={`min-h-screen page-shell${present ? ' present' : ''}`}
                      style={{color:'var(--text-secondary)', '--present-zoom': presentZoom}}>
                     {/* ⚠️ 普通函式呼叫，不是 <AssigneeModal />（2026-08-23 / 第 25 批，
                         見 renderAssigneeModal 上方的說明）。改回元件寫法會讓它每次
@@ -3379,6 +3685,13 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                     aria-label="關閉這則訊息" title="關閉">✕</button>
                         </div>
                     )}
+                    {/* ⚠ 右邊被切掉（浮動版，第 46 批）。只在頁面真的橫捲之後出現 ——
+                        那正是頁首那顆滑出畫面的時刻。
+                        ⚠️ 一定要渲染在**這一層**（.present 底下、header／main 之外）：
+                        zoom 只掛在 header 與 main 上，掛進去的話這顆會跟著被縮放，
+                        而且 zoom 會讓某些瀏覽器把 position:fixed 改成相對那個容器定位，
+                        變成又一個會被橫捲帶走的東西。投影模式要放大就跟 toast 一樣自己加 class */}
+                    {scrolledX && renderClipWarning(true)}
                     {/* ═══ Header ═══ */}
                     <header ref={appHeaderRef} className={`sticky top-0 z-50 no-print${present ? ' present-zoom' : ''}`} style={{background:'var(--bg-header)',borderBottom:'1px solid var(--bg-header-border)',backdropFilter:'blur(16px)'}}>
                         {/* 頁首與 <main> 吃同一個寬度（見 pageWidth）—— 只放寬其中一個的話，
@@ -3438,47 +3751,12 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                 )}
                                 {/* 投影倍率。只在投影模式出現 —— 桌機看的人不需要這兩顆，
                                     而且它調的是 zoom 不是瀏覽器縮放，關掉投影模式就完全失效 */}
-                                {/* ⚠ 右邊被切掉（第 30 批，第 31 批推廣到非投影）。
-                                    整頁捲動的代價：一旦表格超出視窗，頁首與工具列會一起滑出畫面左邊 ——
-                                    使用者看到的就是「版面跑掉」。這顆負責講出原因並一鍵修正。
-                                    ⚠️ 主要動作依情境挑「最有效」的那一個，不要每種情況都叫人做同一件事：
-                                      投影中  → 降投影倍率（台下的人看的是布幕，倍率是最直接的旋鈕）
-                                      字級 >100% → 降字級（放大字級才是這次把寬度吃掉的原因）
-                                      其餘    → 切精簡模式（9 欄 901px，實測任何倍率都塞得下）
-                                    次要選項寫在 tooltip 裡，不另外長出第二顆鈕 */}
-                                {clipPx > 0 && (() => {
-                                    const atMinZoom = presentZoom <= PRESENT_ZOOMS[0];
-                                    // ⚠️ 第 32 批起投影模式一定是精簡模式，所以投影中沒有「切精簡」這個選項；
-                                    // 倍率也降到底時就真的沒有可按的了 → 'none'（純提示，不給點）
-                                    const mode = present  ? (atMinZoom ? 'none' : 'zoom')
-                                               : uiScale > 1 ? 'font'
-                                               : !compact    ? 'compact'
-                                               : 'none';
-                                    const head = `畫面右邊有 ${clipPx}px 在視窗外（要橫向捲才看得到）`
-                                               + (present ? '，台下會看不到最右邊那幾欄' : '，往右捲時頁首與工具列會跟著滑走');
-                                    const tip = mode === 'zoom'
-                                        ? `${head}。\n點一下降一級投影倍率`
-                                        : mode === 'font'
-                                        ? `${head}。\n原因是字級放大後可用寬度變成「視窗寬 ÷ ${Math.round(uiScale*100)}%」，16 欄的表格放不下。\n點一下降一級字級（或改用精簡模式，9 欄在任何字級都塞得下）`
-                                        : mode === 'compact'
-                                        ? `${head}。\n點一下切換精簡模式（收起次要欄位，只留 9 欄）`
-                                        : `${head}。\n${present && atMinZoom ? '投影倍率已經是最低、而且已經是精簡模式了' : '已經是精簡模式了'}，請把瀏覽器視窗拉寬`;
-                                    const act = mode === 'zoom' ? () => stepZoom(-1)
-                                              : mode === 'font' ? stepUiScaleDown
-                                              : mode === 'compact' ? toggleCompact
-                                              : undefined;
-                                    return (
-                                        <button onClick={act}
-                                                disabled={!act}
-                                                className="ctl-sm flex-shrink-0 disabled:cursor-default"
-                                                style={{color:'var(--tone-alert)', background:'var(--tone-alert-bg)', borderColor:'var(--tone-alert-border)'}}
-                                                aria-label={act ? `畫面右邊有 ${clipPx} 像素在視窗外，點擊修正`
-                                                                : `畫面右邊有 ${clipPx} 像素在視窗外，請把視窗拉寬`}
-                                                title={tip}>
-                                            ⚠ 右邊被切掉
-                                        </button>
-                                    );
-                                })()}
+                                {/* ⚠ 右邊被切掉。**只有投影模式才會出現**（第 46 批第四段，
+                                    見 renderClipWarning 上方的說明）——平常橫捲已經是完整的畫面，
+                                    這顆只會白白佔掉工具列的寬度，而它出現的時機剛好是版面最擠的時候。
+                                    已經橫捲時它會跟著頁首滑走 —— 那時改由最外層的浮動版接手，
+                                    兩個位置**同時只會有一顆**，避免變成兩個一樣的鈕 */}
+                                {!scrolledX && renderClipWarning(false)}
                                 {present && (
                                     <div className="ctl-sm flex-shrink-0 gap-0.5 px-1"
                                          title="投影倍率：後排看不清就往上加，右邊被切掉就往下降">
@@ -3518,8 +3796,8 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                             title={'資料列的字很小（10~11px），這裡可以整片放大。\n'
                                                  + UI_SCALES.map(s => `${Math.round(s*100)}%`).join(' → ') + ' → 循環。\n'
                                                  + '⚠️ 放大的是需求列表本身（頁首不變）；投影模式有自己的倍率。\n'
-                                                 + '放大後可用寬度會變成「視窗寬 ÷ 倍率」，16 欄可能放不下而需要橫向捲 ——\n'
-                                                 + '真的塞不下時頁首會出現「⚠ 右邊被切掉」，點它可以一鍵修正'}>
+                                                 + '放大後右邊放不下時，整個版面（含頁首與工具列）會一起變寬，\n'
+                                                 + '用橫向捲動看完整的 16 欄 —— 欄位不會被自動收起來。'}>
                                         Ａ {Math.round(uiScale*100)}%
                                     </button>
                                 )}
@@ -3746,33 +4024,13 @@ const { useState, useMemo, Fragment, useEffect } = React;
 
                                 {/* 人員負載與各年月案件數 2026-08-19 起**各佔一整列**（原本是 lg:grid-cols-2 並排）。
                                     使用者要求拆開：並排時兩張卡各只有半個版面寬，趨勢圖的柱子被壓得很窄，
-                                    人員負載的長條也短到看不出差距 —— 投影時尤其明顯。 */}
-                                <div className="t-card p-5">
-                                        <h2 className="text-sm font-semibold mb-4" style={{color:'var(--text-primary)'}}>人員負載（進行中案件數）</h2>
-                                        {/* 顏色一律走 inline style。用 `bg-${x}-500/10` 這種字串拼接的 class，
-                                            Tailwind 靜態掃描時看不到完整字串，實際上不會被產生出來。 */}
-                                        <div className="grid grid-cols-2 gap-6">
-                                            {[{title:'EMS 需求方', data:analytics.ems, color:'#64748b'},
-                                              {title:'MSD 開發方', data:analytics.msd, color:'#0f766e'}].map(side => (
-                                                <div key={side.title}>
-                                                    <div className="text-[10px] font-semibold mb-2 pb-1.5" style={{color:'var(--text-muted)', borderBottom:'1px solid var(--border-card)'}}>{side.title}</div>
-                                                    {side.data.length === 0
-                                                        ? <div className="text-[11px] py-2" style={{color:'var(--text-muted)'}}>尚無指派</div>
-                                                        : side.data.map(o => (
-                                                        <div key={o.name} className="flex items-center gap-2 mb-2">
-                                                            <span className="text-xs truncate w-14 flex-shrink-0" style={{color:'var(--text-secondary)'}} title={o.name}>{o.name}</span>
-                                                            <div className="flex-1 h-3" style={{background:'var(--bg-bar-track)'}}>
-                                                                {/* 兩邊共用同一個基準值，EMS 與 MSD 的長度才有可比性 */}
-                                                                <div className="h-full" style={{width:`${Math.min((o.count/analytics.maxLoad)*100,100)}%`, background:side.color}}></div>
-                                                            </div>
-                                                            <span className="text-xs font-semibold tabular-nums w-5 text-right flex-shrink-0" style={{color:'var(--text-primary)'}}>{o.count}</span>
-                                                        </div>
-                                                    ))}
-                                                </div>
-                                            ))}
-                                        </div>
-                                </div>
-
+                                    人員負載的長條也短到看不出差距 —— 投影時尤其明顯。
+                                    ⚠️ **順序（第 53 批，2026-09-05 使用者要求）：跟著年月區間的卡片全部排在上半部，
+                                    不連動的「人員負載」排到最後一張。** 在此之前人員負載夾在交叉表與趨勢圖中間，
+                                    使用者第一眼的反應是「這張是不是壞了、怎麼沒跟著區間動」（第 52 批）——
+                                    第 52 批補的那行「不分區間」是把話講清楚，這一批是把版面本身排對：
+                                    **同一頁上有兩種口徑時，先把同一種口徑的排在一起，再標示差異。**
+                                    ⚠️ 日後新增統計卡也照這條：連動的往上放、不連動的往下放。 */}
                                 <div className="t-card p-5">
                                         {/* 區間選擇器只放在上面那張交叉表（兩者共用同一組 state），
                                             這裡只註明「跟著同一個區間」—— 同一頁擺兩組一模一樣的控制項
@@ -3837,6 +4095,50 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                             )}
                                         </div>
                                 </div>
+
+                                {/* ═══ 人員負載 ═══
+                                    ⚠️ 這張卡**刻意不跟年月區間連動**（第 52 批寫明，2026-09-05 使用者問
+                                    「這項目看起來沒有隨著時間區間調整，這樣邏輯對嗎?」）。
+                                    它回答的是「**現在**誰身上壓著幾件」，是一張當下的快照；
+                                    而區間是依**註冊年月**分組的 —— 套上去會變成「某段期間註冊、
+                                    而且目前仍未結案」的混合數字，那不是任何人會問的問題。
+                                    ⚠️ **它一定要排在最後一張**（第 53 批）：上面三張（交叉表／區間選擇器／趨勢圖）
+                                    是同一個口徑、同一個區間，這一張是另一個口徑。夾在中間時使用者的第一眼
+                                    反應是「這張壞了嗎」；排到最後、加上標題右邊那行「不分區間」，
+                                    才是「上面看區間、下面看現況」兩段讀得下去的版面。
+                                    兩側加總必然等於「進行中」KPI（每件各算 EMS／MSD 一次，
+                                    沒填的歸「未指派」、「未定」不計），所以數字直接寫進說明裡對得起來。 */}
+                                <div className="t-card p-5">
+                                        <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
+                                            <h2 className="text-sm font-semibold" style={{color:'var(--text-primary)'}}>人員負載（進行中案件數）</h2>
+                                            <span className="text-[10px] cursor-help" style={{color:'var(--text-muted)'}}
+                                                  title="這張卡看的是「現在誰身上壓著幾件」，所以不跟上面那三張的年月區間連動 —— 區間是依註冊年月分組的，套上去會變成「某段期間註冊、而且目前仍未結案」的混合數字。兩側各自加總都等於最上面「進行中」那張 KPI 卡的數字。">
+                                                不分區間 · 目前未結案的 {analytics.ongoing} 件
+                                            </span>
+                                        </div>
+                                        {/* 顏色一律走 inline style。用 `bg-${x}-500/10` 這種字串拼接的 class，
+                                            Tailwind 靜態掃描時看不到完整字串，實際上不會被產生出來。 */}
+                                        <div className="grid grid-cols-2 gap-6">
+                                            {[{title:'EMS 需求方', data:analytics.ems, color:'#64748b'},
+                                              {title:'MSD 開發方', data:analytics.msd, color:'#0f766e'}].map(side => (
+                                                <div key={side.title}>
+                                                    <div className="text-[10px] font-semibold mb-2 pb-1.5" style={{color:'var(--text-muted)', borderBottom:'1px solid var(--border-card)'}}>{side.title}</div>
+                                                    {side.data.length === 0
+                                                        ? <div className="text-[11px] py-2" style={{color:'var(--text-muted)'}}>尚無指派</div>
+                                                        : side.data.map(o => (
+                                                        <div key={o.name} className="flex items-center gap-2 mb-2">
+                                                            <span className="text-xs truncate w-14 flex-shrink-0" style={{color:'var(--text-secondary)'}} title={o.name}>{o.name}</span>
+                                                            <div className="flex-1 h-3" style={{background:'var(--bg-bar-track)'}}>
+                                                                {/* 兩邊共用同一個基準值，EMS 與 MSD 的長度才有可比性 */}
+                                                                <div className="h-full" style={{width:`${Math.min((o.count/analytics.maxLoad)*100,100)}%`, background:side.color}}></div>
+                                                            </div>
+                                                            <span className="text-xs font-semibold tabular-nums w-5 text-right flex-shrink-0" style={{color:'var(--text-primary)'}}>{o.count}</span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            ))}
+                                        </div>
+                                </div>
                             </div>
                         )}
 
@@ -3859,7 +4161,10 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         <svg className="absolute left-3 top-1/2 -translate-y-1/2" style={{color:'var(--text-muted)'}} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
                                         <input type="text" className="w-full h-[34px] pl-9 pr-3 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-colors"
                                             style={{background:'var(--bg-input)',border:'1px solid var(--bg-input-border)',color:'var(--text-secondary)'}}
-                                            placeholder="搜尋 NID、項目、負責人..." value={searchTerm} onChange={e=>setSearchTerm(e.target.value)} />
+                                            placeholder="搜尋 NID、分類、負責人、描述…"
+                                            title={'搜尋比對這幾欄：NID、Main Cat、Sub Cat、EMS 負責人、MSD 負責人、現況描述、需求補充。\n'
+                                                 + '日期、Status、StatusID 請用右邊的漏斗（欄位篩選）。'}
+                                            value={searchTerm} onChange={e=>setSearchTerm(e.target.value)} />
                                     </div>
                                     {/* B5 後續：原本是「🔍 欄位篩選 ▼」的長按鈕擺在右側動作區，佔掉一整塊
                                         寬度、又跟 Excel／新增這種「動作」混在一起。改成漏斗圖示的方形開關
@@ -3921,7 +4226,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                       { value:'delay',    label:`⏰ 有延期完成 (${alertCounts.delay})` },
                                                       { value:'rollback', label:`🔄 有規格回退 (${alertCounts.rollback})` }
                                                   ]} />
-                                    {hasActiveFilter && (
+                                    {hasNonDefaultFilter && (
                                         <button onClick={clearAllFilters} className="ctl"
                                                 style={{color:'var(--tone-alert)', background:'var(--tone-alert-bg)', borderColor:'var(--tone-alert-border)'}}>✕ 清除全部</button>
                                     )}
@@ -3946,7 +4251,19 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                         className="w-full text-left px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition-colors border"
                                                         style={{background:'var(--bg-input)', color:'var(--text-secondary)', borderColor:'var(--bg-input-border)'}}>
                                                     ↓ 匯出 Excel
-                                                    <div className="font-normal mt-0.5" style={{color:'var(--text-muted)'}}>把目前的資料下載成 .xlsx</div>
+                                                    {/* ⚠️ 一定要講明「不套用篩選」（2026-09-05）。
+                                                        /api/export 只有 WHERE IsDeleted = 0，畫面上的搜尋／篩選一個都不吃，
+                                                        而原本這行寫的是「把**目前的資料**下載成 .xlsx」—— 上面才剛寫著
+                                                        「顯示 18 / 63 筆」，最自然的讀法就是「下載那 18 筆」。
+                                                        這是下載檔案，**打開才會發現拿到 63 筆**，屬於典型的靜默落差。
+                                                        ⚠️ 筆數走 requirementsData.length（全部未刪除的），
+                                                        不可以用 sortedData.length —— 那正是不會被匯出的那個數字 */}
+                                                    <div className="font-normal mt-0.5" style={{color:'var(--text-muted)'}}>
+                                                        下載<b>全部 {requirementsData.length} 筆</b>成 .xlsx
+                                                        {sortedData.length !== requirementsData.length && (
+                                                            <span style={{color:'var(--tone-warn)'}}>（不套用畫面上的篩選，畫面目前是 {sortedData.length} 筆）</span>
+                                                        )}
+                                                    </div>
                                                 </button>
                                                 <button onClick={()=>{ setOpenMenu(null); fileInputRef.current.click(); }}
                                                         className="w-full text-left px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition-colors border"
@@ -3986,12 +4303,25 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                             <Fragment key={o.k}>
                                             {/* ALL 與 1~5 是兩種語意（清空 vs 複選），中間隔一條細線 */}
                                             {o.k === '1' && <div className="ctl-div mx-0.5"></div>}
-                                            <button onClick={()=>setStageFilter(prev => isAll ? []
-                                                        : (prev.includes(o.k) ? prev.filter(x => x !== o.k) : [...prev, o.k]))}
+                                            <button onClick={()=>{
+                                                        // ⚠️ 第 49 批的兩條連動 —— 沒有它們，預設「只看進行中」會讓
+                                                        // 這一排出現「按下去必然 0 筆」的按鈕（`5 結案` 就是）：
+                                                        //   ① ALL ＝「顯示全部」，所以連進度篩選一起清（它的數字本來就是不含進度的總數）
+                                                        //   ② 選一個被進度篩選整群擋掉的階段時，順手解除進度篩選 ——
+                                                        //      你按它就是要看那一群，系統不該再拿自己的預設擋你
+                                                        if (isAll) { setStageFilter([]); setProgressFilter('All'); return; }
+                                                        const picking = !stageFilter.includes(o.k);
+                                                        if (picking && progressFilter !== 'All'
+                                                            && (stageFacetsUnderProgress[o.k] ?? 0) === 0
+                                                            && (stageFacets[o.k] ?? 0) > 0) setProgressFilter('All');
+                                                        setStageFilter(prev => picking ? [...prev, o.k] : prev.filter(x => x !== o.k));
+                                                    }}
                                                     className="ctl gap-2"
                                                     style={active ? activeStyle : undefined}
-                                                    title={isAll ? '顯示全部 StatusID（清除已選取的階段）'
-                                                                 : `StatusID ${o.k} ${o.label}（可複選，再點一次取消）`}>
+                                                    title={isAll ? '顯示全部（清除已選取的階段，並取消「只看進行中」）'
+                                                                 : `StatusID ${o.k} ${o.label}（可複選，再點一次取消）`
+                                                                   + (progressFilter !== 'All' && (stageFacetsUnderProgress[o.k] ?? 0) === 0 && (stageFacets[o.k] ?? 0) > 0
+                                                                      ? `。目前的「${PROG_FILTER_LABEL[progressFilter]}」會把這一階段整群擋掉，點下去會一併取消它` : '')}>
                                                 {/* 階段代號改成色點 + 數字：五個階段五種顏色全部塗在文字上時，
                                                     這一排會像調色盤；色點夠小，彩度就不會跟資料列的紅色警示打架 */}
                                                 {!isAll && <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{background:o.color}}></span>}
@@ -4009,8 +4339,10 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                             0 件時整顆不出現 —— 沒事就不該有紅色元件在畫面上 */}
                                         {dueAlerts.length > 0 && (() => {
                                             const on = dueFilter === 'attention';
+                                            // ⚠️ 取消時回到**使用者自己的預設**，不是寫死 false（同 openListWith）
                                             return (
-                                                <button onClick={()=>{ setDueFilter(on ? 'All' : 'attention'); setDuePriority(!on); }}
+                                                <button onClick={()=>{ setDueFilter(on ? 'All' : 'attention');
+                                                                        setDuePriority(on ? readDuePriorityPref() : true); }}
                                                         className="ctl gap-1.5 no-print"
                                                         style={on
                                                             ? {background:'var(--tone-alert)', color:'#fff', borderColor:'var(--tone-alert)'}
@@ -4028,14 +4360,43 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 </button>
                                             );
                                         })()}
-                                        <div className="ctl-div no-print"></div>
+                                        {/* ⚠️ 這裡以前有兩條 `ctl-div` 分隔線（第 51 批移除，2026-09-05）。
+                                            兩條加上各自的 gap 共 18px —— 這一排的寬度預算只有幾十 px，
+                                            而 `需關注` 是紅色按鈕、`精簡模式`／`排序` 是按鈕、中間是灰色小字，
+                                            三群本來就分得出來，分隔線在這裡買不到什麼卻要付掉 18px。 */}
                                         {/* 「顯示 N / M 筆」在紙上不重複印 —— 列印抬頭那一行已經寫過同一句，
                                             但螢幕上它必須留在這裡（工具列旁邊才是使用者找它的地方） */}
                                         <span className="text-[11px] tabular-nums px-0.5 no-print" style={{color:'var(--text-muted)'}}>
                                             顯示 <b className="tabular-nums" style={{color:'var(--text-secondary)'}}>{sortedData.length}</b> / {requirementsData.length} 筆
                                         </span>
-                                        <div className="ctl-div no-print"></div>
+                                        {/* ⚠️ 第 51 批把「併到筆數旁邊的那顆晶片」整個拿掉了（2026-09-05）。
+                                            兩個理由：
+                                              ①**寬度**：它 97px，與 52px 的「✓ 圖例」一起把這一排從 1218px
+                                                推到 1384px，1440 螢幕當場斷成兩行（使用者截圖回報）。
+                                              ②**它本來就是重複的**：第 50 批讓沒生效的下拉變淡之後，工具列那顆
+                                                藍色的「進度：進行中 (19)」已經是畫面上最顯眼的東西，而且它自己
+                                                就是移除的入口（改成「不限進度」）—— 同一個概念不該有兩組字（第 37 批）。
+                                            ⚠️ **紙本不受影響**：底下那張 `chips-print` 的卡照印（紙上沒有工具列）。 */}
                                         <span className="flex items-center gap-2 no-print">
+                                        {/* 圖例的開關（第 50 批）。圖例本身收在表格正上方，預設收起。
+                                            ⚠️ **一定要維持純圖示的 34px**（第 51 批，2026-09-05）：做成
+                                            `ToggleChip`（「✓ 圖例」）時是 52px，加上當時併進來的那顆條件晶片
+                                            97px，這一排的需求從 1218px 變成 1384px —— 1440 螢幕（可用 1425px）
+                                            **當場斷成兩行**，使用者截圖回報「變成兩行了!!」。這一排的寬度預算
+                                            很淺，加東西之前先量（見 CLAUDE.md 的版面預算）。
+                                            ⚠️ 軌跡讀取失敗時強制展開（那句紅字就在圖例列裡，見 legendShown），
+                                            這時不給關 —— 第 24 批的規則是「讀取失敗一定要出聲」 */}
+                                        <button onClick={toggleLegend} disabled={!!historyError}
+                                                className={`ctl ctl-icon disabled:opacity-50 disabled:cursor-default${legendShown ? ' ctl-on' : ''}`}
+                                                aria-pressed={legendShown}
+                                                aria-label={legendShown ? '收起圖例' : '顯示圖例'}
+                                                title={historyError
+                                                    ? '軌跡讀取失敗的訊息就在圖例列裡，所以現在不能收起來'
+                                                    : '圖例：左側色條、⚠ 未壓日期、⏰ 延期完成、🔄 規格回退…\n點一下顯示／收起。收起只作用在螢幕上，列印時一定會印出來'}>
+                                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                                <circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>
+                                            </svg>
+                                        </button>
                                         {/* ⚠️ 窄螢幕（≤1024px）強制精簡時要講出來（第 29 批）——
                                             不然使用者會按到一顆「按了沒反應」的開關。
                                             ⚠️ 投影模式中不給關（第 32 批）：投影的前置條件就是精簡模式，
@@ -4052,17 +4413,20 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         {/* F：四個排序開關原本全部攤在工具列上，這排在 1440px 以下會換行。
                                             它們都是「設定一次就不太會再動」的低頻選項，收進面板。
                                             按鈕右上角的紅點代表裡面有非預設選項打開著 —— 不然使用者會
-                                            忘記自己開過「逾期優先」，然後以為表格排序莫名其妙 */}
+                                            忘記自己開過「逾期優先」，然後以為表格排序莫名其妙。
+                                            ⚠️ 第 48 批起「逾期優先」預設是**開著**的，所以紅點的條件跟著改成
+                                            `!duePriority`（＝與預設不同）—— 沿用舊的 `duePriority` 會變成
+                                            一進來就亮著紅點，那顆點就再也指不出任何東西 */}
                                         <div className="relative">
                                             <MenuButton open={openMenu==='sort'} onClick={()=>toggleMenu('sort')}
-                                                        dot={duePriority || !doneLast || sortConfig.key==='delayCount' || sortConfig.key==='rollbackCount'}
+                                                        dot={!duePriority || !doneLast || sortConfig.key==='delayCount' || sortConfig.key==='rollbackCount'}
                                                         title="排序方式">排序</MenuButton>
                                             <Popover open={openMenu==='sort'} onClose={()=>setOpenMenu(null)} label="排序與置底">
                                                 {/* Done 沉底是預設值，但使用者點欄位排序時如果 Done 列永遠不動
                                                     會以為排序壞掉，所以留一個關得掉的入口 */}
                                                 <ToggleChip full on={doneLast} onClick={()=>setDoneLast(!doneLast)}
                                                             title="結案 (Done / StatusID 5) 的資料列一律排到最下面">Done 置底</ToggleChip>
-                                                <ToggleChip full on={duePriority} onClick={()=>setDuePriority(!duePriority)} tone="alert"
+                                                <ToggleChip full on={duePriority} onClick={()=>toggleDuePriority(!duePriority)} tone="alert"
                                                             title="「已到階段卻沒壓日期」排最上面，其餘依剩餘天數由少到多（逾期最久的在前）">逾期優先</ToggleChip>
                                                 {/* 次數排序（第 17 批）。用 sortConfig 而不是另一組 state，
                                                     這樣與表頭排序互斥，不會兩套排序打架 */}
@@ -4086,37 +4450,30 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                     紙上也印：傳閱時一定要看得出這份清單套了哪些條件，
                                     否則「62 筆只印出 20 筆」在紙上完全沒有線索（列印抬頭只寫筆數） */}
                                 {activeChips.length > 0 && (
-                                    <div className="t-card px-4 py-2.5 flex flex-wrap items-center gap-2">
+                                    <div className={`t-card px-4 py-2.5 flex flex-wrap items-center gap-2${chipsInline ? ' chips-print' : ''}`}>
                                         <span className="text-[10px] font-bold px-1.5 py-0.5 rounded flex-shrink-0"
                                               style={{color:'var(--text-tertiary)', background:'var(--bg-input)', border:'1px solid var(--bg-input-border)'}}>
                                             生效中的條件
                                         </span>
-                                        {activeChips.map(c => (
-                                            <span key={c.id}
-                                                  className="inline-flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-lg text-[11px] font-bold"
-                                                  style={c.hidden
-                                                      ? {color:'var(--tone-alert)', background:'var(--tone-alert-bg)', border:'1px solid var(--tone-alert-border)'}
-                                                      : {color:'var(--text-secondary)', background:'var(--bg-input)', border:'1px solid var(--bg-input-border)'}}
-                                                  title={c.hidden
-                                                      ? `這個條件正在生效，但「${c.label}」欄在目前的模式下被收起來了，所以看不到它的輸入框 —— 筆數變少的原因就是它。點 ✕ 可以直接移除`
-                                                      : `${c.label}：${c.value}（點 ✕ 只移除這一條）`}>
-                                                {c.hidden && <span aria-hidden="true">⚠</span>}
-                                                {/* 階段色點：與上面那排 StatusID 鈕同一套顏色，一眼對得起來 */}
-                                                {c.color && <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{background:c.color}}></span>}
-                                                <span style={{color: c.hidden ? 'inherit' : 'var(--text-muted)'}}>{c.label}</span>
-                                                <span>{c.value}</span>
-                                                <button onClick={c.onRemove}
-                                                        className="w-4 h-4 rounded flex items-center justify-center text-[12px] leading-none no-print hover:bg-black/10"
-                                                        style={{color:'inherit', opacity:0.7}}
-                                                        aria-label={`移除篩選條件：${c.label} ${c.value}`}
-                                                        title={`移除這一條（${c.label}）`}>✕</button>
-                                            </span>
-                                        ))}
+                                        {activeChips.map(renderChip)}
                                         {/* 被收起的條件另外用一句話講清楚 —— 只靠一顆紅晶片的話，
                                             使用者仍然要自己想通「為什麼它是紅的」 */}
                                         {hiddenChipCount > 0 && (
                                             <span className="text-[10px]" style={{color:'var(--tone-alert)'}}>
                                                 ⚠ 有 {hiddenChipCount} 個條件的欄位在目前模式下是收起來的，但它仍在過濾
+                                            </span>
+                                        )}
+                                        {/* 搜尋穿透（第 49 批）：被「進度」擋掉的搜尋結果要出聲，
+                                            而且「說明」與「我要看它們」是同一個地方 —— 不必先讀完一句話再去別處找開關。
+                                            ⚠️ 不印出來（no-print）：紙上按不到，而條件晶片本身已經寫著進度是什麼 */}
+                                        {searchBlockedCount > 0 && (
+                                            <span className="inline-flex items-center gap-1.5 no-print">
+                                                <span className="text-[11px]" style={{color:'var(--text-tertiary)'}}>
+                                                    另有 <b style={{color:'var(--text-primary)'}}>{searchBlockedCount}</b> 筆
+                                                    {progressFilter === 'ongoing' ? '已完成' : '進行中'}的需求符合「{searchTerm}」
+                                                </span>
+                                                <button onClick={()=>setProgressFilter('All')} className="ctl-sm"
+                                                        title="取消「進度」這一條，把它們一起顯示出來">一併顯示</button>
                                             </span>
                                         )}
                                         {/* ⚠️ 這裡**刻意不放**第二顆「✕ 清除全部」——
@@ -4139,7 +4496,13 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         主管不會逐格 hover，等於看不懂。改成一行常駐圖例放在表格正上方
                                         （不是表格下方：62 筆要捲到底才看到圖例等於沒有）。
                                         刻意做得極輕：10px、muted 色、單行，不跟資料搶注意力 */}
-                                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2.5 text-[10px] rounded-t-[10px]"
+                                    {/* ⚠️ 第 50 批（2026-09-05）：預設**收起**，開關在上一排的「圖例」鈕。
+                                        它是「第一次要看、之後再也不看」的內容，卻每天佔著表格上方 61px
+                                        （實測第一列資料的起點是 489px，而一列只有 79px）。
+                                        ⚠️ 收起只作用在螢幕：`.legend-strip.is-collapsed` 在列印時會回來
+                                        —— 紙本沒有 tooltip，⏰／🔄／⚠ 只剩圖例解釋得了。
+                                        ⚠️ 也不要改成「整個刪掉」：新接手的人第一次看這張表需要它。 */}
+                                    <div className={`legend-strip flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2.5 text-[10px] rounded-t-[10px]${legendShown ? '' : ' is-collapsed'}`}
                                          style={{color:'var(--text-muted)', background:'var(--bg-input)', borderBottom:'1px solid var(--border-card)'}}>
                                         <span className="font-bold px-1.5 py-0.5 rounded" style={{color:'var(--text-tertiary)', background:'var(--bg-card)', border:'1px solid var(--bg-input-border)'}}>圖例</span>
                                         <span className="flex items-center gap-1">
@@ -4281,7 +4644,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 {compact ? (
                                                 <th className="px-2 py-2.5 text-[11px] font-bold cursor-pointer select-none text-center whitespace-nowrap"
                                                     style={{color:'var(--col-schedule-text)', borderRight:'2px solid var(--border-card)', background:'var(--thead-col-schedule)', width:'126px'}}
-                                                    onClick={()=>setDuePriority(!duePriority)}
+                                                    onClick={()=>toggleDuePriority(!duePriority)}
                                                     title="只顯示「還沒走完的階段裡到期日最早的那一個」（已結案則顯示最後排定的階段）。點一下切換「到期日近的排上面」">
                                                     <div className="flex items-center justify-center">目前階段時程 <span className="ml-1"><SortIcon active={duePriority} dir="asc" /></span></div>
                                                 </th>
@@ -4675,10 +5038,13 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                             {/* 精簡模式：只出一欄「目前階段時程」。四個階段的完整排程
                                                                 仍在展開明細裡，資訊沒有消失，只是不佔主管的視線 */}
                                                             {compact ? currentStageCell({ item, isDone, changeOf, br:'2px solid var(--border-card)', onNotify:notifyThis }) : (<>
-                                                            {scheduleCell({ val:item.spec?.end, alert:specAlert, changes:changeOf('spec'),    label:'1_EMS規格確認', br:'1px solid var(--border-table)', actual:item.spec?.actualEnd,        unset:unsetPhase?.key==='spec',    onNotify:notifyThis })}
-                                                            {scheduleCell({ val:item.msd?.confirm, alert:confirmAlert, changes:changeOf('confirm'), label:'2_MSD確認中', br:'1px solid var(--border-table)', actual:item.msd?.confirmActualEnd, unset:unsetPhase?.key==='confirm', onNotify:notifyThis })}
-                                                            {scheduleCell({ val:item.msd?.end,     alert:msdAlert,  changes:changeOf('msd'),     label:'3_MSD開發中', br:'1px solid var(--border-table)', actual:item.msd?.actualEnd,        unset:unsetPhase?.key==='msd',     onNotify:notifyThis })}
-                                                            {scheduleCell({ val:item.uat?.end,     alert:uatAlert,  changes:changeOf('uat'),     label:'4_EMS驗收',   br:'2px solid var(--border-card)', actual:item.uat?.actualEnd,        unset:unsetPhase?.key==='uat',     onNotify:notifyThis })}
+                                                            {/* onSetDate：「⚠ 未壓日期」那顆按下去直接跳到該階段的日期欄。
+                                                                這條路只有一般模式才有 —— currentStageCell（精簡模式）刻意不傳，
+                                                                它與「操作」欄整欄收起是同一條規則 */}
+                                                            {scheduleCell({ val:item.spec?.end, alert:specAlert, changes:changeOf('spec'),    label:'1_EMS規格確認', br:'1px solid var(--border-table)', actual:item.spec?.actualEnd,        unset:unsetPhase?.key==='spec',    onNotify:notifyThis, onSetDate:()=>openEdit(item,'spec') })}
+                                                            {scheduleCell({ val:item.msd?.confirm, alert:confirmAlert, changes:changeOf('confirm'), label:'2_MSD確認中', br:'1px solid var(--border-table)', actual:item.msd?.confirmActualEnd, unset:unsetPhase?.key==='confirm', onNotify:notifyThis, onSetDate:()=>openEdit(item,'confirm') })}
+                                                            {scheduleCell({ val:item.msd?.end,     alert:msdAlert,  changes:changeOf('msd'),     label:'3_MSD開發中', br:'1px solid var(--border-table)', actual:item.msd?.actualEnd,        unset:unsetPhase?.key==='msd',     onNotify:notifyThis, onSetDate:()=>openEdit(item,'msd') })}
+                                                            {scheduleCell({ val:item.uat?.end,     alert:uatAlert,  changes:changeOf('uat'),     label:'4_EMS驗收',   br:'2px solid var(--border-card)', actual:item.uat?.actualEnd,        unset:unsetPhase?.key==='uat',     onNotify:notifyThis, onSetDate:()=>openEdit(item,'uat') })}
                                                             </>)}
                                                             {/* 現況描述（CurrentStatus）。精簡模式的最後一欄。
                                                                 ⚠️ 不可用 truncate：內容常是多行長文，nowrap 會讓這一欄的
@@ -5212,7 +5578,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                     <label className="block text-xs mb-1" style={{color:'var(--text-secondary)'}}>End Date {specEndRequired
                                                         ? <span className="text-red-500">*</span>
                                                         : <span className="font-normal" style={{color:'var(--text-muted)'}}>(可不填)</span>}</label>
-                                                    <input type="date" min={editingData.spec?.start||undefined} disabled={isFieldLocked('spec', 'end')} className="w-[160px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-amber-500/50 disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800" style={{background:isFieldLocked('spec','end')?undefined:'var(--bg-main)', borderColor:errBorder('spec.end')}} value={editingData.spec?.end||''} onChange={e=>setEditingData({...editingData, spec:{...editingData.spec, end:e.target.value}})} />
+                                                    <input type="date" data-ct-focus="spec" min={editingData.spec?.start||undefined} disabled={isFieldLocked('spec', 'end')} className="w-[160px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-amber-500/50 disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800" style={{background:isFieldLocked('spec','end')?undefined:'var(--bg-main)', borderColor:errBorder('spec.end')}} value={editingData.spec?.end||''} onChange={e=>setEditingData({...editingData, spec:{...editingData.spec, end:e.target.value}})} />
                                                     <FieldErrorHint msg={errOf('spec.end')} />
                                                     {/* 「可不填」單獨看會讀成「這一格不重要」，但它其實是唯一會讓這筆需求
                                                         一存檔就掛上紅色警示的欄位 —— 把後果一起講完，使用者才知道留空
@@ -5263,7 +5629,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 <label className="flex items-center gap-1.5 text-xs mb-1" style={{color:'var(--text-secondary)'}}>Confirm EMS Spec Date
                                                     {fieldLockReason('confirm','confirm')==='gated' && <GateLock text={gateHint('confirm')} />}
                                                 </label>
-                                                <input type="date" disabled={isFieldLocked('confirm', 'confirm')} title={fieldLockReason('confirm','confirm')==='gated' ? gateHint('confirm') : undefined} className="w-[160px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-violet-500/50 disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800" style={{background:isFieldLocked('confirm','confirm')?undefined:'var(--bg-main)', borderColor:errBorder('msd.confirm')}} value={editingData.msd?.confirm||''} onChange={e=>setEditingData({...editingData, msd:{...editingData.msd, confirm:e.target.value}})} />
+                                                <input type="date" data-ct-focus="confirm" disabled={isFieldLocked('confirm', 'confirm')} title={fieldLockReason('confirm','confirm')==='gated' ? gateHint('confirm') : undefined} className="w-[160px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-violet-500/50 disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800" style={{background:isFieldLocked('confirm','confirm')?undefined:'var(--bg-main)', borderColor:errBorder('msd.confirm')}} value={editingData.msd?.confirm||''} onChange={e=>setEditingData({...editingData, msd:{...editingData.msd, confirm:e.target.value}})} />
                                                 <FieldErrorHint msg={errOf('msd.confirm')} />
                                             </div>
                                             {/* Confirm 備註輸入欄已依需求移除 —— 這個階段只壓確認日期。
@@ -5301,7 +5667,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                     <label className="flex items-center gap-1.5 text-xs mb-1" style={{color:'var(--text-secondary)'}}>End Date
                                                         {fieldLockReason('msd','end')==='gated' && <GateLock text={gateHint('msd')} />}
                                                     </label>
-                                                    <input type="date" min={editingData.msd?.start||undefined} disabled={isFieldLocked('msd', 'end')} title={fieldLockReason('msd','end')==='gated' ? gateHint('msd') : undefined} className="w-[160px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-blue-500/50 disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800" style={{background:isFieldLocked('msd','end')?undefined:'var(--bg-main)', borderColor:errBorder('msd.end')}} value={editingData.msd?.end||''} onChange={e=>setEditingData({...editingData, msd:{...editingData.msd, end:e.target.value}})} />
+                                                    <input type="date" data-ct-focus="msd" min={editingData.msd?.start||undefined} disabled={isFieldLocked('msd', 'end')} title={fieldLockReason('msd','end')==='gated' ? gateHint('msd') : undefined} className="w-[160px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-blue-500/50 disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800" style={{background:isFieldLocked('msd','end')?undefined:'var(--bg-main)', borderColor:errBorder('msd.end')}} value={editingData.msd?.end||''} onChange={e=>setEditingData({...editingData, msd:{...editingData.msd, end:e.target.value}})} />
                                                     <FieldErrorHint msg={errOf('msd.end')} />
                                                 </div>
                                             </div>
@@ -5338,7 +5704,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                     <label className="flex items-center gap-1.5 text-xs mb-1" style={{color:'var(--text-secondary)'}}>End Date
                                                         {fieldLockReason('uat','end')==='gated' && <GateLock text={gateHint('uat')} />}
                                                     </label>
-                                                    <input type="date" min={editingData.uat?.start||undefined} disabled={isFieldLocked('uat', 'end')} title={fieldLockReason('uat','end')==='gated' ? gateHint('uat') : undefined} className="w-[160px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-pink-500/50 disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800" style={{background:isFieldLocked('uat','end')?undefined:'var(--bg-main)', borderColor:errBorder('uat.end')}} value={editingData.uat?.end||''} onChange={e=>setEditingData({...editingData, uat:{...editingData.uat, end:e.target.value}})} />
+                                                    <input type="date" data-ct-focus="uat" min={editingData.uat?.start||undefined} disabled={isFieldLocked('uat', 'end')} title={fieldLockReason('uat','end')==='gated' ? gateHint('uat') : undefined} className="w-[160px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-pink-500/50 disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-slate-100 dark:disabled:bg-slate-800" style={{background:isFieldLocked('uat','end')?undefined:'var(--bg-main)', borderColor:errBorder('uat.end')}} value={editingData.uat?.end||''} onChange={e=>setEditingData({...editingData, uat:{...editingData.uat, end:e.target.value}})} />
                                                     <FieldErrorHint msg={errOf('uat.end')} />
                                                 </div>
                                             </div>
