@@ -250,10 +250,14 @@ const UnsetDateBadge = ({
     border: `1px solid ${ALERT_STYLES.unset.border}`
   };
   const tip = `目前已經走到「${label}」，但這一階段還沒壓日期。\n沒有到期日就不會有逾期提醒，所以列在「逾期優先」排序的最上面`;
+  // ⚠️ 沒給 onSetDate ＝ 精簡模式（唯讀的主管檢視）。tooltip 一定要講出
+  //    「這裡點不動、以及去哪裡才點得動」—— 兩種模式的徽章長得**一模一樣**，
+  //    使用者 2026-09-07 就是因此回報「之前修好的功能怎麼失效了」。
+  //    行為刻意不變（他當天確認「維持現狀」），改的只是把差別講出來。
   if (!onSetDate) return /*#__PURE__*/React.createElement("span", {
     className: cls + ' cursor-help',
     style: sty,
-    title: tip
+    title: tip + '\n\n（精簡模式是唯讀檢視，這顆點不動。關掉精簡模式後點它，就會直接開啟編輯視窗並跳到這一階段的日期欄）'
   }, "\u26A0 \u672A\u58D3\u65E5\u671F");
   return /*#__PURE__*/React.createElement("button", {
     type: "button",
@@ -1105,7 +1109,7 @@ const FilterSelect = ({
   }, /*#__PURE__*/React.createElement("select", {
     value: value,
     onChange: e => onChange(e.target.value),
-    className: `ctl appearance-none pr-8 focus:outline-none focus:ring-2 focus:ring-indigo-500/40${active ? ' ctl-on' : ' ctl-mute'}`,
+    className: `ctl appearance-none pr-8 focus:outline-none focus:ring-2 focus:ring-indigo-500/40${active ? ' ctl-on' : ''}`,
     title: `依 ${label} 篩選${hint ? `\n${hint}` : ''}`
   }, /*#__PURE__*/React.createElement("option", {
     value: "All"

@@ -216,24 +216,24 @@
     text-overflow: ellipsis;
   }
 
-  /* ── 沒生效的篩選下拉降成安靜樣式（2026-09-05 / 第 50 批）──
-     五顆下拉裡通常只有一顆在做事（`進度：進行中`），其餘四顆停在「全部／不限」，
-     卻與生效中的那顆一樣是滿框滿底色，佔掉工具列 560px 的視覺重量。
-     ⚠️ 只動顏色，**寬度仍然固定 140px**（第 36 批）—— 讓寬度隨狀態變的話，
-     選了任何一顆篩選整條工具列都會跟著跳位。
-     選擇器用 `select.ctl.ctl-mute` (0,2,1)，高於上面的 `select.ctl` (0,1,1)。
-     hover / focus 時把框線還回來 —— 安靜不等於「看不出這裡可以點」。 */
-  select.ctl.ctl-mute {
-    background: transparent;
-    border-color: transparent;
-    color: var(--text-muted);
-    font-weight: 600;
-  }
-  select.ctl.ctl-mute:hover, select.ctl.ctl-mute:focus {
-    background: var(--bg-input);
-    border-color: var(--bg-input-border);
-    color: var(--text-secondary);
-  }
+  /* ⚠️⚠️ `.ctl-mute`（第 50 批的「沒生效的篩選下拉降成透明底、無框、muted 字」）
+     已於 2026-09-07 / 第 56 批**整個移除，不要再做回去**。使用者回報「下拉的視窗顏色跑掉了」，
+     兩個毛病都出在那條規則：
+
+     1. **`background: transparent` 會把原生下拉的選項清單畫壞。**
+        `<select>` 展開後的 popup 是**瀏覽器自己畫的**，它拿 `<select>` 自己的
+        `background-color` 當底 —— 給 transparent 就等於沒有底色可用，popup 會落回
+        系統色（淺色底）而底下的 `select option` 又是深色字，兩邊對不起來。
+        實測：四顆 mute 的 `background-color` 是 `rgba(0,0,0,0)`，而生效那顆
+        `ctl-on` 是實心 `rgb(79,70,229)` —— **正好只有沒生效的那四顆會壞**。
+        ⚠️ 這與「凍結欄不可以用半透明底色」是同一類坑：**原生控制項與疊在上面的東西，
+        底色一律要是不透明的實色。**
+     2. **`border-color: transparent` + `--text-muted` 讓那四顆看起來像被停用**，
+        而它們其實是可以點的。
+
+     現在五顆一律吃 `.ctl` 的實心底 (`--bg-input`) 與可見框線；
+     生效的那顆仍然套 `.ctl-on`（藍色實心）—— **「哪一顆在過濾」的訊號本來就由它負責**，
+     不需要再靠把其餘四顆調暗來對比。 */
 
   /* 分段控制列（頁首的「需求列表／統計報表」）。
      原本是兩顆獨立按鈕，選中的那顆填滿靛色 —— 看起來像「一顆主要動作鈕

@@ -152,8 +152,15 @@ const { useState, useMemo, Fragment, useEffect } = React;
             const sty = {color:ALERT_STYLES.unset.color, background:ALERT_STYLES.unset.bg,
                          border:`1px solid ${ALERT_STYLES.unset.border}`};
             const tip = `目前已經走到「${label}」，但這一階段還沒壓日期。\n沒有到期日就不會有逾期提醒，所以列在「逾期優先」排序的最上面`;
+            // ⚠️ 沒給 onSetDate ＝ 精簡模式（唯讀的主管檢視）。tooltip 一定要講出
+            //    「這裡點不動、以及去哪裡才點得動」—— 兩種模式的徽章長得**一模一樣**，
+            //    使用者 2026-09-07 就是因此回報「之前修好的功能怎麼失效了」。
+            //    行為刻意不變（他當天確認「維持現狀」），改的只是把差別講出來。
             if (!onSetDate) return (
-                <span className={cls + ' cursor-help'} style={sty} title={tip}>⚠ 未壓日期</span>
+                <span className={cls + ' cursor-help'} style={sty}
+                      title={tip + '\n\n（精簡模式是唯讀檢視，這顆點不動。關掉精簡模式後點它，就會直接開啟編輯視窗並跳到這一階段的日期欄）'}>
+                    ⚠ 未壓日期
+                </span>
             );
             return (
                 <button type="button" onClick={e => { e.stopPropagation(); onSetDate(); }}
@@ -719,13 +726,15 @@ const { useState, useMemo, Fragment, useEffect } = React;
             const active = value !== 'All';
             return (
                 <div className="relative">
-                    {/* ⚠️ 沒生效時降成安靜的樣式（第 50 批，2026-09-05 使用者要求「更乾淨簡潔」）：
-                        五顆下拉裡通常只有一顆在做事，其餘四顆頂著滿框滿底色佔掉工具列
-                        560px 的視覺重量卻什麼都沒過濾。生效的那顆維持藍色實心 ——
-                        兩者拉開差距之後，「現在有幾條在過濾」變成一眼的事。
-                        ⚠️ 寬度仍然是固定的 140px（第 36 批），這裡只動顏色 */}
+                    {/* ⚠️⚠️ 沒生效時**不要**再降成 `ctl-mute`（透明底、無框、muted 字）——
+                        第 50 批做過，2026-09-07 / 第 56 批整個移除，理由寫在 `input.css`
+                        的 `.ctl-mute` 那段註解裡。一句話：`background: transparent`
+                        會把**原生下拉展開後的選項清單**畫壞（popup 的底色是瀏覽器拿
+                        `<select>` 自己的 background 去畫的），而且那四顆看起來像被停用。
+                        「哪一顆在過濾」的訊號由生效那顆的 `ctl-on`（藍色實心）負責就夠了。
+                        ⚠️ 寬度仍然是固定的 140px（第 36 批）。 */}
                     <select value={value} onChange={e=>onChange(e.target.value)}
-                        className={`ctl appearance-none pr-8 focus:outline-none focus:ring-2 focus:ring-indigo-500/40${active ? ' ctl-on' : ' ctl-mute'}`}
+                        className={`ctl appearance-none pr-8 focus:outline-none focus:ring-2 focus:ring-indigo-500/40${active ? ' ctl-on' : ''}`}
                         title={`依 ${label} 篩選${hint ? `\n${hint}` : ''}`}>
                         <option value="All">{allLabel}</option>
                         {options.map(o => <option key={o.value} value={o.value}>{label}：{o.label}</option>)}
