@@ -1490,6 +1490,104 @@ static (string StartCol, string EndCol, string ActualCol, string Label, int Targ
     _         => ("", "", "", "", 0)
 };
 
+// 這個階段的原訂日期（② 的 End 就是 MsdConfirm）。沒填回 null。
+static DateTime? PhasePlannedEndOf(Requirement r, string phase)
+{
+    var d = PhaseDatesOf(r, phase);
+    return ParseDate(phase == "confirm" ? d.confirm : d.end);
+}
+
+// ─── 這個階段是不是已經標記過完成（2026-09-10 / 第 60 批抽出）───
+// ⚠️ 只看「最後一次規格回退之後」的紀錄，而且基準線必須是**同一個階段**的回退列 ——
+// 理由見下方 /done 端點裡原本那段註解（一個字都沒改，只是抽出來讓主要階段與
+// 「一併記錄的跳過階段」共用同一份 SQL）。app.jsx 的 phaseDoneEntry() 是同一套。
+static async Task<bool> PhaseAlreadyDoneAsync(SqlConnection conn, SqlTransaction tx, int id, string phase)
+{
+    using var dupCmd = new SqlCommand(@"
+        SELECT COUNT(*) FROM dbo.Controltable_History
+        WHERE RequirementId = @Id AND Phase = @Phase
+          AND ChangeType IN (N'提早完成', N'延期完成')
+          AND Id > ISNULL((SELECT MAX(Id) FROM dbo.Controltable_History
+                           WHERE RequirementId = @Id AND Phase = @Phase
+                             AND ChangeType = N'規格回退'), 0)", conn, tx);
+    dupCmd.Parameters.AddWithValue("@Id", id);
+    dupCmd.Parameters.AddWithValue("@Phase", phase);
+    return Convert.ToInt32(await dupCmd.ExecuteScalarAsync()) > 0;
+}
+
+// ─── 把「某一個階段完成了」寫進去（2026-09-10 / 第 60 批抽出）───
+// 主要階段與「一併記錄的跳過階段」**共用同一份**。各寫一份的話，
+// 「準時不計數」「提早時夾 Start」「補登要標註」這三條界線遲早只會改到其中一邊 ——
+// UnsetPhaseOf() / StagePassed() 那種鏡像已經是這個專案的痛點。
+// ⚠️ 這一支**只動日期與計數欄**，StageCode / Status 一律由呼叫端自己下 ——
+//    一併記錄的階段不推進 StatusID，那是第 60 批的核心不變量。
+// 內容是從原本 /done 端點裡原封不動搬過來的，行為沒有任何改變。
+static async Task<(bool Ok, string ChangeType, int Days, string CompletedStr)> ApplyCompletionAsync(
+    SqlConnection conn, SqlTransaction tx, int id, Requirement cur, string phase,
+    DateTime plannedEnd, DateTime completed, DateTime today,
+    string? extraNote, string? actor, string actorSrc)
+{
+    var cols = DoneColumnsOf(phase);
+    var isEarly = completed <= plannedEnd;             // 同一天也算準時完成
+    var days = Math.Abs((completed - plannedEnd).Days);
+    var changeType = isEarly ? "提早完成" : "延期完成";
+    var completedStr = completed.ToString("yyyy-MM-dd");
+
+    // 提早 → End 更新為完成日；延期 → End 不動，只寫 ActualEnd（保留延遲的證據）
+    var setDate = isEarly ? $"{cols.EndCol} = @Completed" : $"{cols.ActualCol} = @Completed";
+    // ⚠️ 提早完成時 Start 若還在完成日之後，要一起夾過去。
+    // 排在未來的階段被提早結案是正常情況（例：原訂 9/1 ~ 9/10，8/22 就完成了），
+    // 但只動 End 會做出 End < Start 的資料 —— 那組合會被 InvalidDateRanges() 與前端的
+    // 區間檢查同時擋下，該筆需求連改個現況描述都存不了，除非使用者自己想到要去解鎖 Start。
+    // ② 只有單一日期（confirm），沒有 Start 可夾。
+    if (isEarly && cols.StartCol != "")
+        setDate += $", {cols.StartCol} = CASE WHEN {cols.StartCol} > @Completed THEN @Completed ELSE {cols.StartCol} END";
+    // ⚠️ **準時完成（完成日 == 原訂 End）不計入 EarlyCount**（第 20 批）。
+    // 那一欄的定義就是「提早了幾次」，把「剛好準時」也算進去會讓這個數字失去意義 ——
+    // 主管看「提早 3 次」時，那 3 次應該真的都是超前，而不是有幾次只是沒遲到。
+    // 準時的事實仍完整留在稽核列（ChangeType='提早完成'、說明欄寫「準時完成」），沒有資訊遺失。
+    // ⚠️ 第 60 批「一併記錄跳過的階段」預設就是拿原訂日當完成日，走的正是這一條 ——
+    //    所以那個預設值不會動到任何一個計數欄。
+    var setCount = !isEarly ? ", DelayCount = DelayCount + 1"
+                 : days > 0 ? ", EarlyCount = EarlyCount + 1"
+                            : "";
+    using (var upd = new SqlCommand($@"
+        UPDATE dbo.Controltable
+        SET {setDate}{setCount}, UpdatedAt = SYSDATETIME()
+        WHERE Id = @Id AND IsDeleted = 0", conn, tx))
+    {
+        upd.Parameters.Add("@Completed", SqlDbType.Date).Value = completed;
+        upd.Parameters.AddWithValue("@Id", id);
+        if (await upd.ExecuteNonQueryAsync() == 0)
+            return (false, changeType, days, completedStr);
+    }
+
+    // 稽核列：新值一律記「實際完成日 = 使用者填的完成日」。延期時 DB 的 End 雖然沒動，
+    // 但主管要看的就是「原訂 → 實際」這條落差，記原值等於什麼都沒記
+    var oldD = PhaseDatesOf(cur, phase);
+    // Start 被夾過的話稽核列要記夾過之後的值，否則軌跡上的新值與 DB 對不起來
+    var clampedStart = (isEarly && cols.StartCol != "" && ParseDate(oldD.start) > completed) ? completedStr : oldD.start;
+    var newD = phase == "confirm"
+        ? ((string?)null, (string?)null, (string?)completedStr)
+        : (clampedStart, (string?)completedStr, (string?)null);
+    var note = isEarly
+        ? (days == 0 ? "準時完成" : $"提早 {days} 天完成")
+        : $"延期 {days} 天完成（原訂 {plannedEnd:yyyy-MM-dd} 保留不變，實際完成日記於 ActualEnd）";
+    // ⚠️ 補登一定要在稽核列上標明（第 58 批）。完成日改成使用者自己填之後，
+    // 「延期」是可以被寫成「準時」的，而 DelayCount 是主管在看的數字 ——
+    // 「誰、什麼時候、補登了哪一天」只有這一行查得到。選今天就不加，避免每一列都掛一句廢話。
+    if (completed != today)
+        note += $"（完成日 {completedStr}，於 {today:yyyy-MM-dd} 補登）";
+    // 夾過 Start 要在說明裡講出來，否則使用者只會看到開始日莫名其妙變了
+    if (clampedStart != oldD.start)
+        note += $"（開始日原為 {oldD.start}，晚於完成日，一併調整為 {completedStr}）";
+    // 第 60 批：這一筆是按別的階段時一併記進來的，一定要看得出來
+    if (!string.IsNullOrEmpty(extraNote)) note += extraNote;
+
+    await InsertHistoryAsync(conn, id, cur.nid, phase, changeType, null, note, actor, actorSrc, oldD, newD, tx);
+    return (true, changeType, days, completedStr);
+}
+
 // 按下 Done：今天 ≤ 原訂 End → 提早完成（End 改成今天）；今天 > 原訂 End → 延期完成
 // （End **不動**，實際完成日寫進 ActualEnd）。兩者都會推進 StatusID 並寫稽核列。
 app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
@@ -1601,76 +1699,255 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
     // 前端拿到的字串又只到「分」。回退後同一分鐘內再按完成時，兩邊的判斷會相反 ——
     // 前端算成「還沒完成」而顯示完成鈕，按下去後端卻回 409。Id 是遞增的 IDENTITY，
     // 兩邊看同一個值就不會有精度落差（app.jsx 的 phaseDoneEntry 是同一套）。
-    using (var dupCmd = new SqlCommand(@"
-        SELECT COUNT(*) FROM dbo.Controltable_History
-        WHERE RequirementId = @Id AND Phase = @Phase
-          AND ChangeType IN (N'提早完成', N'延期完成')
-          AND Id > ISNULL((SELECT MAX(Id) FROM dbo.Controltable_History
-                           WHERE RequirementId = @Id AND Phase = @Phase
-                             AND ChangeType = N'規格回退'), 0)", conn, tx))
+    // ⚠️ SQL 已於第 60 批抽成 PhaseAlreadyDoneAsync()，主要階段與一併記錄的階段共用同一份
+    if (await PhaseAlreadyDoneAsync(conn, tx, id, phase))
+        return Results.Conflict(new { message = $"「{cols.Label}」已經標記過完成了，不會重複計次。" });
+
+    // ─── 完成日由使用者指定（第 58 批，2026-09-10 使用者要求）───
+    // 在此之前這裡是寫死的 `DateTime.Today`，而使用者常常隔幾天才回平台補登狀態 ——
+    // 他的原話：「實際上使用者已於 2026/09/09 準時完成了，但我可能 2026/09/20 才想到
+    // 要來平台更新狀態…反而會顯示逾期的狀態，這是有問題的!!」。
+    // ⚠️ 後果不只是那一列顯示錯：`DelayCount` +1 是**主管在看的數字**，等於灌了假的延期。
+    // ⚠️ 沒帶 completedAt 時退回今天 —— curl／測試腳本照常可用，行為與改之前完全一樣。
+    var today = DateTime.Today;
+    var completed = today;
+    var rawCompleted = (body.completedAt ?? "").Trim();
+    if (rawCompleted.Length > 0 &&
+        !DateTime.TryParseExact(rawCompleted, "yyyy-MM-dd", CultureInfo.InvariantCulture,
+                                DateTimeStyles.None, out completed))
+        return Results.BadRequest(new { message = $"完成日「{rawCompleted}」格式不正確，必須是 YYYY-MM-DD。" });
+
+    // ⚠️⚠️ 範圍一律由後端自己再驗一次，**不可以只信前端**（同 notify-unset 那條）——
+    // 完成日會決定「提早／延期」，而那直接寫進 EarlyCount / DelayCount 兩個計數欄。
+    // 上限：完成日不可以是未來（還沒發生的事不能標記完成）
+    if (completed > today)
+        return Results.BadRequest(new
+        {
+            message = $"完成日不可以是未來的日期（{completed:yyyy-MM-dd} 晚於今天 {today:yyyy-MM-dd}）。"
+        });
+    // 下限：有 Start 就是 Start（使用者要的是「今天 ~ Start 之間」），
+    // ② MSD確認中沒有 Start 欄、或 Start 根本沒填 → 退回**半年前**。
+    // ⚠️ Start 排在未來時要夾到今天，否則下限會大於上限、一天都選不到
+    //    （例：原訂 10/01 ~ 10/10，今天 9/20 就完成了）。這與下面那段
+    //    「提早完成時把 Start 一併夾到完成日」是同一個情境的兩半。
+    var startStr = PhaseDatesOf(cur, phase).start;
+    var startDate = ParseDate(startStr);
+    var floor = startDate.HasValue
+        ? (startDate.Value > today ? today : startDate.Value)
+        : today.AddMonths(-6);
+    if (completed < floor)
+        return Results.BadRequest(new
+        {
+            message = $"完成日 {completed:yyyy-MM-dd} 超出可選範圍。\n\n"
+                    + (startDate.HasValue
+                        ? $"「{cols.Label}」的開始日是 {startDate.Value:yyyy-MM-dd}，完成日不可以早於它。"
+                        : $"「{cols.Label}」沒有開始日，完成日最早只能回推到半年前（{floor:yyyy-MM-dd}）。")
+        });
+
+    // ⚠️ 「提早完成不可以把 End 拉到前一階段的 End 之前」那道檢查（第 22 批）**排在
+    //    alsoComplete 之後**，不在這裡 —— 第 61 批（2026-09-10）把順序調過來的理由見那一段。
+
+    // ─── 這一次點擊會跳過的階段，一併記成完成（2026-09-10 / 第 60 批，使用者要求）───
+    // 使用者實際遇到的情況：② 已經壓了確認日 2026/09/08，但他沒按 ② 的「標記完成…」，
+    // 直接去按 ③ —— StatusID 從 2 跳到 4，② 就永遠停在灰字「已略過此階段」，
+    // 拿不到 ✓ 標籤、也沒有任何完成紀錄。
+    // ⚠️ 而畫面上那句灰字原本叫他「改用規格回退」，**照做的結果比不做更糟**：
+    //    回退到 ② 會清掉 ②③④ 的全部日期（含剛按完的 ③ 提早完成）、RollbackCount +1
+    //    （宣稱發生過規格變更），重壓日期後再按一次 ③ 完成又讓 EarlyCount **+1 第二次**
+    //    （回退列會把上面那個重複檢查的基準線重設）。第 21 批那條規則本來是為了防計數灌水，
+    //    它指過去的替代方案卻是唯一真的會灌水的做法。
+    //
+    // ⚠️ 預設值是「拿該階段的原訂日當完成日」，走的正是準時完成那一條 ——
+    //    三個計數欄一個都不動（見 ApplyCompletionAsync 的 setCount），而且
+    //    `SET MsdConfirm = @Completed` 寫回去的就是庫裡原本那個值，**資料一個字都不會變**，
+    //    只多一筆稽核列與畫面上那顆 ✓。
+    // ⚠️⚠️ 但日期一定要**可以改，不可以寫死成準時** —— ② 真的延期時記成準時會讓
+    //    DelayCount 少算一次，而那是主管在看的數字。這一支的兩個失敗方向差很多：
+    //    **多報只是難看，少報是把一次延期整個抹掉**。
+    // ⚠️⚠️ 前端送什麼一律不看，每一筆都在這裡自己再驗一次（與第 58 批的完成日同一條界線 ——
+    //    這些值會直接寫進 EarlyCount / DelayCount）。
+    // ⚠️ 一併記錄的階段**一律不動 StatusID**，下面的 newStage 只由主要階段決定。
+    // ⚠️ 只收「這一次點擊會跳過的」（目前 StatusID ~ 主要階段的前一階）。更早的既有缺口
+    //    （匯入來的資料）不在這一批的範圍內 —— 那是「事後補記」，是另一件事。
+    var alsoStages = new List<(int Stage, string Phase, string Label, DateTime Completed)>();
+    // 送來了、但不需要再記一次而被跳過的階段（第 61 批）：已經有完成紀錄的，
+    // 或 StatusID 早就走過的。⚠️ 它們**不算失敗**，理由見下方兩處說明
+    var alsoSkipped = new List<string>();
+    if (body.alsoComplete != null && body.alsoComplete.Count > 0)
     {
-        dupCmd.Parameters.AddWithValue("@Id", id);
-        dupCmd.Parameters.AddWithValue("@Phase", phase);
-        if (Convert.ToInt32(await dupCmd.ExecuteScalarAsync()) > 0)
-            return Results.Conflict(new { message = $"「{cols.Label}」已經標記過完成了，不會重複計次。" });
+        // StatusID 推不出來（空、壞值）時整段不做 —— 沿用第 33 批「空白一律不推斷」
+        if (curStageNum == 0)
+            return Results.BadRequest(new { message = "這筆需求的 StatusID 還沒設定，無法判斷這一次會跳過哪些階段。" });
+
+        foreach (var a in body.alsoComplete)
+        {
+            var ap = (a?.phase ?? "").Trim();
+            var ac = DoneColumnsOf(ap);
+            if (ac.TargetStage == 0)
+                return Results.BadRequest(new { message = $"未知的階段「{ap}」。" });
+            var astage = ac.TargetStage - 1;
+            // ⚠️ 已經被 StatusID 走過的階段：**跳過，不讓整筆失敗**（第 61 批，與下方
+            // 「已經有完成紀錄」同一條理由）。走得到這裡就代表呼叫端的畫面是舊的 ——
+            // 最常見的是「別人在另一台已經把 ② 標完成、StatusID 推到 3 了，而這個分頁
+            // 還停在 2」：使用者按的是 ③，卻會被一個他沒有按、而且**本來就不用記**的
+            // 階段整個擋掉。那個階段在 StatusID 後面，不記它什麼都不會少。
+            if (astage < curStageNum)
+            {
+                alsoSkipped.Add(ac.Label);
+                continue;
+            }
+            // ⚠️ 這一邊（排在主要階段**後面**的階段）仍然回 400 —— 那不是畫面舊了，
+            //    是請求本身就不對，靜靜跳過會把一個真正的錯誤藏起來。
+            if (astage > cols.TargetStage - 2)
+                return Results.BadRequest(new
+                {
+                    message = $"「{ac.Label}」不在這一次會跳過的範圍內"
+                            + $"（目前 StatusID = {StageText(curStageNum.ToString())}，這次要標記完成的是「{cols.Label}」），"
+                            + "不能一併記錄。"
+                });
+            if (alsoStages.Any(x => x.Stage == astage))
+                return Results.BadRequest(new { message = $"「{ac.Label}」重複出現在一併記錄的清單裡。" });
+            var aplanned = PhasePlannedEndOf(cur, ap);
+            if (!aplanned.HasValue)
+                return Results.BadRequest(new { message = $"「{ac.Label}」還沒有日期，無法一併記錄為完成。" });
+            // ⚠️ 原訂日排在未來的不收（2026-09-10 / 第 61 批補上後端這一側）。
+            // 那個階段是**真的還沒完成**，替它宣告完成就是憑空捏造一筆事實，而且
+            // 「完成日 < 原訂日」會直接讓 EarlyCount +1。這條界線第 60 批只寫在
+            // app.jsx 的 extras 過濾裡（`pl <= TODAY_ISO`），後端整個沒驗 ——
+            // 而 DoneRequest 的註解與 CLAUDE.md 都寫著「前端送什麼一律不看，
+            // 後端每一筆自己再驗一次」，漏掉的就是這一條。
+            if (aplanned.Value > today)
+                return Results.BadRequest(new
+                {
+                    message = $"「{ac.Label}」的原訂日是 {aplanned.Value:yyyy-MM-dd}，還排在今天之後 —— "
+                            + "那個階段是真的還沒完成，不能一併記錄。"
+                });
+            // ─── 已經有完成紀錄的階段：跳過，但**不讓整筆失敗**（2026-09-10 / 第 61 批）───
+            // ⚠️ 原本這裡回 409，於是「使用者按的那個階段」會被一個**他沒有按**的階段
+            // 整個帶走：交易回捲、③ 沒完成，訊息卻寫「『2_MSD確認中』已經標記過完成了」。
+            // 而這條路不需要惡意呼叫就走得到 —— 前端靠 phaseDoneEntry() 過濾已完成的階段，
+            // 它讀的是 historyMap：`/api/history` 讀取失敗（第 24 批那條路），或別人在
+            // 另一台把 ② 標完成了而這個分頁的 history 還是舊的，② 都會被列進「這一次會
+            // 跳過的階段」並預設勾起來。第 60 批的功能因此會讓「② 已完成」這件事
+            // 反過來卡住 ③ 的完成，而使用者在畫面上完全看不出要怎麼解。
+            // ⚠️ 跳過**不等於吞掉**：下面的回應訊息一定要把跳過了哪幾階講出來
+            //    （與第 60 批「問完就把答案藏起來等於沒問」是同一條）。
+            // ⚠️ 主要階段的 409 一個字都沒動 —— 那才是使用者真的按下去的那一個。
+            if (await PhaseAlreadyDoneAsync(conn, tx, id, ap))
+            {
+                alsoSkipped.Add(ac.Label);
+                continue;
+            }
+            // 沒帶完成日就用原訂日（＝準時，不計數）
+            var araw = (a!.completedAt ?? "").Trim();
+            DateTime adate;
+            if (araw.Length == 0) adate = aplanned.Value;
+            else if (!DateTime.TryParseExact(araw, "yyyy-MM-dd", CultureInfo.InvariantCulture,
+                                             DateTimeStyles.None, out adate))
+                return Results.BadRequest(new { message = $"「{ac.Label}」的完成日「{araw}」格式不正確，必須是 YYYY-MM-DD。" });
+            alsoStages.Add((astage, ap, ac.Label, adate));
+        }
+        alsoStages.Sort((x, y) => x.Stage.CompareTo(y.Stage));
+
+        // ─── 日期範圍：把要一併記的階段依代號排好、主要階段接在最後，形成一條鏈 ───
+        //   下限 = max(該階段的 Start／沒有就半年前, 前一列的完成日)
+        //   上限 = min(今天, 下一列的完成日)
+        // ⚠️⚠️ **上限少了「下一列的完成日」就會做出 MsdConfirm > MsdEnd**，之後
+        //    PhaseOrderViolations 會把那筆需求整個鎖住，連改個現況描述都存不了。
+        //    這兩個界線是拿鄰居的**完成日**去比，與下方那道 PrevPhaseEndOf
+        //    「這一階段不可能比前一階段更早完成」是同一個道理的兩半。
+        // ⚠️ app.jsx 完成視窗裡那段 min / max 是**鏡像，改了要兩邊一起改**。
+        for (int i = 0; i < alsoStages.Count; i++)
+        {
+            var (astage, ap, alabel, adate) = alsoStages[i];
+            var astart = ParseDate(PhaseDatesOf(cur, ap).start);
+            // Start 排在未來時夾到今天，否則下限會大於上限、一天都選不到（與主要階段同一條）
+            var afloor = astart.HasValue ? (astart.Value > today ? today : astart.Value) : today.AddMonths(-6);
+            var aprev = i > 0 ? alsoStages[i - 1].Completed : ParseDate(PrevPhaseEndOf(cur, ap).End);
+            if (aprev.HasValue && aprev.Value > afloor) afloor = aprev.Value;
+            var aceil = i + 1 < alsoStages.Count ? alsoStages[i + 1].Completed : completed;
+            if (aceil > today) aceil = today;
+            if (adate < afloor || adate > aceil)
+                return Results.BadRequest(new
+                {
+                    message = $"「{alabel}」的完成日 {adate:yyyy-MM-dd} 超出可選範圍"
+                            + $"（{afloor:yyyy-MM-dd} ~ {aceil:yyyy-MM-dd}）。\n\n"
+                            + "這一階段不可能比前一階段更早完成，也不可能比後一階段更晚完成。"
+                });
+        }
     }
 
-    var today = DateTime.Today;
-    var isEarly = today <= plannedEnd.Value;                 // 同一天也算準時完成
-    var days = Math.Abs((today - plannedEnd.Value).Days);
-    var changeType = isEarly ? "提早完成" : "延期完成";
-
     // ─── 提早完成不可以把 End 拉到前一階段的 End 之前（2026-08-23 / 第 22 批）───
-    // 提早完成會把 End 更新成今天。前一階段的 End 若還排在今天之後，寫下去就成了
+    // 提早完成會把 End 更新成完成日。前一階段的 End 若還排在那之後，寫下去就成了
     // 「② 9/1 才要確認規格，③ 8/22 就開發完了」這種讀不通的資料 —— PUT 有
     // PhaseOrderViolations 擋這種順序，/done 卻繞過它，於是那筆資料存進去之後，
     // 只要有人再碰到那兩欄就會被「階段日期的先後順序不合理」整筆擋住，改都改不動。
     // ⚠️ 只比**相鄰**的前一階段，與 PhaseOrderViolations 同一條界線 ——
     //    比「前面所有階段的最大值」會連既有的倒序資料一起鎖死。
-    var todayStr = today.ToString("yyyy-MM-dd");
-    if (isEarly)
+    //
+    // ⚠️⚠️ **前一階段就在這一次的 alsoComplete 裡時，這道下限一律不套**
+    //      （2026-09-10 / 第 61 批，這也是它從上面搬到 alsoStages 後面的唯一理由）。
+    //      在此之前它拿的是**寫入前**的原訂日，於是第 60 批想解決的那個情境自己撞牆：
+    //      ② 原訂 9/08、③ 原訂 9/15，③ 其實 9/05 就完成、② 是 9/03 完成的 ——
+    //      使用者一次把兩階都記進來是完全合法的，卻會被「前一階段的日期是 9/08」擋掉，
+    //      而擋他的正是他在同一次送出裡要覆蓋掉的那個值。
+    // ⚠️ 拿掉之後順序**仍然成立**，是鏈式上下限保證的，不是放寬：
+    //    · 前一階段若在清單裡，它必然是 alsoStages 的**最後一筆**（stage 最大），
+    //      而最後一筆的上限就是 completed → 它的完成日 ≤ 主要階段的完成日；
+    //    · 它若是提早完成，End 會被改成那個完成日（≤ completed）；
+    //    · 它若是延期完成，End 一個字都不動，而「延期」的定義就是完成日 > 原訂日，
+    //      配上上一條可得 completed > 原訂日 —— 這道檢查要的結論自己就成立了。
+    // ⚠️ 被上面「已經標記過完成」跳過的那幾階**不在 alsoStages 裡**，所以這道下限照樣套 ——
+    //    那種階段的 End 已經定案，不是這一次會被覆蓋的值。
+    var isEarly = completed <= plannedEnd.Value;             // 同一天也算準時完成
+    var completedStr = completed.ToString("yyyy-MM-dd");
+    // 前一階段自己的代號 = 主要階段的代號 - 1 = (TargetStage - 1) - 1
+    var prevAlsoListed = alsoStages.Any(x => x.Stage == cols.TargetStage - 2);
+    if (isEarly && !prevAlsoListed)
     {
         var (prevLabel, prevEnd) = PrevPhaseEndOf(cur, phase);
-        if (prevEnd != null && string.CompareOrdinal(todayStr, prevEnd) < 0)
+        if (prevEnd != null && string.CompareOrdinal(completedStr, prevEnd) < 0)
             return Results.BadRequest(new
             {
-                message = $"「{cols.Label}」提早完成會把{(phase == "confirm" ? "確認日" : "結束日")}更新為今天（{todayStr}），"
-                        + $"但前一階段「{prevLabel}」的日期是 {prevEnd}，還在今天之後。\n\n"
+                message = $"「{cols.Label}」提早完成會把{(phase == "confirm" ? "確認日" : "結束日")}更新為 {completedStr}，"
+                        + $"但前一階段「{prevLabel}」的日期是 {prevEnd}，還在那之後。\n\n"
                         + "這樣會做出「後面的階段比前面的階段早完成」的資料，之後那筆需求連改都改不動。\n\n"
-                        + $"請先確認「{prevLabel}」的日期是否正確。"
+                        + $"請先確認「{prevLabel}」的日期是否正確"
+                        + $"，或在完成視窗上把「{prevLabel}」也一併記成完成。"
             });
     }
 
-    // StatusID 只前進不後退（curStageNum 已在上面的「走過的階段」檢查算好，共用同一個值）
+    var (actor, actorSrc) = ResolveActor(new Requirement { actorEmpId = body.actorEmpId, actorSource = body.actorSource });
+
+    // ⚠️ 寫入順序 = 階段代號遞增、**主要階段最後** —— /api/history 是
+    //    ORDER BY RequirementId, ChangedAt, Id，同一秒內只有 Id 分得出先後，
+    //    寫顛倒會讓明細面板的時間軸把 ③ 畫在 ② 前面。
+    foreach (var (astage, ap, alabel, adate) in alsoStages)
+    {
+        var one = await ApplyCompletionAsync(conn, tx, id, cur, ap, PhasePlannedEndOf(cur, ap)!.Value,
+                                             adate, today,
+                                             $"（此階段在標記「{cols.Label}」完成時一併記錄，StatusID 不變）",
+                                             actor, actorSrc);
+        if (!one.Ok) return Results.NotFound(new { message = "找不到該筆需求（可能已被刪除）。" });
+    }
+
+    var main = await ApplyCompletionAsync(conn, tx, id, cur, phase, plannedEnd.Value, completed, today,
+                                          null, actor, actorSrc);
+    if (!main.Ok) return Results.NotFound(new { message = "找不到該筆需求（可能已被刪除）。" });
+
+    // StatusID 只前進不後退（curStageNum 已在上面的「走過的階段」檢查算好，共用同一個值）。
+    // ⚠️ 只由**主要階段**決定 —— 一併記錄的那幾個階段不參與，那是第 60 批的核心不變量
     var newStage = Math.Max(curStageNum, cols.TargetStage);
     // OverallStatus 連動：推到 5 就是結案；離開第 1 階段就從 Init 轉 Ongoing。
     // 其餘情況保留原值不覆蓋（Pending 已於 2026-08-22 移除，這條規則本身不變）
     var newStatus = newStage >= 5 ? "Done"
         : (string.IsNullOrWhiteSpace(curStatus) || StatusIs(curStatus, "Init"))
             ? "Ongoing" : curStatus;
-
-    // 提早 → End 更新為今天；延期 → End 不動，只寫 ActualEnd（保留延遲的證據）
-    var setDate = isEarly ? $"{cols.EndCol} = @Today" : $"{cols.ActualCol} = @Today";
-    // ⚠️ 提早完成時 Start 若還在今天之後，要一起夾到今天。
-    // 排在未來的階段被提早結案是正常情況（例：原訂 9/1 ~ 9/10，今天 8/22 就完成了），
-    // 但只動 End 會做出 End < Start 的資料 —— 那組合會被 InvalidDateRanges() 與前端的
-    // 區間檢查同時擋下，該筆需求連改個現況描述都存不了，除非使用者自己想到要去解鎖 Start。
-    // ② 只有單一日期（confirm），沒有 Start 可夾。
-    if (isEarly && cols.StartCol != "")
-        setDate += $", {cols.StartCol} = CASE WHEN {cols.StartCol} > @Today THEN @Today ELSE {cols.StartCol} END";
-    // ⚠️ **準時完成（今天 == 原訂 End）不計入 EarlyCount**（第 20 批）。
-    // 那一欄的定義就是「提早了幾次」，把「剛好準時」也算進去會讓這個數字失去意義 ——
-    // 主管看「提早 3 次」時，那 3 次應該真的都是超前，而不是有幾次只是沒遲到。
-    // 準時的事實仍完整留在稽核列（ChangeType='提早完成'、說明欄寫「準時完成」），沒有資訊遺失。
-    var setCount = !isEarly ? ", DelayCount = DelayCount + 1"
-                 : days > 0 ? ", EarlyCount = EarlyCount + 1"
-                            : "";
-    using (var upd = new SqlCommand($@"
+    using (var upd = new SqlCommand(@"
         UPDATE dbo.Controltable
-        SET {setDate}{setCount}, StageCode = @Stage, Status = @Status, UpdatedAt = SYSDATETIME()
+        SET StageCode = @Stage, Status = @Status, UpdatedAt = SYSDATETIME()
         WHERE Id = @Id AND IsDeleted = 0", conn, tx))
     {
-        upd.Parameters.Add("@Today", SqlDbType.Date).Value = today;
         upd.Parameters.AddWithValue("@Stage", newStage.ToString());
         // ⚠️ 經 NormStatusWrite()（2026-08-23 / 第 24 批）。POST / PUT 早就這樣寫了，
         // 只有 /done 與 /rollback 是原值回寫 —— 上面 newStatus 有一條分支會把 curStatus
@@ -1682,36 +1959,34 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
             return Results.NotFound(new { message = "找不到該筆需求（可能已被刪除）。" });
     }
 
-    // 稽核列：新值一律記「實際完成日 = 今天」。延期時 DB 的 End 雖然沒動，
-    // 但主管要看的就是「原訂 → 實際」這條落差，記原值等於什麼都沒記
-    var oldD = PhaseDatesOf(cur, phase);
-    // todayStr 在上面「提早完成的順序檢查」就已經算好了，共用同一個值
-    // Start 被夾過的話稽核列要記夾過之後的值，否則軌跡上的新值與 DB 對不起來
-    var clampedStart = (isEarly && cols.StartCol != "" && ParseDate(oldD.start) > today) ? todayStr : oldD.start;
-    var newD = phase == "confirm"
-        ? ((string?)null, (string?)null, (string?)todayStr)
-        : (clampedStart, (string?)todayStr, (string?)null);
-    var note = isEarly
-        ? (days == 0 ? "準時完成" : $"提早 {days} 天完成")
-        : $"延期 {days} 天完成（原訂 {plannedEnd.Value:yyyy-MM-dd} 保留不變，實際完成日記於 ActualEnd）";
-    // 夾過 Start 要在說明裡講出來，否則使用者只會看到開始日莫名其妙變了
-    if (clampedStart != oldD.start)
-        note += $"（開始日原為 {oldD.start}，晚於完成日，一併調整為 {todayStr}）";
-
-    var (actor, actorSrc) = ResolveActor(new Requirement { actorEmpId = body.actorEmpId, actorSource = body.actorSource });
-    await InsertHistoryAsync(conn, id, cur.nid, phase, changeType, null, note, actor, actorSrc, oldD, newD, tx);
-
     tx.Commit();
 
     return Results.Ok(new
     {
-        message = $"「{cols.Label}」已標記為{changeType}",
-        changeType,
-        days,
-        actualEnd = todayStr,
+        // 一併記錄了哪幾個階段一定要講出來 —— 那幾筆是系統替使用者宣告的事實，
+        // 只在視窗上問過、成功訊息卻不提的話，等於問完就把答案藏起來（第 60 批）
+        message = $"「{cols.Label}」已標記為{main.ChangeType}"
+                + (alsoStages.Count > 0
+                    ? $"，並一併記錄「{string.Join("」「", alsoStages.Select(x => x.Label))}」完成"
+                    : "")
+                // 跳過的一定要講出來（第 61 批）—— 使用者在視窗上勾了它，
+                // 不出聲就等於「勾了卻沒發生」，而畫面上看不出是為什麼
+                + (alsoSkipped.Count > 0
+                    ? $"。「{string.Join("」「", alsoSkipped)}」不需要重複記錄"
+                      + "（已經有完成紀錄，或 StatusID 早就走過了），這一次沒有寫入"
+                    : ""),
+        changeType = main.ChangeType,
+        days = main.Days,
+        actualEnd = main.CompletedStr,
+        backdated = completed != today,
         plannedEnd = plannedEnd.Value.ToString("yyyy-MM-dd"),
         stageCode = newStage.ToString(),
-        status = newStatus
+        status = newStatus,
+        alsoCompleted = alsoStages
+            .Select(x => new { phase = x.Phase, label = x.Label, completedAt = x.Completed.ToString("yyyy-MM-dd") })
+            .ToArray(),
+        // 送來了但原本就有完成紀錄、因此沒有再寫一次的階段（第 61 批）
+        alsoSkipped = alsoSkipped.ToArray()
     });
     }
     catch
@@ -3313,8 +3588,26 @@ public class DoneRequest
 {
     // spec / confirm / msd / uat
     public string? phase { get; set; }
+    // 實際完成日（YYYY-MM-DD）。第 58 批新增 —— 在此之前完成日寫死成伺服器的今天，
+    // 隔幾天才回平台補登就會被判成延期（見 /done 端點裡的說明）。
+    // ⚠️ 沒帶時退回今天：curl／測試腳本照常可用，行為與改之前完全一樣。
+    public string? completedAt { get; set; }
+    // 這一次點擊會**跳過**的階段，一併記成完成（第 60 批，2026-09-10 使用者要求）。
+    // 例：StatusID 還在 2、② 已經壓了確認日，卻直接按 ③ 的完成 —— 不帶這個欄位的話
+    // ② 會永遠停在「已略過此階段」，而畫面上指過去的替代方案（規格回退）會把
+    // 剛按完的 ③ 一起清掉並讓 EarlyCount 多算一次（見 /done 端點裡的說明）。
+    // ⚠️ 沒帶就是空 —— curl／測試腳本行為與第 59 批完全一樣（沿用 completedAt 的作法）。
+    // ⚠️ 前端送什麼一律不看，每一筆後端都自己再驗一次（範圍、有沒有日期、是不是已經完成過）。
+    public List<DoneAlso>? alsoComplete { get; set; }
     public string? actorEmpId { get; set; }
     public string? actorSource { get; set; }
+}
+
+// /done 的 alsoComplete 一筆。completedAt 沒帶就用該階段的原訂日（＝準時完成，不動計數欄）
+public class DoneAlso
+{
+    public string? phase { get; set; }
+    public string? completedAt { get; set; }
 }
 
 // DELETE /api/requirements/{id} 的請求內容（2026-08-23 / 第 22 批）。

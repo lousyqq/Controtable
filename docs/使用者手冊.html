@@ -154,6 +154,7 @@ td code{white-space:nowrap}
 .badge.a{--tone:var(--alert); --tone-bg:var(--alert-bg)}
 .badge.w{--tone:var(--warn); --tone-bg:var(--warn-bg)}
 .badge.v{--tone:var(--s2); --tone-bg:var(--s2f)}
+.badge.g{--tone:var(--ok); --tone-bg:var(--ok-bg)}
 
 /* ── steps ── */
 ol.steps{list-style:none; counter-reset:s; padding:0; margin:18px 0; max-width:72ch}
@@ -200,7 +201,7 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
     <h1>MSD 需求管控表</h1>
     <p class="lede">EMS 提需求、MSD 開發、EMS 驗收 —— 這套系統把一筆需求從提出到結案的四個階段、每一次日期異動的理由、以及每週要 review 的逾期項目，全部收在同一張表裡。本手冊涵蓋日常操作、判讀規則與疑難排解。</p>
     <p class="meta">
-      <span><b>版本</b> 20260907002</span>
+      <span><b>版本</b> 20260910006</span>
       <span><b>適用</b> 需求列表 · 統計報表</span>
       <span><b>對象</b> EMS／MSD 負責人、主管</span>
       <span><b>權威規格</b> FIELD_SPEC.md</span>
@@ -430,14 +431,38 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
   <!-- ═══ 05 ═══ -->
   <section id="c5">
     <h2><span class="n">05</span><span>標記完成</span></h2>
-    <p class="sub">每個階段標題旁的 <span class="ui">✓ 完成</span> 鈕。這是推進 StatusID 的<b>正常路徑</b>。</p>
+    <p class="sub">每個階段標題旁的 <span class="ui">標記完成…</span> 鈕。這是推進 StatusID 的<b>正常路徑</b>。</p>
 
-    <p>按下去時，系統拿<b>今天</b>去比對這個階段原訂的結束日：</p>
+    <div class="note">
+      <span class="lb">先分清楚：藍色的是「要你按」，綠色的是「已經完成了」</span>
+      <p>階段標題旁邊那顆小藥丸有兩種，<b>顏色與文字都不一樣</b>：</p>
+      <ul>
+        <li><b>藍色框的 <span class="ui">標記完成…</span></b> ＝ <b>還沒完成，可以按</b>。結尾的「…」代表按下去會跳一個視窗（要填完成日）。</li>
+        <li><b>綠色的 <span class="badge g">✓ 提早完成 · 09/02</span></b>（或紅色的 <span class="badge a">✓ 延期完成 · 09/20</span>）＝ <b>已經完成的結果，點不動</b>。後面那個日期就是<b>實際完成日</b>，把滑鼠移上去可以看到完整日期、是誰標記的、以及是不是補登的。</li>
+      </ul>
+      <p><span style="opacity:.85">（2026-09-10 以前這兩顆都是綠色的、也都帶 ✓，只差一條幾乎看不見的邊框，很容易看錯狀態。）</span></p>
+    </div>
+
+    <div class="note">
+      <span class="lb">按下去要先填「實際完成日」—— 不必當天就來按</span>
+      <p>按 <span class="ui">標記完成…</span> 會先跳一個小視窗，裡面有一個<b>實際完成日</b>欄位，<b>預設帶今天</b>。
+         填的是<b>事情真正做完的那一天</b>，不是你來平台按按鈕的日子。</p>
+      <p><b>例</b>：原訂 9/9 完成，使用者也真的 9/9 做完了，但你 9/20 才來更新 ——
+         把日期選成 <b>9/9</b>，系統就記成「準時完成」；<b>不會</b>因為你晚了 11 天才來按就變成延期。</p>
+      <p><b>可以選的範圍</b>：最晚到<b>今天</b>（不能填未來），最早到<b>這個階段的開始日</b>；
+         ② MSD確認中沒有開始日（或開始日沒填）時，最多回推<b>半年</b>。
+         另外，完成日<b>不可以早於前一階段的日期</b>（否則會做出「後面的階段比前面的階段早完成」的資料）。
+         視窗底下會直接寫出目前可選的區間，以及<b>這三個下限裡實際生效的是哪一個</b>。</p>
+      <p>選了<b>不是今天</b>的日期時，稽核紀錄會標成「完成日 2026-09-09，於 2026-09-20 補登」——
+         這樣日後查得到「這筆是事後補登的、誰補的」。</p>
+    </div>
+
+    <p>系統拿<b>你填的那一天</b>去比對這個階段原訂的結束日，視窗裡會即時顯示會被記成什麼：</p>
     <div class="tw"><table>
       <thead><tr><th style="width:150px">情況</th><th style="width:170px">結束日欄位</th><th style="width:130px">實際完成日</th><th>計數</th></tr></thead>
       <tbody>
-        <tr><td><b>提早完成</b><br><span style="color:var(--ink-3);font-size:12px">今天 ≤ 原訂</span></td><td><b>更新成今天</b></td><td>不寫</td><td>提早次數 +1（準時＝提早 0 天時不加）</td></tr>
-        <tr><td><b>延期完成</b><br><span style="color:var(--ink-3);font-size:12px">今天 &gt; 原訂</span></td><td><b>保持不變</b></td><td>寫入今天</td><td><span class="badge w">⏰</span> 延期次數 +1</td></tr>
+        <tr><td><b>提早完成</b><br><span style="color:var(--ink-3);font-size:12px">完成日 ≤ 原訂</span></td><td><b>更新成完成日</b></td><td>不寫</td><td>提早次數 +1（準時＝提早 0 天時不加）</td></tr>
+        <tr><td><b>延期完成</b><br><span style="color:var(--ink-3);font-size:12px">完成日 &gt; 原訂</span></td><td><b>保持不變</b></td><td>寫入完成日</td><td><span class="badge w">⏰</span> 延期次數 +1</td></tr>
       </tbody>
     </table></div>
 
@@ -452,14 +477,49 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
       <li><b>Status 連動</b>：推到 <code>5</code> 時自動變 <code>Done</code>；離開第 1 階段時 <code>Init</code> → <code>Ongoing</code>。</li>
     </ul>
 
-    <h3>沒有出現「✓ 完成」鈕時，畫面會告訴你原因</h3>
+    <h3>跳過中間的階段時，可以一併把它記成完成</h3>
+    <p>你如果<b>還沒按 ② 的「標記完成…」，就直接去按 ③ 的</b>，那麼 ② 這一階段從頭到尾都不會留下完成紀錄 ——
+       StatusID 會從 2 直接跳到 4，② 之後就只會顯示灰字<span class="ui">已略過此階段</span>。</p>
+    <p>所以完成視窗上會多出一區<b>「這一次會跳過的階段」</b>，把那些階段列出來：</p>
+    <ul>
+      <li><b>預設就是勾好的</b>，日期<b>預設帶那個階段原本壓的日期</b>。那等於「準時完成」——
+          <b>提早／延期次數都不會變</b>，日期欄位也<b>一個字都不會改</b>，只是替它補上一筆完成紀錄與 <span class="ui">✓</span> 標籤。</li>
+      <li><b>那個階段其實有延期</b>的話，就把日期改成<b>真正做完的那一天</b>。改成晚於原訂日就會記成「延期完成」並讓 <span class="badge w">⏰</span> 次數 +1 ——
+          這才是對的，記成準時等於把一次延期抹掉。</li>
+      <li><b>不想記錄就取消勾選</b>。那一列旁邊會直接寫出後果：這個階段之後會顯示「已略過此階段」。</li>
+      <li>一併記錄的階段<b>不會改變 StatusID</b>，StatusID 仍然只由你按的那一顆決定。</li>
+    </ul>
+    <div class="note">
+      <span class="lb">可以填的日期範圍</span>
+      <p>每一列都不可能<b>比前一階段更早完成</b>，也不可能<b>比後一階段更晚完成</b>，最晚一樣只到<b>今天</b>。
+         超出範圍時那一列會標紅字寫出可選區間，<span class="ui">確認完成</span> 會變灰。</p>
+      <p>你改了主要的完成日，下面那幾列的可選範圍會<b>跟著即時變動</b>。</p>
+      <p><b>反過來也會動</b>：你把前一個階段<b>勾起來一併記錄</b>時，上面那個「實際完成日」的<b>下限也會跟著放寬</b> ——
+         因為那個階段的日期正由你在同一個視窗裡填，不必再拿它原本壓的日期來卡你。
+         舉例：② 原訂 9/8、③ 原訂 9/15，而 ③ 其實 9/5 就做完了 ——
+         只要把 ② 一起勾起來（填 9/3），③ 就填得進 9/5。不勾的話，③ 最早只能填到 9/8。</p>
+    </div>
+    <div class="note">
+      <span class="lb">勾了卻沒有被記錄時，成功訊息會講出來</span>
+      <p>如果你的畫面停留比較久，中間別人已經把某個階段標成完成了，那一階段<b>不會被重複記一次</b> ——
+         你按的那個階段照樣完成，成功訊息裡會多一句「<b>◯◯ 不需要重複記錄</b>」告訴你哪幾階被略過了。
+         按 <span class="ui">↻</span> 重新整理就會看到它已經有 <span class="ui">✓</span> 了。</p>
+    </div>
+    <div class="note stop">
+      <span class="lb">只涵蓋「這一次會跳過的」</span>
+      <p>這一區只列出<b>從目前 StatusID 到你按的那一階之間</b>的階段。
+         <b>更早以前就已經變成「已略過此階段」的資料救不到</b> —— 那是按下去之前就發生的事，
+         目前仍然只能走「🔄 規格回退」（代價見下面的限制說明）。</p>
+    </div>
+
+    <h3>沒有出現「標記完成…」鈕時，畫面會告訴你原因</h3>
     <div class="tw"><table>
       <thead><tr><th style="width:44px">順序</th><th style="width:230px">灰字訊息</th><th>意思與處理</th></tr></thead>
       <tbody>
-        <tr><td class="num">1</td><td>已略過此階段</td><td>StatusID 已經走過這一階段了。要重做請走「規格回退」。</td></tr>
+        <tr><td class="num">1</td><td>已略過此階段</td><td>StatusID 已經走過這一階段了。<b>下次要避免</b>：按後面階段的完成時，視窗上會問要不要一併記錄（見上一段）。<b>已經變成這樣的資料</b>只能走「規格回退」，但回退會把後面階段的日期全部清掉、還會讓次數多算一次，動之前請先想清楚。</td></tr>
         <tr><td class="num">2</td><td>前面的階段還缺日期</td><td>把前面缺的結束日補齊（tooltip 會逐條列出缺哪些）。</td></tr>
         <tr><td class="num">3</td><td>前一階段的日期還在今天之後</td><td>提早完成會把結束日拉到今天，那會做出「② 9/1 才確認、③ 8/22 就開發完」的資料。先調整前一階段的日期。</td></tr>
-        <tr><td class="num">4</td><td>壓上日期並儲存後，這裡會出現「✓ 完成」</td><td>這一階段還沒壓結束日。先填日期並儲存。</td></tr>
+        <tr><td class="num">4</td><td>壓上日期並儲存後，這裡會出現「標記完成…」</td><td>這一階段還沒壓結束日。先填日期並儲存。</td></tr>
       </tbody>
     </table></div>
 
@@ -505,7 +565,7 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
   <!-- ═══ 07 ═══ -->
   <section id="c7">
     <h2><span class="n">07</span><span>手動修正 StatusID</span></h2>
-    <p class="sub">StatusID 預設是<b>唯讀</b>的彩色藥丸。正常只由「✓ 完成」與「🔄 規格回退」兩條路推進。</p>
+    <p class="sub">StatusID 預設是<b>唯讀</b>的彩色藥丸。正常只由「標記完成…」與「🔄 規格回退」兩條路推進。</p>
 
     <p>階段填錯（尤其是 Excel 匯入來的資料）時，按 <span class="ui">✎ 手動修正 StatusID</span> 開放下拉。</p>
 
@@ -875,12 +935,12 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
       <p>看鎖頭的樣子：<b>「🔒 已鎖定，點此修改」</b>代表這階段已經有日期，點一下就解鎖。<b>灰色實心、點不動的鎖頭</b>代表前一階段的結束日還沒填 —— 補完前一階段，這一階段會立刻開放（見第 4 章）。</p>
     </div></details>
 
-    <details class="faq"><summary>「✓ 完成」鈕不見了</summary><div class="body">
+    <details class="faq"><summary>「標記完成…」鈕不見了</summary><div class="body">
       <p>鈕的位置會改顯示一句灰字說明為什麼。四種原因與處理方式列在第 5 章的表格裡。</p>
     </div></details>
 
     <details class="faq"><summary>畫面上沒有「延期」這個功能，為什麼「警示」下拉有「有延期完成」？</summary><div class="body">
-      <p>「延期完成」不是一個獨立的按鈕，它是你按下 <b>「✓ 完成」那一刻的判定結果</b> —— 今天已經超過原訂結束日，系統就把它記成延期完成並讓 ⏰ 次數加一。所以篩選的是「曾經延期完成過」的需求。</p>
+      <p>「延期完成」不是一個獨立的按鈕，它是你按下 <b>「標記完成…」時填的那個完成日</b> 已經超過原訂結束日的判定結果，系統就把它記成延期完成並讓 ⏰ 次數加一。所以篩選的是「曾經延期完成過」的需求。</p>
     </div></details>
 
     <details class="faq"><summary>存檔時說「這筆資料已被其他人修改」</summary><div class="body">
@@ -962,8 +1022,8 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
         <tr><td><code>init</code></td><td>否</td><td>結束日<b>首次</b>填寫（新增或匯入時的起始基準）</td></tr>
         <tr><td><b><code>日期異動</code></b></td><td><b>是</b></td><td>有人把已經壓好的結束日改掉 —— 唯一計入的一種</td></tr>
         <tr><td><code>起日調整</code></td><td>否</td><td>只改了開始日</td></tr>
-        <tr><td><code>提早完成</code></td><td>否</td><td>按「✓ 完成」而且準時或提早</td></tr>
-        <tr><td><code>延期完成</code></td><td>否</td><td>按「✓ 完成」而且已超過原訂日（已有專屬的 ⏰ 徽章）</td></tr>
+        <tr><td><code>提早完成</code></td><td>否</td><td>按「標記完成…」而且準時或提早</td></tr>
+        <tr><td><code>延期完成</code></td><td>否</td><td>按「標記完成…」而且已超過原訂日（已有專屬的 ⏰ 徽章）</td></tr>
         <tr><td><code>規格回退</code></td><td>否</td><td>按「🔄 規格回退」（已有專屬的 🔄 徽章）</td></tr>
         <tr><td><code>重新排程</code></td><td>否</td><td>回退清空之後重新填上日期</td></tr>
         <tr><td><code>手動調整</code></td><td>否</td><td>「✎ 手動修正 StatusID」或改 Status —— 那不是日期</td></tr>

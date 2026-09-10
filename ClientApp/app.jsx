@@ -34,6 +34,13 @@ const { useState, useMemo, Fragment, useEffect } = React;
         const formatToday = `${TODAY.getFullYear()}/${String(TODAY.getMonth()+1).padStart(2,'0')}/${String(TODAY.getDate()).padStart(2,'0')}`;
         // 與 API 傳輸格式一致的今天（"YYYY-MM-DD"）。日期都是這個格式，字串比較即時間比較
         const TODAY_ISO = formatToday.replace(/\//g, '-');
+        // 補登完成日的下限（第 58 批）：沒有 Start 可當基準時，最多回推半年。
+        // ⚠️ 後端 /done 用的是 `today.AddMonths(-6)`，兩邊是**鏡像，改了要一起改**。
+        //    用 setMonth 而不是減 180 天 —— 月份長度不一樣，兩邊會差到 2 天。
+        const sixMonthsAgoIso = () => {
+            const d = new Date(TODAY.getFullYear(), TODAY.getMonth() - 6, TODAY.getDate());
+            return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+        };
 
         // 「畫面最後抓取」的時鐘（HH:mm）。跨過午夜就補上日期 —— 分頁開一整晚的話，
         // 只寫 08:31 會被讀成「今天早上剛抓的」，實際上那是昨天的畫面
@@ -657,7 +664,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // 用回退的同一個紫色系（它是回退的下半場），但**不進 isDateChange**：
             // 沒有人改動任何既有日期，計進 ⚠N 會讓同一件事被數兩次
             '重新排程': { label:'重新排程', color:'#8b5cf6',            bg:'rgba(139,92,246,0.12)' },
-            // 手動改 StatusID / Status（2026-08-22）。它繞過了「✓ 完成」與「🔄 規格回退」，
+            // 手動改 StatusID / Status（2026-08-22）。它繞過了「標記完成…」與「🔄 規格回退」，
             // 所以一定要在軌跡上看得出來 —— 但**不算時程異動**（見 isDateChange），
             // 也不會動三個計數欄
             '手動調整': { label:'手動調整', color:'var(--tone-warn)',   bg:'var(--tone-warn-bg)' },
@@ -685,7 +692,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
         // ⚠️ 「時程異動」只算 `日期異動` 這一種（2026-08-22）。
         // 稽核表裡另外三種不是「有人把日期改掉」：
         //   · init     首次填寫 —— 本來就沒有值，不是修改
-        //   · 提早完成 按下「✓ 完成」而且準時／提早，End 被更新成今天。那是好消息，
+        //   · 提早完成 按下「標記完成…」而且準時／提早，End 被更新成填的那個完成日。那是好消息，
         //              掛上琥珀色 ⚠ 只會把真正落後的案子淹掉
         //   · 延期完成 已經有專屬的 ⏰ 徽章（delayCount）
         //   · 規格回退 已經有專屬的 🔄 徽章（rollbackCount）
@@ -757,7 +764,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 <div className="mt-3 p-2 rounded border text-[10px] max-h-[110px] overflow-y-auto scrollbar-thin"
                      style={{background:'var(--bg-detail-card)', borderColor:'var(--bg-detail-border)', color:'var(--text-tertiary)'}}>
                     {/* 次數只數 `日期異動`（見 isDateChange）。完成／回退的紀錄仍列在下面，
-                        只是不算「異動次數」—— 否則按一次「✓ 完成」就多一次異動 */}
+                        只是不算「異動次數」—— 否則按一次「標記完成…」就多一次異動 */}
                     <div className="font-bold mb-1" style={{color:'var(--text-secondary)'}}
                          title="次數只計「日期異動」；提早／延期完成與規格回退的紀錄仍列於下方">
                         異動紀錄 ({rows.filter(isDateChange).length} 次)
@@ -837,7 +844,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     {delay > 0 && (
                         <span className="px-1 rounded text-[10px] font-bold border whitespace-nowrap cursor-help"
                               style={delayStyle}
-                              title={`延期完成 ${delay} 次（按下「✓ 完成」時已超過原訂結束日）${delay >= 2 ? '\n2 次以上轉紅色警示' : ''}`}>
+                              title={`延期完成 ${delay} 次（按下「標記完成…」時已超過原訂結束日）${delay >= 2 ? '\n2 次以上轉紅色警示' : ''}`}>
                             ⏰{delay}
                         </span>
                     )}
@@ -900,7 +907,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
         // GateLock 在講同一件事，兩個提示疊在一起反而更吵
         const DoneHint = () => (
             <span className="text-[11px]" style={{color:'var(--text-muted)'}}>
-                壓上日期並儲存後，這裡會出現「✓ 完成」
+                壓上日期並儲存後，這裡會出現「標記完成…」
             </span>
         );
 
@@ -916,7 +923,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
         );
 
         // 前置階段還缺日期，所以不給按完成（2026-08-23 / 第 22 批）。
-        // 「✓ 完成」會把 StatusID 推到這個階段的下一階，語意上等於宣告前面都走完了 ——
+        // 「標記完成…」會把 StatusID 推到這個階段的下一階，語意上等於宣告前面都走完了 ——
         // 手動改 StatusID 早就有同一條規則（stagePrereqMissing），完成鈕卻一路放行，
         // 於是一筆 StatusID=1 但匯入時帶了驗收日的需求，按一下 ④ 完成就直接變成結案。
         // 後端 /done 也擋，這裡是不讓使用者按了才被拒絕
@@ -927,24 +934,37 @@ const { useState, useMemo, Fragment, useEffect } = React;
             </span>
         );
 
-        // 提早完成會把 End 更新成今天，但前一階段的日期還排在今天之後（2026-08-23 / 第 22 批）。
+        // 提早完成會把 End 更新成填的完成日，而完成日最晚只到今天 —— 前一階段的日期還排在今天之後時，
+        // 沒有一天選得下去（2026-08-23 / 第 22 批，第 58 批改用完成日）。
         // 硬按下去會做出「③ 8/22 就開發完、② 9/1 才要確認規格」這種倒序資料，
         // 而 PUT 的跨階段順序檢查會讓那筆需求之後連改都改不動
         const DoneOrderHint = ({ prevLabel, prevEnd }) => (
             <span className="text-[11px] cursor-help" style={{color:'var(--text-muted)'}}
-                  title={`提早完成會把日期更新為今天（${TODAY_ISO}），但前一階段「${prevLabel}」是 ${prevEnd}，還在今天之後。\n這樣會做出「後面的階段比前面早完成」的資料。\n請先確認「${prevLabel}」的日期是否正確。`}>
+                  title={`提早完成會把日期更新為完成日，而可選的完成日最晚只到今天（${TODAY_ISO}）——\n但前一階段「${prevLabel}」是 ${prevEnd}，還在今天之後，所以沒有一天選得下去。\n這樣會做出「後面的階段比前面早完成」的資料。\n請先確認「${prevLabel}」的日期是否正確。`}>
                 前一階段的日期還在今天之後
             </span>
         );
 
-        // 階段完成鈕（第 15 批）。按下去會依「今天 vs 原訂 End」判定提早或延期，
+        // 階段完成鈕（第 15 批）。按下去會開一個視窗讓使用者**填實際完成日**（第 58 批，
+        // 預設今天），再依「那一天 vs 原訂 End」判定提早或延期 ——
         // 兩者都會推進 StatusID 並寫稽核列，所以刻意做成需要二次確認的動作
+        // ⚠️⚠️ **這顆不可以用 teal 或 `✓`**（第 59 批，2026-09-10，使用者附截圖回報
+        //    「提早完成的圖示跟完成的圖示看起來都差不多…目前的顯示方式是否容易讓人混淆狀態?」）。
+        //    在此之前它與**結果標籤**「✓ 提早完成」幾乎是同一組樣式：
+        //      結果標籤 color:var(--tone-good) / bg:rgba(15,118,110,**0.1**) / ✓ / 無邊框
+        //      這顆     color:var(--tone-good) / bg:rgba(15,118,110,**0.08**) / ✓ / 0.3 alpha 邊框
+        //    —— 同一個顏色、底色只差 0.02 alpha、同一個 ✓，唯一的差別是一條幾乎看不見的邊框。
+        //    ⚠️ 根本的矛盾：**`✓` 與 teal 是「已經完成」的語言**，卻用在一顆
+        //    「還沒完成、請你來做」的按鈕上。teal + ✓ 從此只留給**已經發生的結果**。
+        //    ⚠️ 第 58 批（完成日改成自己填）讓這件事變嚴重：按下去不再只是「確定嗎」，
+        //    而是一件要填日期的真工作，所以「哪一顆還要我做事」比以前更重要。
+        //    改用 indigo（`--brand`，這個 App 全域的主要動作色，＋新增需求就是它）
+        //    ＋文字「標記完成…」（`…` ＝ 會開視窗）。三個維度一起拉開：顏色、圖示、文字。
         const DoneButton = ({ onClick, title }) => (
             <button type="button" onClick={onClick} title={title}
                     className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold border transition-colors"
-                    style={{color:'var(--tone-good)', background:'rgba(15,118,110,0.08)', borderColor:'rgba(15,118,110,0.3)'}}>
-                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="20 6 9 17 4 12"></polyline></svg>
-                完成
+                    style={{color:'var(--brand)', background:'var(--brand-soft)', borderColor:'var(--brand)'}}>
+                標記完成…
             </button>
         );
 
@@ -1179,7 +1199,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
             const [unlockReasons, setUnlockReasons] = useState({ spec: '', confirm: '', msd: '', uat: '', stage: '' });
             // 異動原因分類（規格變更／優先級調整／技術問題／其他），與上面的文字說明成對
             const [unlockCategories, setUnlockCategories] = useState({ spec: '', confirm: '', msd: '', uat: '', stage: '' });
-            // StatusID 預設唯讀（第 19 批 / A5）。正常推進只能靠「✓ 完成」與「🔄 規格回退」，
+            // StatusID 預設唯讀（第 19 批 / A5）。正常推進只能靠「標記完成…」與「🔄 規格回退」，
             // 手動改是繞過那套機制，所以要先按「手動修正」才開放下拉，而且一定要留原因
             const [stageUnlocked, setStageUnlocked] = useState(false);
             // 按過一次「儲存」之後才把驗證結果畫到欄位上（第 26 批）。
@@ -1209,6 +1229,10 @@ const { useState, useMemo, Fragment, useEffect } = React;
             const [confirmModal, setConfirmModal] = useState(null); // { title, message, onConfirm }
             // 規格回退視窗（第 16 批）：{ id, nid, curStage, target, note }
             const [rollbackModal, setRollbackModal] = useState(null);
+            // 標記完成的視窗（第 58 批，2026-09-10）。在此之前是一個只有「確定嗎」的
+            // confirmModal，完成日寫死成今天 —— 隔幾天才回平台補登就會被判成延期。
+            // { phaseKey, label, planned, dateLabel, min, max, date, plannedStart, prevLabel, prevEnd }
+            const [doneModal, setDoneModal] = useState(null);
             // 到期提醒橫幅已移除（改為需求列表工具列的「需關注」鈕 + 可點的 KPI 卡），
             // 連帶不再需要 noticeDismissed 這個關閉狀態
             // ─── 需求列表的篩選與排序（第 12 批：統計、人員、逾期全部收進同一頁）───
@@ -1996,44 +2020,181 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     });
                     return;
                 }
-                const early = TODAY_ISO <= planned;             // 同一天視為準時，算提早
-                const days = Math.abs(dayDiff(planned, TODAY_ISO) || 0);
-                const dateLabel = phaseKey === 'confirm' ? '確認日' : '結束日';
-                const verdict = early
-                    ? (days === 0 ? `準時完成（${dateLabel}更新為今天）` : `提早完成（${dateLabel}由 ${planned} 更新為今天，提早 ${days} 天）`)
-                    : `延期完成（原訂 ${planned} 保留不變，實際完成日記為今天，延期 ${days} 天）`;
-                // 排在未來的階段被提早結案時，後端會把開始日一起夾到今天 ——
-                // 只動 End 會做出 End < Start 的資料，那組合連存都存不了。
-                // ⚠️ 這件事一定要先講，開始日被動過卻沒說等於靜靜改了使用者的資料。
-                // ② 只有單一確認日，沒有開始日
+                // ─── 完成日可選（第 58 批，2026-09-10 使用者要求）───
+                // 在此之前這裡直接跳一個「確定嗎」的 confirmModal，完成日寫死成今天。
+                // 使用者常常隔幾天才回平台補登，於是「9/9 準時完成、9/20 才來按」
+                // 被判成延期 11 天並讓 DelayCount +1 —— 那是主管在看的數字。
+                // ⚠️ 下限（與後端 /done 是**鏡像，改了要兩邊一起改**）：
+                //    有 Start → Start，但 Start 排在未來時夾到今天（否則 min > max、一天都選不到）；
+                //    ② 沒有 Start 欄、或 Start 沒填 → 今天往前推半年。
+                // ⚠️ 再往上抬一道「前一階段的 End」：提早完成會把 End 改成完成日，
+                //    比前一階段的 End 還早就會做出倒序資料，那筆需求之後連改都改不動
+                //    （後端的 PhaseOrderViolations 會整筆擋住）。延期的日子一定 > 原訂 End
+                //    ≥ 前一階段 End，所以這道下限不會擋掉任何一個合法的延期日。
+                // ⚠️⚠️ 下限**不再在這裡算死**（第 61 批）：前一階段若被勾進「一併記錄」，
+                //    那道下限就不該套（見 doneMainMin）—— 而勾選是視窗開起來之後才動的，
+                //    算死在開窗當下就永遠是舊答案。這裡只存算下限要用的原料。
                 const plannedStart = phaseKey === 'confirm' ? '' : (original?.[ph.obj]?.start || '');
-                const clampNote = (early && isDateVal(plannedStart) && plannedStart > TODAY_ISO)
-                    ? `\n\n⚠️ 開始日 ${plannedStart} 晚於今天，會一併調整為 ${TODAY_ISO}（否則結束日會早於開始日，那筆資料連存都存不了）。`
-                    : '';
-                setConfirmModal({
-                    title: `標記「${ph.label}」完成`,
-                    message: `今天是 ${TODAY_ISO}，原訂${dateLabel}是 ${planned}。\n\n將記為：${verdict}${clampNote}\n\nStatusID 會推進到 ${ph.doneStage}，並寫入一筆稽核紀錄。確定嗎？`,
-                    onConfirm: () => runExclusive(async () => {
-                        try {
-                            const res = await fetch(api(`/api/requirements/${editingData.id}/done`), {
-                                method: 'POST',
-                                headers: {'Content-Type': 'application/json'},
-                                body: JSON.stringify({ phase: phaseKey, actorEmpId: actor.empId || '', actorSource: actor.source })
-                            });
-                            const bodyJson = await res.json().catch(() => ({}));
-                            if (!res.ok) {
-                                setAlertModal({ title:'無法標記完成', message: bodyJson.message || `HTTP ${res.status}` });
-                                return;
-                            }
-                            setEditingData(null);
-                            setIsModalOpen(false);
-                            await Promise.all([fetchReqs(), fetchHistory()]);
-                            showToast(bodyJson.message || '已標記完成');
-                        } catch (err) {
-                            console.error(err);
-                            showToast('標記完成失敗：' + err.message, 'error');
-                        }
+                const prev = prevPhaseEndOf(original, phaseKey);
+                // ─── 這一次點擊會跳過的階段（第 60 批，2026-09-10 使用者要求）───
+                // 使用者實際遇到的：② 已經壓了確認日，但他沒按 ② 的完成、直接按 ③ ——
+                // StatusID 從 2 跳到 4，② 就永遠停在灰字「已略過此階段」拿不到完成紀錄。
+                // ⚠️ 這些階段**必然有日期**：上面的 stagePrereqMissing 已經保證了。
+                // ⚠️ 原訂日排在未來的不收 —— 那個階段是真的還沒完成，提議它完成就是錯的。
+                // ⚠️ StatusID 推不出來（0）時整段不做，沿用第 33 批「空白一律不推斷」。
+                // ⚠️ 只收「這一次會跳過的」（目前 StatusID ~ 主要階段的前一階）：更早的
+                //    既有缺口（匯入資料）是「事後補記」，是另一件事、不在這一批。
+                // 後端 /done 的 alsoStages 那段是**鏡像，改了要兩邊一起改**
+                const curStage = savedStage(original);
+                const mainStage = ph.doneStage - 1;
+                const extras = curStage <= 0 ? [] : PHASE_KEYS
+                    .filter(k => {
+                        const s = PHASES[k].doneStage - 1;
+                        if (s < curStage || s > mainStage - 1) return false;
+                        const p = PHASES[k];
+                        const pl = original?.[p.obj]?.[p.endKey];
+                        return isDateVal(pl) && pl <= TODAY_ISO && !phaseDoneEntry(k);
                     })
+                    .map(k => {
+                        const p = PHASES[k];
+                        return {
+                            phaseKey: k, label: p.label,
+                            dateLabel: k === 'confirm' ? '確認日' : '結束日',
+                            planned: original[p.obj][p.endKey],
+                            plannedStart: k === 'confirm' ? '' : (original[p.obj]?.start || ''),
+                            // 預設 = 原訂日 → 準時完成 → 三個計數欄一個都不動，
+                            // 而且寫回去的值與庫裡原本那個一模一樣（資料完全不變）
+                            date: original[p.obj][p.endKey],
+                            checked: true
+                        };
+                    });
+                setDoneModal({
+                    phaseKey, label: ph.label, planned, plannedStart,
+                    dateLabel: phaseKey === 'confirm' ? '確認日' : '結束日',
+                    doneStage: ph.doneStage,
+                    hasStart: isDateVal(plannedStart),
+                    prevKey: prev?.key || '', prevLabel: prev?.label || '', prevEnd: prev?.end || '',
+                    max: TODAY_ISO,
+                    date: TODAY_ISO,          // 預設今天：多數情況仍然是當天就來按
+                    extras
+                });
+            };
+
+            // ─── 主要階段的完成日下限（第 61 批，2026-09-10）───
+            // 回傳 { min, from, prevSkipped }：`from` 是**實際生效**的那一個理由
+            //（'prev' / 'start' / 'half'），視窗上那行說明要照它印（第 59 批立的規矩）。
+            // ⚠️⚠️ **前一階段被勾進「一併記錄」時，不套它的原訂日當下限**。
+            //    在此之前這道下限拿的是寫入前的原訂日，於是第 60 批想解決的情境自己撞牆：
+            //    ② 原訂 9/08、③ 原訂 9/15，而 ③ 其實 9/05 完成、② 是 9/03 完成的 ——
+            //    一次把兩階都記進來完全合法，日期欄卻連 9/05 都選不到，
+            //    擋住他的正是他在同一次送出裡要覆蓋掉的那個值。
+            // ⚠️ 拿掉之後先後順序仍然成立，靠的是 doneExtraBounds 那條鏈（前一階段若在
+            //    清單裡必然是最後一列，上限就是主要階段的完成日）—— 理由與 Program.cs
+            //    那段 prevAlsoListed 完全相同，**兩邊是鏡像，改了要一起改**。
+            const doneMainMin = (m) => {
+                if (!m) return { min: '', from: 'half', prevSkipped: false };
+                const startFloor = isDateVal(m.plannedStart)
+                    ? (m.plannedStart > TODAY_ISO ? TODAY_ISO : m.plannedStart)
+                    : sixMonthsAgoIso();
+                const from = m.hasStart ? 'start' : 'half';
+                if (!isDateVal(m.prevEnd)) return { min: startFloor, from, prevSkipped: false };
+                const prevSkipped = (m.extras || []).some(e => e.checked && e.phaseKey === m.prevKey);
+                if (prevSkipped) return { min: startFloor, from, prevSkipped: true };
+                return m.prevEnd > startFloor
+                    ? { min: m.prevEnd, from: 'prev', prevSkipped: false }
+                    : { min: startFloor, from, prevSkipped: false };
+            };
+
+            // ─── 完成視窗裡「一併記錄」那幾列各自的可選範圍（第 60 批）───
+            // 把勾起來的階段依代號遞增排好、主要階段接在最後，形成一條鏈：
+            //   下限 = max(該階段的 Start／沒有就半年前, 前一列的完成日)
+            //   上限 = min(今天, 下一列的完成日)
+            // ⚠️⚠️ **上限少了「下一列的完成日」就會做出 MsdConfirm > MsdEnd**，
+            //    之後後端的 PhaseOrderViolations 會把那筆需求整個鎖住，連改個現況描述都存不了。
+            //    這兩個界線是拿鄰居的**完成日**去比，與主要階段那道「不可能比前一階段更早完成」
+            //    是同一個道理的兩半。後端 /done 的 alsoStages 迴圈是**鏡像，改了要兩邊一起改**。
+            // ⚠️ 沒勾的那幾列不進鏈 —— 它們不會被寫進去，沒有理由去限制鄰居。
+            // 回傳 Map<phaseKey, {min, max}>，沒勾的階段查不到
+            const doneExtraBounds = (m) => {
+                const out = new Map();
+                const on = (m?.extras || []).filter(e => e.checked);
+                const original = requirementsData.find(d => d.id === editingData?.id);
+                on.forEach((e, i) => {
+                    let min = isDateVal(e.plannedStart)
+                        ? (e.plannedStart > TODAY_ISO ? TODAY_ISO : e.plannedStart)
+                        : sixMonthsAgoIso();
+                    const prevDate = i > 0
+                        ? on[i - 1].date
+                        : (prevPhaseEndOf(original, e.phaseKey)?.end || '');
+                    if (isDateVal(prevDate) && prevDate > min) min = prevDate;
+                    let max = i + 1 < on.length ? on[i + 1].date : m.date;
+                    if (!isDateVal(max) || max > TODAY_ISO) max = TODAY_ISO;
+                    out.set(e.phaseKey, { min, max });
+                });
+                return out;
+            };
+            // 勾起來的每一列日期都要在自己的範圍內，否則不給按「確認完成」
+            const doneExtrasOk = (m) => {
+                const b = doneExtraBounds(m);
+                return (m?.extras || []).filter(e => e.checked).every(e => {
+                    const r = b.get(e.phaseKey);
+                    return r && isDateVal(e.date) && e.date >= r.min && e.date <= r.max;
+                });
+            };
+
+            // 完成視窗按下「確認完成」。⚠️ 完成日一律以視窗裡的值為準，
+            // 後端會**自己再驗一次**範圍（不可以只信前端，那個值直接決定 EarlyCount / DelayCount）
+            const submitDone = () => {
+                const m = doneModal;
+                if (!m) return;
+                if (!isDateVal(m.date)) {
+                    setAlertModal({ title:'請選擇完成日', message:'完成日必須是有效的日期（YYYY-MM-DD）。' });
+                    return;
+                }
+                // 下限隨「一併記錄」的勾選即時變動（第 61 批），所以這裡重算、不讀 state
+                const mainMin = doneMainMin(m).min;
+                if (m.date > m.max || m.date < mainMin) {
+                    setAlertModal({
+                        title: '完成日超出可選範圍',
+                        message: `可以選的範圍是 ${mainMin} ~ ${m.max}。\n\n目前選的是 ${m.date}。`
+                    });
+                    return;
+                }
+                if (!doneExtrasOk(m)) {
+                    setAlertModal({
+                        title: '一併記錄的完成日超出範圍',
+                        message: '有階段的完成日不在可選範圍內。\n\n'
+                               + '每一個階段都不可能比前一階段更早完成，也不可能比後一階段更晚完成。'
+                    });
+                    return;
+                }
+                runExclusive(async () => {
+                    try {
+                        const res = await fetch(api(`/api/requirements/${editingData.id}/done`), {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            // ⚠️ alsoComplete 只帶**視窗上勾起來**的那幾筆（第 60 批）。
+                            // 後端每一筆都會自己再驗一次範圍與「是不是已經完成過」
+                            body: JSON.stringify({ phase: m.phaseKey, completedAt: m.date,
+                                                   alsoComplete: (m.extras || [])
+                                                       .filter(e => e.checked)
+                                                       .map(e => ({ phase: e.phaseKey, completedAt: e.date })),
+                                                   actorEmpId: actor.empId || '', actorSource: actor.source })
+                        });
+                        const bodyJson = await res.json().catch(() => ({}));
+                        if (!res.ok) {
+                            setAlertModal({ title:'無法標記完成', message: bodyJson.message || `HTTP ${res.status}` });
+                            return;
+                        }
+                        setDoneModal(null);
+                        setEditingData(null);
+                        setIsModalOpen(false);
+                        await Promise.all([fetchReqs(), fetchHistory()]);
+                        showToast(bodyJson.message || '已標記完成');
+                    } catch (err) {
+                        console.error(err);
+                        showToast('標記完成失敗：' + err.message, 'error');
+                    }
                 });
             };
 
@@ -2048,11 +2209,20 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     // 原本是 `CHANGE_TYPES[...] || {}`，查不到時 color / bg 都是 undefined，
                     // 那顆標籤會退化成沒有底色的裸文字。第 22 批已經為軌跡換過同一支，這裡漏改
                     const ct = changeTypeStyle(done.changeType);
+                    // 完成日補在標籤上（第 59 批）。第 58 批讓完成日可以自己填之後，
+                    // 畫面上反而看不到「到底記成哪一天」—— 只能把滑鼠移上去看 tooltip。
+                    // ⚠️ 補上之後也順便讓這顆與旁邊的「標記完成…」鈕**連長度都不一樣**，
+                    //    更不可能看錯（使用者 2026-09-10 回報兩者長得太像）。
+                    // ⚠️ 只印 MM/DD：這是階段標題旁的小藥丸，完整日期留在 tooltip 裡
+                    //    （視窗在窄一點的螢幕上會換行，那一行不該為了年份變長）。
+                    const doneDate = done.phase === 'confirm' ? done.newConfirm : done.newEnd;
+                    const doneShort = isDateVal(doneDate) ? doneDate.slice(5).replace('-', '/') : '';
                     return (
                         <span className="px-1.5 py-0.5 rounded text-[11px] font-bold cursor-help"
                               style={{color:ct.color, background:ct.bg}}
-                              title={`${done.changedAt || ''}${done.changedBy ? ' · '+done.changedBy : ''}${done.note ? '｜'+done.note : ''}`}>
-                            ✓ {ct.label}
+                              title={`${ct.label}${isDateVal(doneDate) ? `　完成日 ${doneDate}` : ''}\n`
+                                   + `${done.changedAt || ''}${done.changedBy ? ' · '+done.changedBy : ''}${done.note ? '｜'+done.note : ''}`}>
+                            ✓ {ct.label}{doneShort && ` · ${doneShort}`}
                         </span>
                     );
                 }
@@ -2076,7 +2246,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 if (TODAY_ISO <= original[ph.obj][ph.endKey] && prev && TODAY_ISO < prev.end)
                     return <DoneOrderHint prevLabel={prev.label} prevEnd={prev.end} />;
                 return <DoneButton onClick={()=>handleDone(phaseKey)}
-                                   title={`標記「${ph.label}」完成（今天 ${TODAY_ISO}）`} />;
+                                   title={`標記「${ph.label}」完成。按下去可以填實際完成的那一天（預設今天）——\n不必當天就來按，補登也不會被算成延期`} />;
             };
 
             // ─── 規格回退（第 16 批）───
@@ -2089,7 +2259,8 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 if (i <= 0) return null;
                 const p = PHASES[PHASE_KEYS[i - 1]];
                 const v = (row?.[p.obj] || {})[p.endKey];
-                return isDateVal(v) ? { label: p.label, end: v } : null;
+                // key 是第 61 批加的：完成視窗要判斷「前一階段是不是就在一併記錄的清單裡」
+                return isDateVal(v) ? { key: PHASE_KEYS[i - 1], label: p.label, end: v } : null;
             };
 
             const savedStage = (row) => {
@@ -2547,6 +2718,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 if (e.key !== 'Escape') return;
                 if (alertModal)          { setAlertModal(null); return; }
                 if (confirmModal)        { setConfirmModal(null); return; }
+                if (doneModal)           { setDoneModal(null); return; }
                 if (rollbackModal)       { setRollbackModal(null); return; }
                 if (isActorModalOpen)    { setIsActorModalOpen(false); return; }
                 if (isAssigneeModalOpen) { setIsAssigneeModalOpen(false); return; }
@@ -2565,7 +2737,8 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // 只寫一份共用的（每個視窗各自寫一次遲早會漂移成「有的有、有的沒有」）：
             // 視窗的最外層都標了 data-ct-modal，DOM 裡的最後一個就是疊在最上面的那個。
             const openModalCount = [isAssigneeModalOpen, !!editingData, isActorModalOpen,
-                                    !!alertModal, !!rollbackModal, !!confirmModal].filter(Boolean).length;
+                                    !!alertModal, !!rollbackModal, !!confirmModal,
+                                    !!doneModal].filter(Boolean).length;
             const topModalEl = () => {
                 const all = document.querySelectorAll('[data-ct-modal]');
                 return all.length ? all[all.length - 1] : null;
@@ -4218,11 +4391,11 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         ⚠️ 「延期」補一句說明（2026-08-27 / 第 34 批，使用者要求）——
                                         使用者回報「我目前的網頁沒有延期的功能，怎麼會有延期的選項」。
                                         他是對的：畫面上**沒有**任何一顆按鈕叫「延期」，
-                                        它是「✓ 完成」按下去那一刻的判定結果（今天 > 原訂 End → DelayCount +1）。
+                                        它是「標記完成…」按下去那一刻的判定結果（今天 > 原訂 End → DelayCount +1）。
                                         另外三個選項不補：「規格回退」與「時程異動」的名字本身就對得上
                                         畫面上真的存在的動作（🔄 規格回退鈕／改日期），不會讓人去找一個不存在的功能 */}
                                     <FilterSelect label="警示" value={alertFilter} onChange={setAlertFilter} allLabel="不限警示"
-                                                  hint="「延期完成」不是獨立功能，是按下「✓ 完成」時已超過原訂結束日才會記下的結果"
+                                                  hint="「延期完成」不是獨立功能，是按下「標記完成…」時已超過原訂結束日才會記下的結果"
                                                   options={[
                                                       { value:'changed',  label:`📝 有時程異動 (${alertCounts.changed})` },
                                                       // ⚠️ 改用 `延期完成`（2026-08-27 / 第 37 批）。名字自己就講完了，
@@ -4524,7 +4697,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         <span className="cursor-help" title="點一下會問要不要寄信通知該階段的負責人進系統壓定日期，副本給另一邊的負責人（信箱來自指派人員主檔 dbo.Assignee）">✉＝通知負責人壓日期</span>
                                         {/* tooltip 與「警示」下拉那句是同一件事：畫面上沒有叫「延期」的按鈕，
                                             所以這個詞一定要在出現的地方就解釋掉（2026-08-27 / 第 34 批） */}
-                                        <span className="cursor-help" title="按下「✓ 完成」時已超過原訂結束日就記一次。沒有獨立的「延期」功能 —— 那一刻原訂結束日會保留不動，只另外記下實際完成日">⏰ 延期完成次數（2 次以上轉紅）</span>
+                                        <span className="cursor-help" title="按下「標記完成…」時已超過原訂結束日就記一次。沒有獨立的「延期」功能 —— 那一刻原訂結束日會保留不動，只另外記下實際完成日">⏰ 延期完成次數（2 次以上轉紅）</span>
                                         <span>🔄 規格回退次數</span>
                                         <span title="只計「日期異動」；提早／延期完成與規格回退不算，它們各有 ⏰ / 🔄 或列在軌跡裡">⚠ 該階段日期異動次數</span>
                                         <span>→ 日期＝延期後的實際完成日</span>
@@ -5424,7 +5597,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         <div className="col-span-1">
                                             <label className="block text-xs font-bold mb-1" style={{color:'var(--text-secondary)'}}>StatusID <span className="font-normal" style={{color:'var(--text-muted)'}}>(1~5)</span></label>
                                             {/* ─── A5：StatusID 預設唯讀（第 19 批）───
-                                                正常推進只走「✓ 完成」與「🔄 規格回退」—— 那兩條路會寫稽核列、
+                                                正常推進只走「標記完成…」與「🔄 規格回退」—— 那兩條路會寫稽核列、
                                                 維護 DelayCount / EarlyCount / RollbackCount，並依「今天 vs 原訂 End」
                                                 判定提早或延期。直接用下拉跳階段等於繞過整套機制，
                                                 主管看到的「延期 0 次」就可能只是有人手動跳過去的結果。
@@ -5441,7 +5614,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 return (
                                                     <div className="w-full px-3 py-2 rounded-lg text-sm border flex items-center gap-1.5"
                                                          style={{background:'var(--bg-header-border)', borderColor:'var(--border-table)', color:'var(--text-secondary)'}}
-                                                         title="StatusID 由「✓ 完成」與「🔄 規格回退」自動推進，不直接編輯">
+                                                         title="StatusID 由「標記完成…」與「🔄 規格回退」自動推進，不直接編輯">
                                                         {sc
                                                             ? <><span className="w-2 h-2 rounded-full flex-shrink-0" style={{background:sc.color}}></span>{sc.label}</>
                                                             : <span style={{color:'var(--text-muted)'}}>{c || '未設定'}</span>}
@@ -5522,7 +5695,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                         ✎ 手動調整 StatusID：{from} → {to}
                                                     </div>
                                                     <div className="text-[11px] mb-2.5" style={{color:'var(--text-tertiary)'}}>
-                                                        這是繞過「✓ 完成」與「🔄 規格回退」的直接修改，<span className="font-bold">不會計入延期／提早／回退次數</span>，
+                                                        這是繞過「標記完成…」與「🔄 規格回退」的直接修改，<span className="font-bold">不會計入延期／提早／回退次數</span>，
                                                         也不會補寫該階段的完成紀錄。儲存後會在這筆需求的軌跡留下一筆「手動調整」。
                                                     </div>
                                                     <ReasonFields phaseKey="stage" categories={unlockCategories} setCategories={setUnlockCategories}
@@ -5831,6 +6004,180 @@ const { useState, useMemo, Fragment, useEffect } = React;
 
                         {/* 規格回退視窗（第 16 批）。z-[60] 蓋在編輯視窗之上。
                             異動原因固定是「規格變更」不必讓使用者選，但文字說明必填 */}
+                        {/* ═══ 標記完成（第 58 批，2026-09-10）═══
+                            在此之前是一個只有「確定嗎」的 confirmModal，完成日寫死成今天。
+                            ⚠️ 判定（提早／準時／延期）一律用**視窗裡選的那個日期**去比原訂 End，
+                               而且畫面上要在按下去之前就把結果講出來 —— 這個值直接決定
+                               EarlyCount / DelayCount，那是主管在看的數字。 */}
+                        {doneModal && (() => {
+                            const m = doneModal;
+                            // 下限每次 render 重算：勾了／取消勾「一併記錄前一階段」它就會變（第 61 批）
+                            const mm = doneMainMin(m);
+                            const ok = isDateVal(m.date) && m.date >= mm.min && m.date <= m.max;
+                            // 一併記錄的那幾列（第 60 批）。範圍是一條鏈，主要日期改了它們也要跟著動
+                            const exBounds = doneExtraBounds(m);
+                            const exOk = doneExtrasOk(m);
+                            const early = ok && m.date <= m.planned;
+                            const days = ok ? Math.abs(dayDiff(m.planned, m.date) || 0) : 0;
+                            const backdated = ok && m.date !== TODAY_ISO;
+                            // 排在未來的階段被提早結案時，後端會把開始日一起夾到完成日 ——
+                            // 只動 End 會做出 End < Start 的資料，那組合連存都存不了。
+                            // ⚠️ 這件事一定要先講：開始日被動過卻沒說，等於靜靜改了使用者的資料
+                            const clamp = early && isDateVal(m.plannedStart) && m.plannedStart > m.date;
+                            return (
+                            <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4"
+                                 data-ct-modal role="dialog" aria-modal="true"
+                                 aria-label={`標記「${m.label}」完成`} tabIndex={-1}>
+                                <div className="rounded-xl shadow-2xl w-full max-w-lg" style={{background:'var(--bg-card)', color:'var(--text-primary)'}} onClick={e=>e.stopPropagation()}>
+                                    <div className="p-4 border-b" style={{borderColor:'var(--border-table)'}}>
+                                        <h3 className="text-base font-bold">✓ 標記「{m.label}」完成</h3>
+                                        <p className="mt-1 text-[11px]" style={{color:'var(--text-muted)'}}>
+                                            原訂{m.dateLabel}是 <span className="font-bold tabular-nums">{m.planned}</span>。
+                                            填<span className="font-bold">實際完成的那一天</span> —— 不是你來按這顆按鈕的日子。
+                                        </p>
+                                    </div>
+                                    <div className="p-4 space-y-3">
+                                        <div>
+                                            <label className="block text-xs font-bold mb-1.5" style={{color:'var(--text-secondary)'}}>
+                                                實際完成日 <span className="text-red-500">*</span>
+                                            </label>
+                                            <input type="date" autoFocus value={m.date} min={mm.min} max={m.max}
+                                                   onChange={e=>setDoneModal({...m, date:e.target.value})}
+                                                   className="w-[180px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-teal-500/50"
+                                                   style={{background:'var(--bg-main)', borderColor:'var(--border-table)'}} />
+                                            <div className="mt-1 text-[11px]" style={{color:'var(--text-muted)'}}>
+                                                可選 <span className="tabular-nums">{mm.min}</span> ~ <span className="tabular-nums">{m.max}</span>（今天）。
+                                                {/* ⚠️ 下限的理由要講**實際生效的那一個**（第 59 批修）。
+                                                    原本只分「有 Start／沒 Start」兩種，於是「② 沒有 Start、
+                                                    但下限被前一階段的 End 抬上來」會顯示成
+                                                    「可選 2026-09-02 ~ …。這個階段沒有開始日，所以最多回推半年」——
+                                                    畫面上那兩句話自己對不起來（半年前是 2026-03-10）。
+                                                    ⚠️ 第 61 批：勾了「一併記錄前一階段」下限會鬆掉，
+                                                    那一刻畫面上更要說得出「為什麼剛才選不到、現在選得到」。 */}
+                                                {mm.from === 'prev'
+                                                    ? `下限是前一階段「${m.prevLabel}」的日期 —— 這一階段不可能比它更早完成。`
+                                                    : mm.from === 'start'
+                                                        ? '下限是這個階段的開始日。'
+                                                        : '這個階段沒有開始日，所以最多回推半年。'}
+                                                {mm.prevSkipped && (
+                                                    <span style={{color:'var(--tone-good)'}}>
+                                                        　已勾選一併記錄「{m.prevLabel}」（原訂 {m.prevEnd}），
+                                                        改由它的完成日約束先後順序，所以下限不再被它抬高。
+                                                    </span>
+                                                )}
+                                            </div>
+                                        </div>
+                                        {/* 即時判定：按下去之前就看得到會被記成什麼 */}
+                                        <div className="p-2.5 rounded-lg text-[11px]"
+                                             style={ok
+                                                ? (early
+                                                    ? {background:'rgba(15,118,110,0.10)', color:'var(--tone-good)'}
+                                                    : {background:'var(--tone-alert-bg)', color:'var(--tone-alert)'})
+                                                : {background:'var(--tone-warn-bg)', color:'var(--tone-warn)'}}>
+                                            {!ok ? '請先選一個範圍內的日期。' : (
+                                                <>
+                                                    將記為：<span className="font-bold">
+                                                        {early ? (days === 0 ? '準時完成' : `提早 ${days} 天完成`) : `延期 ${days} 天完成`}
+                                                    </span>
+                                                    <div className="mt-1" style={{opacity:0.9}}>
+                                                        {early
+                                                            /* ⚠️ 準時（完成日 == 原訂）時不可以印「由 X 更新為 X」——
+                                                               同一個日期寫兩次讀起來像壞掉，而這正是補登最常見的情況 */
+                                                            ? (days === 0
+                                                                ? <>{m.dateLabel}維持 <b>{m.planned}</b> 不變。（準時不計入「提早」次數）</>
+                                                                : <>{m.dateLabel}會由 {m.planned} 更新為 <b>{m.date}</b>。</>)
+                                                            : <>原訂 {m.planned} <b>保留不變</b>，實際完成日記為 <b>{m.date}</b>，並讓「延期」次數 +1。</>}
+                                                    </div>
+                                                    {clamp && (
+                                                        <div className="mt-1">⚠️ 開始日 {m.plannedStart} 晚於完成日，會一併調整為 {m.date}（否則結束日會早於開始日，那筆資料連存都存不了）。</div>
+                                                    )}
+                                                    {backdated && (
+                                                        <div className="mt-1">ℹ️ 這是補登：稽核紀錄會寫成「完成日 {m.date}，於 {TODAY_ISO} 補登」。</div>
+                                                    )}
+                                                </>
+                                            )}
+                                        </div>
+                                        {/* ─── 這一次會跳過的階段（第 60 批，2026-09-10 使用者要求）───
+                                            ⚠️⚠️ **不可以靜靜地做**：使用者按的是 ③，系統卻要替他宣告 ② 的事實。
+                                            所以一定要在按下去**之前**就列在這裡、可以取消勾選、日期可以改。
+                                            ⚠️ 預設值是原訂日 → 準時完成 → 三個計數欄一個都不動、資料一個字都不變。
+                                            ⚠️⚠️ 但日期**一定要可以改**：② 真的延期時記成準時會讓 DelayCount
+                                                 少算一次，而那是主管在看的數字 —— 少報比多報嚴重。 */}
+                                        {(m.extras || []).length > 0 && (
+                                            <div className="rounded-lg border p-2.5"
+                                                 style={{borderColor:'var(--border-table)', background:'var(--bg-input)'}}>
+                                                <div className="text-[11px] font-bold" style={{color:'var(--text-secondary)'}}>
+                                                    這一次會跳過的階段
+                                                </div>
+                                                <div className="text-[10px] mt-0.5 mb-2" style={{color:'var(--text-muted)'}}>
+                                                    勾選就一併記成完成（<span className="font-bold">不會改變 StatusID</span>）。
+                                                    預設拿原訂日當完成日 —— 那是「準時完成」，提早／延期次數都不會變。
+                                                </div>
+                                                <div className="space-y-1.5">
+                                                    {m.extras.map((e, idx) => {
+                                                        const b = exBounds.get(e.phaseKey);
+                                                        const eOk = !!b && isDateVal(e.date) && e.date >= b.min && e.date <= b.max;
+                                                        const eEarly = eOk && e.date <= e.planned;
+                                                        const eDays = eOk ? Math.abs(dayDiff(e.planned, e.date) || 0) : 0;
+                                                        const set = patch => setDoneModal({
+                                                            ...m,
+                                                            extras: m.extras.map((x, i) => i === idx ? {...x, ...patch} : x)
+                                                        });
+                                                        return (
+                                                            <div key={e.phaseKey} className="flex flex-wrap items-center gap-2">
+                                                                <label className="flex items-center gap-1.5 cursor-pointer">
+                                                                    <input type="checkbox" checked={e.checked}
+                                                                           onChange={ev=>set({ checked: ev.target.checked })} />
+                                                                    <span className="text-[11px] font-bold">{e.label}</span>
+                                                                </label>
+                                                                <span className="text-[10px]" style={{color:'var(--text-muted)'}}>{e.dateLabel}</span>
+                                                                <input type="date" value={e.date} disabled={!e.checked}
+                                                                       min={b?.min} max={b?.max}
+                                                                       onChange={ev=>set({ date: ev.target.value })}
+                                                                       className="px-2 py-1 rounded text-[11px] border outline-none focus:ring-2 ring-teal-500/50 disabled:opacity-40"
+                                                                       style={{background:'var(--bg-main)', borderColor:'var(--border-table)'}} />
+                                                                {/* 不勾的後果一定要寫出來，不能讓預設值悄悄決定 */}
+                                                                {!e.checked ? (
+                                                                    <span className="text-[10px]" style={{color:'var(--text-muted)'}}>
+                                                                        不記錄 → 這個階段會顯示「已略過此階段」
+                                                                    </span>
+                                                                ) : !eOk ? (
+                                                                    <span className="text-[10px] font-bold" style={{color:'var(--tone-warn)'}}>
+                                                                        ⚠ 需在 {b?.min} ~ {b?.max} 之間
+                                                                    </span>
+                                                                ) : (
+                                                                    <span className="text-[10px] font-bold"
+                                                                          style={{color: eEarly ? 'var(--tone-good)' : 'var(--tone-alert)'}}>
+                                                                        → {eEarly
+                                                                            ? (eDays === 0 ? '準時完成（不計次）' : `提早 ${eDays} 天完成`)
+                                                                            : `延期 ${eDays} 天完成（延期次數 +1）`}
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </div>
+                                        )}
+                                        <p className="text-[11px]" style={{color:'var(--text-muted)'}}>
+                                            StatusID 會推進到 {m.doneStage}，並寫入一筆稽核紀錄。
+                                            {(m.extras || []).some(e => e.checked) &&
+                                                <>　一併記錄的階段<span className="font-bold">不會改變 StatusID</span>，各多寫一筆稽核紀錄。</>}
+                                        </p>
+                                    </div>
+                                    <div className="p-3 flex justify-end gap-2 border-t" style={{borderColor:'var(--border-table)'}}>
+                                        <button onClick={()=>setDoneModal(null)} disabled={isSubmitting}
+                                                className="px-5 py-2 rounded-lg text-sm font-bold hover:bg-black/5 dark:hover:bg-white/5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">取消</button>
+                                        <button onClick={submitDone} disabled={isSubmitting || !ok || !exOk}
+                                                className="px-5 py-2 rounded-lg text-sm font-bold text-white shadow-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                                style={{background:'var(--tone-good)'}}>
+                                            {isSubmitting ? '處理中…' : '確認完成'}
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                            );
+                        })()}
                         {rollbackModal && (
                             <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4"
                                  data-ct-modal role="dialog" aria-modal="true"

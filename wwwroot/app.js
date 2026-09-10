@@ -47,6 +47,13 @@ const TODAY = (() => {
 const formatToday = `${TODAY.getFullYear()}/${String(TODAY.getMonth() + 1).padStart(2, '0')}/${String(TODAY.getDate()).padStart(2, '0')}`;
 // 與 API 傳輸格式一致的今天（"YYYY-MM-DD"）。日期都是這個格式，字串比較即時間比較
 const TODAY_ISO = formatToday.replace(/\//g, '-');
+// 補登完成日的下限（第 58 批）：沒有 Start 可當基準時，最多回推半年。
+// ⚠️ 後端 /done 用的是 `today.AddMonths(-6)`，兩邊是**鏡像，改了要一起改**。
+//    用 setMonth 而不是減 180 天 —— 月份長度不一樣，兩邊會差到 2 天。
+const sixMonthsAgoIso = () => {
+  const d = new Date(TODAY.getFullYear(), TODAY.getMonth() - 6, TODAY.getDate());
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
 
 // 「畫面最後抓取」的時鐘（HH:mm）。跨過午夜就補上日期 —— 分頁開一整晚的話，
 // 只寫 08:31 會被讀成「今天早上剛抓的」，實際上那是昨天的畫面
@@ -992,7 +999,7 @@ const CHANGE_TYPES = {
     color: '#8b5cf6',
     bg: 'rgba(139,92,246,0.12)'
   },
-  // 手動改 StatusID / Status（2026-08-22）。它繞過了「✓ 完成」與「🔄 規格回退」，
+  // 手動改 StatusID / Status（2026-08-22）。它繞過了「標記完成…」與「🔄 規格回退」，
   // 所以一定要在軌跡上看得出來 —— 但**不算時程異動**（見 isDateChange），
   // 也不會動三個計數欄
   '手動調整': {
@@ -1035,7 +1042,7 @@ const REASON_CATEGORIES = ['規格變更', '優先級調整', '技術問題', '�
 // ⚠️ 「時程異動」只算 `日期異動` 這一種（2026-08-22）。
 // 稽核表裡另外三種不是「有人把日期改掉」：
 //   · init     首次填寫 —— 本來就沒有值，不是修改
-//   · 提早完成 按下「✓ 完成」而且準時／提早，End 被更新成今天。那是好消息，
+//   · 提早完成 按下「標記完成…」而且準時／提早，End 被更新成填的那個完成日。那是好消息，
 //              掛上琥珀色 ⚠ 只會把真正落後的案子淹掉
 //   · 延期完成 已經有專屬的 ⏰ 徽章（delayCount）
 //   · 規格回退 已經有專屬的 🔄 徽章（rollbackCount）
@@ -1250,7 +1257,7 @@ const AlertBadges = ({
   }, "\uD83D\uDD04", rollback), delay > 0 && /*#__PURE__*/React.createElement("span", {
     className: "px-1 rounded text-[10px] font-bold border whitespace-nowrap cursor-help",
     style: delayStyle,
-    title: `延期完成 ${delay} 次（按下「✓ 完成」時已超過原訂結束日）${delay >= 2 ? '\n2 次以上轉紅色警示' : ''}`
+    title: `延期完成 ${delay} 次（按下「標記完成…」時已超過原訂結束日）${delay >= 2 ? '\n2 次以上轉紅色警示' : ''}`
   }, "\u23F0", delay));
 };
 
@@ -1342,7 +1349,7 @@ const DoneHint = () => /*#__PURE__*/React.createElement("span", {
   style: {
     color: 'var(--text-muted)'
   }
-}, "\u58D3\u4E0A\u65E5\u671F\u4E26\u5132\u5B58\u5F8C\uFF0C\u9019\u88E1\u6703\u51FA\u73FE\u300C\u2713 \u5B8C\u6210\u300D");
+}, "\u58D3\u4E0A\u65E5\u671F\u4E26\u5132\u5B58\u5F8C\uFF0C\u9019\u88E1\u6703\u51FA\u73FE\u300C\u6A19\u8A18\u5B8C\u6210\u2026\u300D");
 
 // 已經走過、但從來沒有被明確標記完成的階段（2026-08-22 / 第 21 批）。
 // 匯入來的資料、或手動把 StatusID 往前調過的需求都會落在這一格。
@@ -1359,7 +1366,7 @@ const DonePastHint = ({
 }, "\u5DF2\u7565\u904E\u6B64\u968E\u6BB5");
 
 // 前置階段還缺日期，所以不給按完成（2026-08-23 / 第 22 批）。
-// 「✓ 完成」會把 StatusID 推到這個階段的下一階，語意上等於宣告前面都走完了 ——
+// 「標記完成…」會把 StatusID 推到這個階段的下一階，語意上等於宣告前面都走完了 ——
 // 手動改 StatusID 早就有同一條規則（stagePrereqMissing），完成鈕卻一路放行，
 // 於是一筆 StatusID=1 但匯入時帶了驗收日的需求，按一下 ④ 完成就直接變成結案。
 // 後端 /done 也擋，這裡是不讓使用者按了才被拒絕
@@ -1373,7 +1380,8 @@ const DonePrereqHint = ({
   title: `前面的階段還缺日期：\n${missing.map(m => '・' + m).join('\n')}\n\n標記完成代表前面都已經走完，請先補上那些日期並儲存。`
 }, "\u524D\u9762\u7684\u968E\u6BB5\u9084\u7F3A\u65E5\u671F");
 
-// 提早完成會把 End 更新成今天，但前一階段的日期還排在今天之後（2026-08-23 / 第 22 批）。
+// 提早完成會把 End 更新成填的完成日，而完成日最晚只到今天 —— 前一階段的日期還排在今天之後時，
+// 沒有一天選得下去（2026-08-23 / 第 22 批，第 58 批改用完成日）。
 // 硬按下去會做出「③ 8/22 就開發完、② 9/1 才要確認規格」這種倒序資料，
 // 而 PUT 的跨階段順序檢查會讓那筆需求之後連改都改不動
 const DoneOrderHint = ({
@@ -1384,11 +1392,24 @@ const DoneOrderHint = ({
   style: {
     color: 'var(--text-muted)'
   },
-  title: `提早完成會把日期更新為今天（${TODAY_ISO}），但前一階段「${prevLabel}」是 ${prevEnd}，還在今天之後。\n這樣會做出「後面的階段比前面早完成」的資料。\n請先確認「${prevLabel}」的日期是否正確。`
+  title: `提早完成會把日期更新為完成日，而可選的完成日最晚只到今天（${TODAY_ISO}）——\n但前一階段「${prevLabel}」是 ${prevEnd}，還在今天之後，所以沒有一天選得下去。\n這樣會做出「後面的階段比前面早完成」的資料。\n請先確認「${prevLabel}」的日期是否正確。`
 }, "\u524D\u4E00\u968E\u6BB5\u7684\u65E5\u671F\u9084\u5728\u4ECA\u5929\u4E4B\u5F8C");
 
-// 階段完成鈕（第 15 批）。按下去會依「今天 vs 原訂 End」判定提早或延期，
+// 階段完成鈕（第 15 批）。按下去會開一個視窗讓使用者**填實際完成日**（第 58 批，
+// 預設今天），再依「那一天 vs 原訂 End」判定提早或延期 ——
 // 兩者都會推進 StatusID 並寫稽核列，所以刻意做成需要二次確認的動作
+// ⚠️⚠️ **這顆不可以用 teal 或 `✓`**（第 59 批，2026-09-10，使用者附截圖回報
+//    「提早完成的圖示跟完成的圖示看起來都差不多…目前的顯示方式是否容易讓人混淆狀態?」）。
+//    在此之前它與**結果標籤**「✓ 提早完成」幾乎是同一組樣式：
+//      結果標籤 color:var(--tone-good) / bg:rgba(15,118,110,**0.1**) / ✓ / 無邊框
+//      這顆     color:var(--tone-good) / bg:rgba(15,118,110,**0.08**) / ✓ / 0.3 alpha 邊框
+//    —— 同一個顏色、底色只差 0.02 alpha、同一個 ✓，唯一的差別是一條幾乎看不見的邊框。
+//    ⚠️ 根本的矛盾：**`✓` 與 teal 是「已經完成」的語言**，卻用在一顆
+//    「還沒完成、請你來做」的按鈕上。teal + ✓ 從此只留給**已經發生的結果**。
+//    ⚠️ 第 58 批（完成日改成自己填）讓這件事變嚴重：按下去不再只是「確定嗎」，
+//    而是一件要填日期的真工作，所以「哪一顆還要我做事」比以前更重要。
+//    改用 indigo（`--brand`，這個 App 全域的主要動作色，＋新增需求就是它）
+//    ＋文字「標記完成…」（`…` ＝ 會開視窗）。三個維度一起拉開：顏色、圖示、文字。
 const DoneButton = ({
   onClick,
   title
@@ -1398,20 +1419,11 @@ const DoneButton = ({
   title: title,
   className: "inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold border transition-colors",
   style: {
-    color: 'var(--tone-good)',
-    background: 'rgba(15,118,110,0.08)',
-    borderColor: 'rgba(15,118,110,0.3)'
+    color: 'var(--brand)',
+    background: 'var(--brand-soft)',
+    borderColor: 'var(--brand)'
   }
-}, /*#__PURE__*/React.createElement("svg", {
-  width: "11",
-  height: "11",
-  viewBox: "0 0 24 24",
-  fill: "none",
-  stroke: "currentColor",
-  strokeWidth: "3"
-}, /*#__PURE__*/React.createElement("polyline", {
-  points: "20 6 9 17 4 12"
-})), "\u5B8C\u6210");
+}, "\u6A19\u8A18\u5B8C\u6210\u2026");
 
 // 解鎖後改了日期時要填的「異動原因分類 + 文字說明」。
 // 兩者都會寫進 dbo.Controltable_History（ReasonCategory / Note）
@@ -1821,7 +1833,7 @@ function App() {
     uat: '',
     stage: ''
   });
-  // StatusID 預設唯讀（第 19 批 / A5）。正常推進只能靠「✓ 完成」與「🔄 規格回退」，
+  // StatusID 預設唯讀（第 19 批 / A5）。正常推進只能靠「標記完成…」與「🔄 規格回退」，
   // 手動改是繞過那套機制，所以要先按「手動修正」才開放下拉，而且一定要留原因
   const [stageUnlocked, setStageUnlocked] = useState(false);
   // 按過一次「儲存」之後才把驗證結果畫到欄位上（第 26 批）。
@@ -1858,6 +1870,10 @@ function App() {
   const [confirmModal, setConfirmModal] = useState(null); // { title, message, onConfirm }
   // 規格回退視窗（第 16 批）：{ id, nid, curStage, target, note }
   const [rollbackModal, setRollbackModal] = useState(null);
+  // 標記完成的視窗（第 58 批，2026-09-10）。在此之前是一個只有「確定嗎」的
+  // confirmModal，完成日寫死成今天 —— 隔幾天才回平台補登就會被判成延期。
+  // { phaseKey, label, planned, dateLabel, min, max, date, plannedStart, prevLabel, prevEnd }
+  const [doneModal, setDoneModal] = useState(null);
   // 到期提醒橫幅已移除（改為需求列表工具列的「需關注」鈕 + 可點的 KPI 卡），
   // 連帶不再需要 noticeDismissed 這個關閉狀態
   // ─── 需求列表的篩選與排序（第 12 批：統計、人員、逾期全部收進同一頁）───
@@ -2716,49 +2732,213 @@ function App() {
       });
       return;
     }
-    const early = TODAY_ISO <= planned; // 同一天視為準時，算提早
-    const days = Math.abs(dayDiff(planned, TODAY_ISO) || 0);
-    const dateLabel = phaseKey === 'confirm' ? '確認日' : '結束日';
-    const verdict = early ? days === 0 ? `準時完成（${dateLabel}更新為今天）` : `提早完成（${dateLabel}由 ${planned} 更新為今天，提早 ${days} 天）` : `延期完成（原訂 ${planned} 保留不變，實際完成日記為今天，延期 ${days} 天）`;
-    // 排在未來的階段被提早結案時，後端會把開始日一起夾到今天 ——
-    // 只動 End 會做出 End < Start 的資料，那組合連存都存不了。
-    // ⚠️ 這件事一定要先講，開始日被動過卻沒說等於靜靜改了使用者的資料。
-    // ② 只有單一確認日，沒有開始日
+    // ─── 完成日可選（第 58 批，2026-09-10 使用者要求）───
+    // 在此之前這裡直接跳一個「確定嗎」的 confirmModal，完成日寫死成今天。
+    // 使用者常常隔幾天才回平台補登，於是「9/9 準時完成、9/20 才來按」
+    // 被判成延期 11 天並讓 DelayCount +1 —— 那是主管在看的數字。
+    // ⚠️ 下限（與後端 /done 是**鏡像，改了要兩邊一起改**）：
+    //    有 Start → Start，但 Start 排在未來時夾到今天（否則 min > max、一天都選不到）；
+    //    ② 沒有 Start 欄、或 Start 沒填 → 今天往前推半年。
+    // ⚠️ 再往上抬一道「前一階段的 End」：提早完成會把 End 改成完成日，
+    //    比前一階段的 End 還早就會做出倒序資料，那筆需求之後連改都改不動
+    //    （後端的 PhaseOrderViolations 會整筆擋住）。延期的日子一定 > 原訂 End
+    //    ≥ 前一階段 End，所以這道下限不會擋掉任何一個合法的延期日。
+    // ⚠️⚠️ 下限**不再在這裡算死**（第 61 批）：前一階段若被勾進「一併記錄」，
+    //    那道下限就不該套（見 doneMainMin）—— 而勾選是視窗開起來之後才動的，
+    //    算死在開窗當下就永遠是舊答案。這裡只存算下限要用的原料。
     const plannedStart = phaseKey === 'confirm' ? '' : original?.[ph.obj]?.start || '';
-    const clampNote = early && isDateVal(plannedStart) && plannedStart > TODAY_ISO ? `\n\n⚠️ 開始日 ${plannedStart} 晚於今天，會一併調整為 ${TODAY_ISO}（否則結束日會早於開始日，那筆資料連存都存不了）。` : '';
-    setConfirmModal({
-      title: `標記「${ph.label}」完成`,
-      message: `今天是 ${TODAY_ISO}，原訂${dateLabel}是 ${planned}。\n\n將記為：${verdict}${clampNote}\n\nStatusID 會推進到 ${ph.doneStage}，並寫入一筆稽核紀錄。確定嗎？`,
-      onConfirm: () => runExclusive(async () => {
-        try {
-          const res = await fetch(api(`/api/requirements/${editingData.id}/done`), {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-              phase: phaseKey,
-              actorEmpId: actor.empId || '',
-              actorSource: actor.source
-            })
+    const prev = prevPhaseEndOf(original, phaseKey);
+    // ─── 這一次點擊會跳過的階段（第 60 批，2026-09-10 使用者要求）───
+    // 使用者實際遇到的：② 已經壓了確認日，但他沒按 ② 的完成、直接按 ③ ——
+    // StatusID 從 2 跳到 4，② 就永遠停在灰字「已略過此階段」拿不到完成紀錄。
+    // ⚠️ 這些階段**必然有日期**：上面的 stagePrereqMissing 已經保證了。
+    // ⚠️ 原訂日排在未來的不收 —— 那個階段是真的還沒完成，提議它完成就是錯的。
+    // ⚠️ StatusID 推不出來（0）時整段不做，沿用第 33 批「空白一律不推斷」。
+    // ⚠️ 只收「這一次會跳過的」（目前 StatusID ~ 主要階段的前一階）：更早的
+    //    既有缺口（匯入資料）是「事後補記」，是另一件事、不在這一批。
+    // 後端 /done 的 alsoStages 那段是**鏡像，改了要兩邊一起改**
+    const curStage = savedStage(original);
+    const mainStage = ph.doneStage - 1;
+    const extras = curStage <= 0 ? [] : PHASE_KEYS.filter(k => {
+      const s = PHASES[k].doneStage - 1;
+      if (s < curStage || s > mainStage - 1) return false;
+      const p = PHASES[k];
+      const pl = original?.[p.obj]?.[p.endKey];
+      return isDateVal(pl) && pl <= TODAY_ISO && !phaseDoneEntry(k);
+    }).map(k => {
+      const p = PHASES[k];
+      return {
+        phaseKey: k,
+        label: p.label,
+        dateLabel: k === 'confirm' ? '確認日' : '結束日',
+        planned: original[p.obj][p.endKey],
+        plannedStart: k === 'confirm' ? '' : original[p.obj]?.start || '',
+        // 預設 = 原訂日 → 準時完成 → 三個計數欄一個都不動，
+        // 而且寫回去的值與庫裡原本那個一模一樣（資料完全不變）
+        date: original[p.obj][p.endKey],
+        checked: true
+      };
+    });
+    setDoneModal({
+      phaseKey,
+      label: ph.label,
+      planned,
+      plannedStart,
+      dateLabel: phaseKey === 'confirm' ? '確認日' : '結束日',
+      doneStage: ph.doneStage,
+      hasStart: isDateVal(plannedStart),
+      prevKey: prev?.key || '',
+      prevLabel: prev?.label || '',
+      prevEnd: prev?.end || '',
+      max: TODAY_ISO,
+      date: TODAY_ISO,
+      // 預設今天：多數情況仍然是當天就來按
+      extras
+    });
+  };
+
+  // ─── 主要階段的完成日下限（第 61 批，2026-09-10）───
+  // 回傳 { min, from, prevSkipped }：`from` 是**實際生效**的那一個理由
+  //（'prev' / 'start' / 'half'），視窗上那行說明要照它印（第 59 批立的規矩）。
+  // ⚠️⚠️ **前一階段被勾進「一併記錄」時，不套它的原訂日當下限**。
+  //    在此之前這道下限拿的是寫入前的原訂日，於是第 60 批想解決的情境自己撞牆：
+  //    ② 原訂 9/08、③ 原訂 9/15，而 ③ 其實 9/05 完成、② 是 9/03 完成的 ——
+  //    一次把兩階都記進來完全合法，日期欄卻連 9/05 都選不到，
+  //    擋住他的正是他在同一次送出裡要覆蓋掉的那個值。
+  // ⚠️ 拿掉之後先後順序仍然成立，靠的是 doneExtraBounds 那條鏈（前一階段若在
+  //    清單裡必然是最後一列，上限就是主要階段的完成日）—— 理由與 Program.cs
+  //    那段 prevAlsoListed 完全相同，**兩邊是鏡像，改了要一起改**。
+  const doneMainMin = m => {
+    if (!m) return {
+      min: '',
+      from: 'half',
+      prevSkipped: false
+    };
+    const startFloor = isDateVal(m.plannedStart) ? m.plannedStart > TODAY_ISO ? TODAY_ISO : m.plannedStart : sixMonthsAgoIso();
+    const from = m.hasStart ? 'start' : 'half';
+    if (!isDateVal(m.prevEnd)) return {
+      min: startFloor,
+      from,
+      prevSkipped: false
+    };
+    const prevSkipped = (m.extras || []).some(e => e.checked && e.phaseKey === m.prevKey);
+    if (prevSkipped) return {
+      min: startFloor,
+      from,
+      prevSkipped: true
+    };
+    return m.prevEnd > startFloor ? {
+      min: m.prevEnd,
+      from: 'prev',
+      prevSkipped: false
+    } : {
+      min: startFloor,
+      from,
+      prevSkipped: false
+    };
+  };
+
+  // ─── 完成視窗裡「一併記錄」那幾列各自的可選範圍（第 60 批）───
+  // 把勾起來的階段依代號遞增排好、主要階段接在最後，形成一條鏈：
+  //   下限 = max(該階段的 Start／沒有就半年前, 前一列的完成日)
+  //   上限 = min(今天, 下一列的完成日)
+  // ⚠️⚠️ **上限少了「下一列的完成日」就會做出 MsdConfirm > MsdEnd**，
+  //    之後後端的 PhaseOrderViolations 會把那筆需求整個鎖住，連改個現況描述都存不了。
+  //    這兩個界線是拿鄰居的**完成日**去比，與主要階段那道「不可能比前一階段更早完成」
+  //    是同一個道理的兩半。後端 /done 的 alsoStages 迴圈是**鏡像，改了要兩邊一起改**。
+  // ⚠️ 沒勾的那幾列不進鏈 —— 它們不會被寫進去，沒有理由去限制鄰居。
+  // 回傳 Map<phaseKey, {min, max}>，沒勾的階段查不到
+  const doneExtraBounds = m => {
+    const out = new Map();
+    const on = (m?.extras || []).filter(e => e.checked);
+    const original = requirementsData.find(d => d.id === editingData?.id);
+    on.forEach((e, i) => {
+      let min = isDateVal(e.plannedStart) ? e.plannedStart > TODAY_ISO ? TODAY_ISO : e.plannedStart : sixMonthsAgoIso();
+      const prevDate = i > 0 ? on[i - 1].date : prevPhaseEndOf(original, e.phaseKey)?.end || '';
+      if (isDateVal(prevDate) && prevDate > min) min = prevDate;
+      let max = i + 1 < on.length ? on[i + 1].date : m.date;
+      if (!isDateVal(max) || max > TODAY_ISO) max = TODAY_ISO;
+      out.set(e.phaseKey, {
+        min,
+        max
+      });
+    });
+    return out;
+  };
+  // 勾起來的每一列日期都要在自己的範圍內，否則不給按「確認完成」
+  const doneExtrasOk = m => {
+    const b = doneExtraBounds(m);
+    return (m?.extras || []).filter(e => e.checked).every(e => {
+      const r = b.get(e.phaseKey);
+      return r && isDateVal(e.date) && e.date >= r.min && e.date <= r.max;
+    });
+  };
+
+  // 完成視窗按下「確認完成」。⚠️ 完成日一律以視窗裡的值為準，
+  // 後端會**自己再驗一次**範圍（不可以只信前端，那個值直接決定 EarlyCount / DelayCount）
+  const submitDone = () => {
+    const m = doneModal;
+    if (!m) return;
+    if (!isDateVal(m.date)) {
+      setAlertModal({
+        title: '請選擇完成日',
+        message: '完成日必須是有效的日期（YYYY-MM-DD）。'
+      });
+      return;
+    }
+    // 下限隨「一併記錄」的勾選即時變動（第 61 批），所以這裡重算、不讀 state
+    const mainMin = doneMainMin(m).min;
+    if (m.date > m.max || m.date < mainMin) {
+      setAlertModal({
+        title: '完成日超出可選範圍',
+        message: `可以選的範圍是 ${mainMin} ~ ${m.max}。\n\n目前選的是 ${m.date}。`
+      });
+      return;
+    }
+    if (!doneExtrasOk(m)) {
+      setAlertModal({
+        title: '一併記錄的完成日超出範圍',
+        message: '有階段的完成日不在可選範圍內。\n\n' + '每一個階段都不可能比前一階段更早完成，也不可能比後一階段更晚完成。'
+      });
+      return;
+    }
+    runExclusive(async () => {
+      try {
+        const res = await fetch(api(`/api/requirements/${editingData.id}/done`), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          // ⚠️ alsoComplete 只帶**視窗上勾起來**的那幾筆（第 60 批）。
+          // 後端每一筆都會自己再驗一次範圍與「是不是已經完成過」
+          body: JSON.stringify({
+            phase: m.phaseKey,
+            completedAt: m.date,
+            alsoComplete: (m.extras || []).filter(e => e.checked).map(e => ({
+              phase: e.phaseKey,
+              completedAt: e.date
+            })),
+            actorEmpId: actor.empId || '',
+            actorSource: actor.source
+          })
+        });
+        const bodyJson = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setAlertModal({
+            title: '無法標記完成',
+            message: bodyJson.message || `HTTP ${res.status}`
           });
-          const bodyJson = await res.json().catch(() => ({}));
-          if (!res.ok) {
-            setAlertModal({
-              title: '無法標記完成',
-              message: bodyJson.message || `HTTP ${res.status}`
-            });
-            return;
-          }
-          setEditingData(null);
-          setIsModalOpen(false);
-          await Promise.all([fetchReqs(), fetchHistory()]);
-          showToast(bodyJson.message || '已標記完成');
-        } catch (err) {
-          console.error(err);
-          showToast('標記完成失敗：' + err.message, 'error');
+          return;
         }
-      })
+        setDoneModal(null);
+        setEditingData(null);
+        setIsModalOpen(false);
+        await Promise.all([fetchReqs(), fetchHistory()]);
+        showToast(bodyJson.message || '已標記完成');
+      } catch (err) {
+        console.error(err);
+        showToast('標記完成失敗：' + err.message, 'error');
+      }
     });
   };
 
@@ -2773,14 +2953,22 @@ function App() {
       // 原本是 `CHANGE_TYPES[...] || {}`，查不到時 color / bg 都是 undefined，
       // 那顆標籤會退化成沒有底色的裸文字。第 22 批已經為軌跡換過同一支，這裡漏改
       const ct = changeTypeStyle(done.changeType);
+      // 完成日補在標籤上（第 59 批）。第 58 批讓完成日可以自己填之後，
+      // 畫面上反而看不到「到底記成哪一天」—— 只能把滑鼠移上去看 tooltip。
+      // ⚠️ 補上之後也順便讓這顆與旁邊的「標記完成…」鈕**連長度都不一樣**，
+      //    更不可能看錯（使用者 2026-09-10 回報兩者長得太像）。
+      // ⚠️ 只印 MM/DD：這是階段標題旁的小藥丸，完整日期留在 tooltip 裡
+      //    （視窗在窄一點的螢幕上會換行，那一行不該為了年份變長）。
+      const doneDate = done.phase === 'confirm' ? done.newConfirm : done.newEnd;
+      const doneShort = isDateVal(doneDate) ? doneDate.slice(5).replace('-', '/') : '';
       return /*#__PURE__*/React.createElement("span", {
         className: "px-1.5 py-0.5 rounded text-[11px] font-bold cursor-help",
         style: {
           color: ct.color,
           background: ct.bg
         },
-        title: `${done.changedAt || ''}${done.changedBy ? ' · ' + done.changedBy : ''}${done.note ? '｜' + done.note : ''}`
-      }, "\u2713 ", ct.label);
+        title: `${ct.label}${isDateVal(doneDate) ? `　完成日 ${doneDate}` : ''}\n` + `${done.changedAt || ''}${done.changedBy ? ' · ' + done.changedBy : ''}${done.note ? '｜' + done.note : ''}`
+      }, "\u2713 ", ct.label, doneShort && ` · ${doneShort}`);
     }
     const original = requirementsData.find(d => d.id === editingData.id);
     // 還沒壓日期 → 沒有原訂日就沒有提早／延期可言。前置未完成的階段不提示
@@ -2807,7 +2995,7 @@ function App() {
     });
     return /*#__PURE__*/React.createElement(DoneButton, {
       onClick: () => handleDone(phaseKey),
-      title: `標記「${ph.label}」完成（今天 ${TODAY_ISO}）`
+      title: `標記「${ph.label}」完成。按下去可以填實際完成的那一天（預設今天）——\n不必當天就來按，補登也不會被算成延期`
     });
   };
 
@@ -2821,7 +3009,9 @@ function App() {
     if (i <= 0) return null;
     const p = PHASES[PHASE_KEYS[i - 1]];
     const v = (row?.[p.obj] || {})[p.endKey];
+    // key 是第 61 批加的：完成視窗要判斷「前一階段是不是就在一併記錄的清單裡」
     return isDateVal(v) ? {
+      key: PHASE_KEYS[i - 1],
       label: p.label,
       end: v
     } : null;
@@ -3443,6 +3633,10 @@ function App() {
       setConfirmModal(null);
       return;
     }
+    if (doneModal) {
+      setDoneModal(null);
+      return;
+    }
     if (rollbackModal) {
       setRollbackModal(null);
       return;
@@ -3472,7 +3666,7 @@ function App() {
   // 只用鍵盤的人要從頭 Tab 一遍才回得到剛剛那顆鈕。
   // 只寫一份共用的（每個視窗各自寫一次遲早會漂移成「有的有、有的沒有」）：
   // 視窗的最外層都標了 data-ct-modal，DOM 裡的最後一個就是疊在最上面的那個。
-  const openModalCount = [isAssigneeModalOpen, !!editingData, isActorModalOpen, !!alertModal, !!rollbackModal, !!confirmModal].filter(Boolean).length;
+  const openModalCount = [isAssigneeModalOpen, !!editingData, isActorModalOpen, !!alertModal, !!rollbackModal, !!confirmModal, !!doneModal].filter(Boolean).length;
   const topModalEl = () => {
     const all = document.querySelectorAll('[data-ct-modal]');
     return all.length ? all[all.length - 1] : null;
@@ -5467,7 +5661,7 @@ function App() {
     value: alertFilter,
     onChange: setAlertFilter,
     allLabel: "\u4E0D\u9650\u8B66\u793A",
-    hint: "\u300C\u5EF6\u671F\u5B8C\u6210\u300D\u4E0D\u662F\u7368\u7ACB\u529F\u80FD\uFF0C\u662F\u6309\u4E0B\u300C\u2713 \u5B8C\u6210\u300D\u6642\u5DF2\u8D85\u904E\u539F\u8A02\u7D50\u675F\u65E5\u624D\u6703\u8A18\u4E0B\u7684\u7D50\u679C",
+    hint: "\u300C\u5EF6\u671F\u5B8C\u6210\u300D\u4E0D\u662F\u7368\u7ACB\u529F\u80FD\uFF0C\u662F\u6309\u4E0B\u300C\u6A19\u8A18\u5B8C\u6210\u2026\u300D\u6642\u5DF2\u8D85\u904E\u539F\u8A02\u7D50\u675F\u65E5\u624D\u6703\u8A18\u4E0B\u7684\u7D50\u679C",
     options: [{
       value: 'changed',
       label: `📝 有時程異動 (${alertCounts.changed})`
@@ -5805,7 +5999,7 @@ function App() {
     title: "\u9EDE\u4E00\u4E0B\u6703\u554F\u8981\u4E0D\u8981\u5BC4\u4FE1\u901A\u77E5\u8A72\u968E\u6BB5\u7684\u8CA0\u8CAC\u4EBA\u9032\u7CFB\u7D71\u58D3\u5B9A\u65E5\u671F\uFF0C\u526F\u672C\u7D66\u53E6\u4E00\u908A\u7684\u8CA0\u8CAC\u4EBA\uFF08\u4FE1\u7BB1\u4F86\u81EA\u6307\u6D3E\u4EBA\u54E1\u4E3B\u6A94 dbo.Assignee\uFF09"
   }, "\u2709\uFF1D\u901A\u77E5\u8CA0\u8CAC\u4EBA\u58D3\u65E5\u671F"), /*#__PURE__*/React.createElement("span", {
     className: "cursor-help",
-    title: "\u6309\u4E0B\u300C\u2713 \u5B8C\u6210\u300D\u6642\u5DF2\u8D85\u904E\u539F\u8A02\u7D50\u675F\u65E5\u5C31\u8A18\u4E00\u6B21\u3002\u6C92\u6709\u7368\u7ACB\u7684\u300C\u5EF6\u671F\u300D\u529F\u80FD \u2014\u2014 \u90A3\u4E00\u523B\u539F\u8A02\u7D50\u675F\u65E5\u6703\u4FDD\u7559\u4E0D\u52D5\uFF0C\u53EA\u53E6\u5916\u8A18\u4E0B\u5BE6\u969B\u5B8C\u6210\u65E5"
+    title: "\u6309\u4E0B\u300C\u6A19\u8A18\u5B8C\u6210\u2026\u300D\u6642\u5DF2\u8D85\u904E\u539F\u8A02\u7D50\u675F\u65E5\u5C31\u8A18\u4E00\u6B21\u3002\u6C92\u6709\u7368\u7ACB\u7684\u300C\u5EF6\u671F\u300D\u529F\u80FD \u2014\u2014 \u90A3\u4E00\u523B\u539F\u8A02\u7D50\u675F\u65E5\u6703\u4FDD\u7559\u4E0D\u52D5\uFF0C\u53EA\u53E6\u5916\u8A18\u4E0B\u5BE6\u969B\u5B8C\u6210\u65E5"
   }, "\u23F0 \u5EF6\u671F\u5B8C\u6210\u6B21\u6578\uFF082 \u6B21\u4EE5\u4E0A\u8F49\u7D05\uFF09"), /*#__PURE__*/React.createElement("span", null, "\uD83D\uDD04 \u898F\u683C\u56DE\u9000\u6B21\u6578"), /*#__PURE__*/React.createElement("span", {
     title: "\u53EA\u8A08\u300C\u65E5\u671F\u7570\u52D5\u300D\uFF1B\u63D0\u65E9\uFF0F\u5EF6\u671F\u5B8C\u6210\u8207\u898F\u683C\u56DE\u9000\u4E0D\u7B97\uFF0C\u5B83\u5011\u5404\u6709 \u23F0 / \uD83D\uDD04 \u6216\u5217\u5728\u8ECC\u8DE1\u88E1"
   }, "\u26A0 \u8A72\u968E\u6BB5\u65E5\u671F\u7570\u52D5\u6B21\u6578"), /*#__PURE__*/React.createElement("span", null, "\u2192 \u65E5\u671F\uFF1D\u5EF6\u671F\u5F8C\u7684\u5BE6\u969B\u5B8C\u6210\u65E5"), compact && /*#__PURE__*/React.createElement("span", {
@@ -7573,7 +7767,7 @@ function App() {
         borderColor: 'var(--border-table)',
         color: 'var(--text-secondary)'
       },
-      title: "StatusID \u7531\u300C\u2713 \u5B8C\u6210\u300D\u8207\u300C\uD83D\uDD04 \u898F\u683C\u56DE\u9000\u300D\u81EA\u52D5\u63A8\u9032\uFF0C\u4E0D\u76F4\u63A5\u7DE8\u8F2F"
+      title: "StatusID \u7531\u300C\u6A19\u8A18\u5B8C\u6210\u2026\u300D\u8207\u300C\uD83D\uDD04 \u898F\u683C\u56DE\u9000\u300D\u81EA\u52D5\u63A8\u9032\uFF0C\u4E0D\u76F4\u63A5\u7DE8\u8F2F"
     }, sc ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("span", {
       className: "w-2 h-2 rounded-full flex-shrink-0",
       style: {
@@ -7677,7 +7871,7 @@ function App() {
       style: {
         color: 'var(--text-tertiary)'
       }
-    }, "\u9019\u662F\u7E5E\u904E\u300C\u2713 \u5B8C\u6210\u300D\u8207\u300C\uD83D\uDD04 \u898F\u683C\u56DE\u9000\u300D\u7684\u76F4\u63A5\u4FEE\u6539\uFF0C", /*#__PURE__*/React.createElement("span", {
+    }, "\u9019\u662F\u7E5E\u904E\u300C\u6A19\u8A18\u5B8C\u6210\u2026\u300D\u8207\u300C\uD83D\uDD04 \u898F\u683C\u56DE\u9000\u300D\u7684\u76F4\u63A5\u4FEE\u6539\uFF0C", /*#__PURE__*/React.createElement("span", {
       className: "font-bold"
     }, "\u4E0D\u6703\u8A08\u5165\u5EF6\u671F\uFF0F\u63D0\u65E9\uFF0F\u56DE\u9000\u6B21\u6578"), "\uFF0C \u4E5F\u4E0D\u6703\u88DC\u5BEB\u8A72\u968E\u6BB5\u7684\u5B8C\u6210\u7D00\u9304\u3002\u5132\u5B58\u5F8C\u6703\u5728\u9019\u7B46\u9700\u6C42\u7684\u8ECC\u8DE1\u7559\u4E0B\u4E00\u7B46\u300C\u624B\u52D5\u8ABF\u6574\u300D\u3002"), /*#__PURE__*/React.createElement(ReasonFields, {
       phaseKey: "stage",
@@ -8369,7 +8563,218 @@ function App() {
   }, /*#__PURE__*/React.createElement("button", {
     onClick: () => setAlertModal(null),
     className: "px-5 py-2 rounded-lg text-sm font-bold bg-indigo-500 text-white hover:bg-indigo-600 shadow-md transition-colors"
-  }, "\u6211\u77E5\u9053\u4E86")))), rollbackModal && /*#__PURE__*/React.createElement("div", {
+  }, "\u6211\u77E5\u9053\u4E86")))), doneModal && (() => {
+    const m = doneModal;
+    // 下限每次 render 重算：勾了／取消勾「一併記錄前一階段」它就會變（第 61 批）
+    const mm = doneMainMin(m);
+    const ok = isDateVal(m.date) && m.date >= mm.min && m.date <= m.max;
+    // 一併記錄的那幾列（第 60 批）。範圍是一條鏈，主要日期改了它們也要跟著動
+    const exBounds = doneExtraBounds(m);
+    const exOk = doneExtrasOk(m);
+    const early = ok && m.date <= m.planned;
+    const days = ok ? Math.abs(dayDiff(m.planned, m.date) || 0) : 0;
+    const backdated = ok && m.date !== TODAY_ISO;
+    // 排在未來的階段被提早結案時，後端會把開始日一起夾到完成日 ——
+    // 只動 End 會做出 End < Start 的資料，那組合連存都存不了。
+    // ⚠️ 這件事一定要先講：開始日被動過卻沒說，等於靜靜改了使用者的資料
+    const clamp = early && isDateVal(m.plannedStart) && m.plannedStart > m.date;
+    return /*#__PURE__*/React.createElement("div", {
+      className: "fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4",
+      "data-ct-modal": true,
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-label": `標記「${m.label}」完成`,
+      tabIndex: -1
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "rounded-xl shadow-2xl w-full max-w-lg",
+      style: {
+        background: 'var(--bg-card)',
+        color: 'var(--text-primary)'
+      },
+      onClick: e => e.stopPropagation()
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "p-4 border-b",
+      style: {
+        borderColor: 'var(--border-table)'
+      }
+    }, /*#__PURE__*/React.createElement("h3", {
+      className: "text-base font-bold"
+    }, "\u2713 \u6A19\u8A18\u300C", m.label, "\u300D\u5B8C\u6210"), /*#__PURE__*/React.createElement("p", {
+      className: "mt-1 text-[11px]",
+      style: {
+        color: 'var(--text-muted)'
+      }
+    }, "\u539F\u8A02", m.dateLabel, "\u662F ", /*#__PURE__*/React.createElement("span", {
+      className: "font-bold tabular-nums"
+    }, m.planned), "\u3002 \u586B", /*#__PURE__*/React.createElement("span", {
+      className: "font-bold"
+    }, "\u5BE6\u969B\u5B8C\u6210\u7684\u90A3\u4E00\u5929"), " \u2014\u2014 \u4E0D\u662F\u4F60\u4F86\u6309\u9019\u9846\u6309\u9215\u7684\u65E5\u5B50\u3002")), /*#__PURE__*/React.createElement("div", {
+      className: "p-4 space-y-3"
+    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+      className: "block text-xs font-bold mb-1.5",
+      style: {
+        color: 'var(--text-secondary)'
+      }
+    }, "\u5BE6\u969B\u5B8C\u6210\u65E5 ", /*#__PURE__*/React.createElement("span", {
+      className: "text-red-500"
+    }, "*")), /*#__PURE__*/React.createElement("input", {
+      type: "date",
+      autoFocus: true,
+      value: m.date,
+      min: mm.min,
+      max: m.max,
+      onChange: e => setDoneModal({
+        ...m,
+        date: e.target.value
+      }),
+      className: "w-[180px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-teal-500/50",
+      style: {
+        background: 'var(--bg-main)',
+        borderColor: 'var(--border-table)'
+      }
+    }), /*#__PURE__*/React.createElement("div", {
+      className: "mt-1 text-[11px]",
+      style: {
+        color: 'var(--text-muted)'
+      }
+    }, "\u53EF\u9078 ", /*#__PURE__*/React.createElement("span", {
+      className: "tabular-nums"
+    }, mm.min), " ~ ", /*#__PURE__*/React.createElement("span", {
+      className: "tabular-nums"
+    }, m.max), "\uFF08\u4ECA\u5929\uFF09\u3002", mm.from === 'prev' ? `下限是前一階段「${m.prevLabel}」的日期 —— 這一階段不可能比它更早完成。` : mm.from === 'start' ? '下限是這個階段的開始日。' : '這個階段沒有開始日，所以最多回推半年。', mm.prevSkipped && /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: 'var(--tone-good)'
+      }
+    }, "\u3000\u5DF2\u52FE\u9078\u4E00\u4F75\u8A18\u9304\u300C", m.prevLabel, "\u300D\uFF08\u539F\u8A02 ", m.prevEnd, "\uFF09\uFF0C \u6539\u7531\u5B83\u7684\u5B8C\u6210\u65E5\u7D04\u675F\u5148\u5F8C\u9806\u5E8F\uFF0C\u6240\u4EE5\u4E0B\u9650\u4E0D\u518D\u88AB\u5B83\u62AC\u9AD8\u3002"))), /*#__PURE__*/React.createElement("div", {
+      className: "p-2.5 rounded-lg text-[11px]",
+      style: ok ? early ? {
+        background: 'rgba(15,118,110,0.10)',
+        color: 'var(--tone-good)'
+      } : {
+        background: 'var(--tone-alert-bg)',
+        color: 'var(--tone-alert)'
+      } : {
+        background: 'var(--tone-warn-bg)',
+        color: 'var(--tone-warn)'
+      }
+    }, !ok ? '請先選一個範圍內的日期。' : /*#__PURE__*/React.createElement(React.Fragment, null, "\u5C07\u8A18\u70BA\uFF1A", /*#__PURE__*/React.createElement("span", {
+      className: "font-bold"
+    }, early ? days === 0 ? '準時完成' : `提早 ${days} 天完成` : `延期 ${days} 天完成`), /*#__PURE__*/React.createElement("div", {
+      className: "mt-1",
+      style: {
+        opacity: 0.9
+      }
+    }, early
+    /* ⚠️ 準時（完成日 == 原訂）時不可以印「由 X 更新為 X」——
+       同一個日期寫兩次讀起來像壞掉，而這正是補登最常見的情況 */ ? days === 0 ? /*#__PURE__*/React.createElement(React.Fragment, null, m.dateLabel, "\u7DAD\u6301 ", /*#__PURE__*/React.createElement("b", null, m.planned), " \u4E0D\u8B8A\u3002\uFF08\u6E96\u6642\u4E0D\u8A08\u5165\u300C\u63D0\u65E9\u300D\u6B21\u6578\uFF09") : /*#__PURE__*/React.createElement(React.Fragment, null, m.dateLabel, "\u6703\u7531 ", m.planned, " \u66F4\u65B0\u70BA ", /*#__PURE__*/React.createElement("b", null, m.date), "\u3002") : /*#__PURE__*/React.createElement(React.Fragment, null, "\u539F\u8A02 ", m.planned, " ", /*#__PURE__*/React.createElement("b", null, "\u4FDD\u7559\u4E0D\u8B8A"), "\uFF0C\u5BE6\u969B\u5B8C\u6210\u65E5\u8A18\u70BA ", /*#__PURE__*/React.createElement("b", null, m.date), "\uFF0C\u4E26\u8B93\u300C\u5EF6\u671F\u300D\u6B21\u6578 +1\u3002")), clamp && /*#__PURE__*/React.createElement("div", {
+      className: "mt-1"
+    }, "\u26A0\uFE0F \u958B\u59CB\u65E5 ", m.plannedStart, " \u665A\u65BC\u5B8C\u6210\u65E5\uFF0C\u6703\u4E00\u4F75\u8ABF\u6574\u70BA ", m.date, "\uFF08\u5426\u5247\u7D50\u675F\u65E5\u6703\u65E9\u65BC\u958B\u59CB\u65E5\uFF0C\u90A3\u7B46\u8CC7\u6599\u9023\u5B58\u90FD\u5B58\u4E0D\u4E86\uFF09\u3002"), backdated && /*#__PURE__*/React.createElement("div", {
+      className: "mt-1"
+    }, "\u2139\uFE0F \u9019\u662F\u88DC\u767B\uFF1A\u7A3D\u6838\u7D00\u9304\u6703\u5BEB\u6210\u300C\u5B8C\u6210\u65E5 ", m.date, "\uFF0C\u65BC ", TODAY_ISO, " \u88DC\u767B\u300D\u3002"))), (m.extras || []).length > 0 && /*#__PURE__*/React.createElement("div", {
+      className: "rounded-lg border p-2.5",
+      style: {
+        borderColor: 'var(--border-table)',
+        background: 'var(--bg-input)'
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "text-[11px] font-bold",
+      style: {
+        color: 'var(--text-secondary)'
+      }
+    }, "\u9019\u4E00\u6B21\u6703\u8DF3\u904E\u7684\u968E\u6BB5"), /*#__PURE__*/React.createElement("div", {
+      className: "text-[10px] mt-0.5 mb-2",
+      style: {
+        color: 'var(--text-muted)'
+      }
+    }, "\u52FE\u9078\u5C31\u4E00\u4F75\u8A18\u6210\u5B8C\u6210\uFF08", /*#__PURE__*/React.createElement("span", {
+      className: "font-bold"
+    }, "\u4E0D\u6703\u6539\u8B8A StatusID"), "\uFF09\u3002 \u9810\u8A2D\u62FF\u539F\u8A02\u65E5\u7576\u5B8C\u6210\u65E5 \u2014\u2014 \u90A3\u662F\u300C\u6E96\u6642\u5B8C\u6210\u300D\uFF0C\u63D0\u65E9\uFF0F\u5EF6\u671F\u6B21\u6578\u90FD\u4E0D\u6703\u8B8A\u3002"), /*#__PURE__*/React.createElement("div", {
+      className: "space-y-1.5"
+    }, m.extras.map((e, idx) => {
+      const b = exBounds.get(e.phaseKey);
+      const eOk = !!b && isDateVal(e.date) && e.date >= b.min && e.date <= b.max;
+      const eEarly = eOk && e.date <= e.planned;
+      const eDays = eOk ? Math.abs(dayDiff(e.planned, e.date) || 0) : 0;
+      const set = patch => setDoneModal({
+        ...m,
+        extras: m.extras.map((x, i) => i === idx ? {
+          ...x,
+          ...patch
+        } : x)
+      });
+      return /*#__PURE__*/React.createElement("div", {
+        key: e.phaseKey,
+        className: "flex flex-wrap items-center gap-2"
+      }, /*#__PURE__*/React.createElement("label", {
+        className: "flex items-center gap-1.5 cursor-pointer"
+      }, /*#__PURE__*/React.createElement("input", {
+        type: "checkbox",
+        checked: e.checked,
+        onChange: ev => set({
+          checked: ev.target.checked
+        })
+      }), /*#__PURE__*/React.createElement("span", {
+        className: "text-[11px] font-bold"
+      }, e.label)), /*#__PURE__*/React.createElement("span", {
+        className: "text-[10px]",
+        style: {
+          color: 'var(--text-muted)'
+        }
+      }, e.dateLabel), /*#__PURE__*/React.createElement("input", {
+        type: "date",
+        value: e.date,
+        disabled: !e.checked,
+        min: b?.min,
+        max: b?.max,
+        onChange: ev => set({
+          date: ev.target.value
+        }),
+        className: "px-2 py-1 rounded text-[11px] border outline-none focus:ring-2 ring-teal-500/50 disabled:opacity-40",
+        style: {
+          background: 'var(--bg-main)',
+          borderColor: 'var(--border-table)'
+        }
+      }), !e.checked ? /*#__PURE__*/React.createElement("span", {
+        className: "text-[10px]",
+        style: {
+          color: 'var(--text-muted)'
+        }
+      }, "\u4E0D\u8A18\u9304 \u2192 \u9019\u500B\u968E\u6BB5\u6703\u986F\u793A\u300C\u5DF2\u7565\u904E\u6B64\u968E\u6BB5\u300D") : !eOk ? /*#__PURE__*/React.createElement("span", {
+        className: "text-[10px] font-bold",
+        style: {
+          color: 'var(--tone-warn)'
+        }
+      }, "\u26A0 \u9700\u5728 ", b?.min, " ~ ", b?.max, " \u4E4B\u9593") : /*#__PURE__*/React.createElement("span", {
+        className: "text-[10px] font-bold",
+        style: {
+          color: eEarly ? 'var(--tone-good)' : 'var(--tone-alert)'
+        }
+      }, "\u2192 ", eEarly ? eDays === 0 ? '準時完成（不計次）' : `提早 ${eDays} 天完成` : `延期 ${eDays} 天完成（延期次數 +1）`));
+    }))), /*#__PURE__*/React.createElement("p", {
+      className: "text-[11px]",
+      style: {
+        color: 'var(--text-muted)'
+      }
+    }, "StatusID \u6703\u63A8\u9032\u5230 ", m.doneStage, "\uFF0C\u4E26\u5BEB\u5165\u4E00\u7B46\u7A3D\u6838\u7D00\u9304\u3002", (m.extras || []).some(e => e.checked) && /*#__PURE__*/React.createElement(React.Fragment, null, "\u3000\u4E00\u4F75\u8A18\u9304\u7684\u968E\u6BB5", /*#__PURE__*/React.createElement("span", {
+      className: "font-bold"
+    }, "\u4E0D\u6703\u6539\u8B8A StatusID"), "\uFF0C\u5404\u591A\u5BEB\u4E00\u7B46\u7A3D\u6838\u7D00\u9304\u3002"))), /*#__PURE__*/React.createElement("div", {
+      className: "p-3 flex justify-end gap-2 border-t",
+      style: {
+        borderColor: 'var(--border-table)'
+      }
+    }, /*#__PURE__*/React.createElement("button", {
+      onClick: () => setDoneModal(null),
+      disabled: isSubmitting,
+      className: "px-5 py-2 rounded-lg text-sm font-bold hover:bg-black/5 dark:hover:bg-white/5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+    }, "\u53D6\u6D88"), /*#__PURE__*/React.createElement("button", {
+      onClick: submitDone,
+      disabled: isSubmitting || !ok || !exOk,
+      className: "px-5 py-2 rounded-lg text-sm font-bold text-white shadow-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed",
+      style: {
+        background: 'var(--tone-good)'
+      }
+    }, isSubmitting ? '處理中…' : '確認完成'))));
+  })(), rollbackModal && /*#__PURE__*/React.createElement("div", {
     className: "fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4",
     "data-ct-modal": true,
     role: "dialog",
