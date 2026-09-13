@@ -945,6 +945,72 @@ static string[] PhaseGatingViolations(Requirement req, Requirement? before)
     return bad.ToArray();
 }
 
+// ─── 已走完的階段不可清空 End、清空也不可以挖洞（2026-09-11 / 第 66 批 H1，使用者要求）───
+// 整套流程只靠一條不變量：**StatusID = N ⇔ ①…N-1 全部有 End、N 是目前階段**，
+// 而日期必須是連續前綴（PhaseGatingViolations 的本意：② 要 ① 的 End、③ 要 ②、④ 要 ③）。
+// gating 只擋「從空白填進去」，不擋「把中間挖空」—— 於是 StatusID=2、②③ 都填了再清 ②，
+// 就做出「② 空、③ 有」這種列；StatusID=3 清 ② 更直接讓「走完的階段沒日期」。
+// 這兩種列一出現，「走完了沒」就得靠日期反推去補（第 65 批拿掉的那條），永遠補不完。
+// ⚠️ 只擋「原本有值、這次被清空」的 End（與 gating 同一條界線）：既有的跳空資料不被動到就不擋，
+//    否則那些列會有值卻連改個現況描述都存不了（第 14 批）。
+// ⚠️ Start 不管：Start 沒填會自動帶成與 End 同一天，它不參與階段判斷。
+// ⚠️ N 取**這次要存的** StatusID（req）：同一次存檔裡把 StatusID 往前調又清前置的 End，
+//    StagePrereqViolations 早就會擋；這裡多擋的是「StatusID 沒動、只清日期」那一條。
+// ⚠️ ① 另有 MissingRequiredFields 的「原本有值不可清」（第 42 批），兩者不衝突，那條先跑。
+static string[] PhaseClearViolations(Requirement req, Requirement before)
+{
+    bool Has(string? v) => ParseDate(v).HasValue;
+    var chain = new (int Stage, string Label, string Word, string? Now, string? Was)[]
+    {
+        (1, "1_EMS規格確認", "結束日", req.spec?.end,    before.spec?.end),
+        (2, "2_MSD確認中",   "確認日", req.msd?.confirm, before.msd?.confirm),
+        (3, "3_MSD開發中",   "結束日", req.msd?.end,     before.msd?.end),
+        (4, "4_EMS驗收",     "結束日", req.uat?.end,     before.uat?.end)
+    };
+    var n = int.TryParse(NormStage(req.stageCode), out var sn) ? sn
+          : int.TryParse(NormStage(before.stageCode), out var bn) ? bn : 0;
+    var bad = new List<string>();
+    for (int i = 0; i < chain.Length; i++)
+    {
+        var c = chain[i];
+        if (!(Has(c.Was) && !Has(c.Now))) continue;             // 只看「原本有值、這次清空」
+        if (c.Stage < n)
+        {
+            bad.Add($"「{c.Label}」已經走完（目前 StatusID = {StageText(n.ToString())}），它的{c.Word}不可以清空；要退回這個階段請用「規格回退」");
+            continue;
+        }
+        var later = chain.Skip(i + 1).Where(x => Has(x.Now)).Select(x => x.Label).ToArray();
+        if (later.Length > 0)
+            bad.Add($"清空「{c.Label}」的{c.Word}會在時程裡留下缺口（{string.Join("、", later)} 仍有日期）；請先清掉後面的階段，或改用「規格回退」");
+    }
+    return bad.ToArray();
+}
+
+// ─── Status = Done ⇔ StatusID = 5（2026-09-11 / 第 67 批，使用者要求）───
+// 不變量「StatusID = N ⇔ ①…N-1 全有 End」的另一半是「N = 5 ⇔ 結案」。
+// /done、/rollback、/undo-done 三條路都自己維護它（推到 5 就 Done、退出 5 就 Ongoing），
+// 只有 POST / PUT 沒管：編輯視窗的 Status 下拉三個值隨便選、不必理由，`Done + StatusID 1` 存得進去（實測 200）。
+// 後果是靜默的：isPhasePassed() / StagePassed() / unsetDuePhase() 都把 Done 當「全部走完」——
+// 那筆需求從需關注、⚠ 未壓日期、✉ 通知、逾期篩選全部退出、KPI 算進結案，StatusID 欄卻仍寫著 1；
+// 反向 `5 + Ongoing` 零預警卻列在「進行中」。畫面上沒有任何一個地方會說這件事。
+// ⚠️ 這**不是**把兩欄合併（使用者 2026-08-22 否決過），只是不讓它們互相矛盾。
+// ⚠️ 呼叫端負責「只在其中一欄被改動時才驗」（PUT 的 statusChanged || stageChanged），與 H2 同一條界線 ——
+//    既有的矛盾列不被動到就不擋，否則那些列連改個現況描述都存不了（第 14 批）。POST 整筆都是新的，一律驗。
+// 回 null 代表一致；否則回給使用者看的訊息（兩個方向的出路不一樣，要分開講）。
+static string? StatusStageMismatch(Requirement req)
+{
+    var isDone = StatusIs(req.status, "Done");
+    var isFive = NormStage(req.stageCode) == "5";
+    if (isDone == isFive) return null;
+    return isDone
+        ? $"Status 改成 Done 代表結案，但 StatusID 是「{StageText(req.stageCode)}」。\n\n"
+          + "結案只能由 ④ EMS驗收 的「標記完成…」推進（它會把 StatusID 推到 5 並自動改成 Done）；"
+          + "若是匯入資料的階段填錯，請把 StatusID 一併調到「5 結案」並填寫異動原因。"
+        : $"StatusID 是「5 結案」時 Status 必須是 Done（目前是 {StatusText(req.status)}）。\n\n"
+          + "要把已結案的需求重新打開，請用「🔄 規格回退」—— 它會把 StatusID 退回去並自動改成 Ongoing；"
+          + "直接改 Status 會留下一筆「StatusID 已結案、卻算在進行中」的需求，而且不會出現在任何預警裡。";
+}
+
 // ─── 手動指定 StatusID 的前置檢查（2026-08-22 / A5 補強）───
 // 把 StatusID 設成 N，語意就是「1 ~ N-1 這些階段都已經走完」，所以那些階段的日期必須齊全。
 // ⚠️ 兩條界線，改動前先看清楚：
@@ -991,17 +1057,51 @@ static bool EndChangedOf(Requirement req, Requirement before, string phase)
 // 四個階段的 key（順序 = 畫面上的順序）。與 app.jsx 的 PHASE_KEYS 一致
 static string[] AllPhases() => new[] { "spec", "confirm", "msd", "uat" };
 
-// 前一個階段的顯示名稱與 End（② 的 End 就是 confirm）。① 沒有前一階段，回 (null, null)。
-// 給 /done 判斷「提早完成把 End 拉到今天之後，會不會早於前一階段的 End」用
-static (string? Label, string? End) PrevPhaseEndOf(Requirement r, string phase)
+// 這個階段的實際完成日（延期完成時才有；② 的是 MsdConfirmActualEnd）。沒有回 ""
+static string PhaseActualEndOf(Requirement r, string phase) => NormDate(phase switch
+{
+    "spec"    => r.spec?.actualEnd,
+    "confirm" => r.msd?.confirmActualEnd,
+    "msd"     => r.msd?.actualEnd,
+    "uat"     => r.uat?.actualEnd,
+    _         => null
+});
+
+// 前一個階段的顯示名稱與「它實際結束在哪一天」。① 沒有前一階段，回 (null, null, false)。
+// 給 /done 當完成日的下限：這一階段不可能比前一階段更早完成。
+// ⚠️ 回的是 **max(原訂 End, ActualEnd)**（2026-09-12 / 第 68 批）。在此之前只看原訂 End ——
+//    ② 原訂 9/01、延期到 9/10 才確認（End 不動、ActualEnd = 9/10），③ 補登 9/05 提早完成照樣放行，
+//    做出「② 9/10 才確認、③ 9/05 就開發完」的軌跡。這道 guard 自己講的話（「不可能比前一階段更早完成」）
+//    要拿實際完成日來比才成立；延期完成的定義就是 End 不動、事實記在 ActualEnd。
+//    IsActual 給訊息用：要講「前一階段的實際完成日」還是「日期」。
+// ⚠️ 呼叫端讀 cur 時四個 *ActualEnd 一定要 SELECT 進來，否則這裡永遠看不到延期的那一半。
+// app.jsx 的 prevPhaseEndOf() 是鏡像，改了要兩邊一起改
+static (string? Label, string? End, bool IsActual) PrevPhaseEndOf(Requirement r, string phase)
 {
     var order = AllPhases();
     var i = Array.IndexOf(order, phase);
-    if (i <= 0) return (null, null);
+    if (i <= 0) return (null, null, false);
     var prev = order[i - 1];
     var d = PhaseDatesOf(r, prev);
     var end = NormDate(prev == "confirm" ? d.confirm : d.end);
-    return (DoneColumnsOf(prev).Label, end == "" ? null : end);
+    var actual = PhaseActualEndOf(r, prev);
+    var isActual = actual != "" && string.CompareOrdinal(actual, end) > 0;
+    var pick = isActual ? actual : end;
+    return (DoneColumnsOf(prev).Label, pick == "" ? null : pick, isActual);
+}
+
+// 下一個階段的顯示名稱與 End（③ 的下一個是 ④；④ 沒有下一階段，回 (null, null)）。
+// 給 /undo-done 判斷「把 End 還原成原訂日之後，會不會晚於下一階段已經壓好的 End」用（第 67 批）。
+// app.jsx 的 nextPhaseEndOf() 是鏡像，改了要兩邊一起改
+static (string? Label, string? End) NextPhaseEndOf(Requirement r, string phase)
+{
+    var order = AllPhases();
+    var i = Array.IndexOf(order, phase);
+    if (i < 0 || i + 1 >= order.Length) return (null, null);
+    var next = order[i + 1];
+    var d = PhaseDatesOf(r, next);
+    var end = NormDate(next == "confirm" ? d.confirm : d.end);
+    return (DoneColumnsOf(next).Label, end == "" ? null : end);
 }
 
 // ─── 改了 End 一定要有異動原因（2026-08-22 / 第 20 批）───
@@ -1063,13 +1163,18 @@ app.MapPost("/api/requirements", async (Requirement req) =>
             fields = new[] { "status" }
         });
 
-    // StatusID 只能是 1~5 或空（第 22 批）。新增是「整筆都是新填的」，所以一律驗
+    // StatusID 只能是 1~5（第 22 批；空值自第 66 批起不再合法）。新增是「整筆都是新填的」，所以一律驗
     if (!IsValidStageCode(req.stageCode))
         return Results.BadRequest(new
         {
-            message = $"StatusID「{req.stageCode}」不是有效的階段代號，只能是 1~5（或留空）。",
+            message = $"StatusID「{req.stageCode}」不是有效的階段代號，只能是 1~5（不可留空，新增請填 1）。",
             fields = new[] { "stageCode" }
         });
+
+    // Status = Done ⇔ StatusID = 5（第 67 批）。新增整筆都是新的，一律驗
+    var mismatch = StatusStageMismatch(req);
+    if (mismatch != null)
+        return Results.BadRequest(new { message = mismatch, fields = new[] { "status", "stageCode" } });
 
     // 新增時 UI 一律送 StatusID = 1，這裡擋的是直接打 API 的情況（規則與 PUT 一致）
     var badStage = StagePrereqViolations(req, req.stageCode);
@@ -1250,15 +1355,44 @@ app.MapPut("/api/requirements/{id}", async (int id, Requirement req) =>
             fields = new[] { "status" }
         });
 
+    // ⚠️ 空的 StatusID 不管有沒有被改動都擋（第 66 批）：欄位已是 NOT NULL，寫進去只會 500。
+    //    「只在被改動時才驗」那條界線是為了讓**超出 1~5 的舊值**改得動，不是為了讓空值存得進去
+    //    （17 腳本回填之後庫裡已經沒有空值，前端的下拉也不再有「未設定」）
+    if (NormStage(req.stageCode) == "")
+        return Results.BadRequest(new
+        {
+            message = "StatusID 不可以是空的（1~5）。它是「走到哪一階段」的唯一依據，空白會讓這筆需求整個逃過逾期判定。",
+            fields = new[] { "stageCode" }
+        });
+
     var stageChanged = NormStage(before.stageCode) != NormStage(req.stageCode);
     if (stageChanged)
     {
-        // 只能改成 1~5 或空（第 22 批）。⚠️ 只在真的被改動時驗 —— 一律驗的話，
+        // 只能改成 1~5（第 22 批）。⚠️ 只在真的被改動時驗 —— 一律驗的話，
         // 既有那些超出 1~5 的舊資料會連改個現況描述都存不了（第 14 批的「有值卻永遠改不動」）
         if (!IsValidStageCode(req.stageCode))
             return Results.BadRequest(new
             {
-                message = $"StatusID「{req.stageCode}」不是有效的階段代號，只能是 1~5（或留空）。",
+                message = $"StatusID「{req.stageCode}」不是有效的階段代號，只能是 1~5。",
+                fields = new[] { "stageCode" }
+            });
+
+        // ─── 手動 StatusID 只能往前（2026-09-11 / 第 66 批 H2，使用者要求）───
+        // 往回改而不經「規格回退」會留下已走完階段的 ActualEnd 與完成紀錄，於是
+        // 「走完了沒」又得靠 ActualEnd 去補（第 24 批那條）—— 那是補洞不是規則。
+        // 往回一律只有兩條路，兩條都會清乾淨並留稽核列：
+        //   · 規格變更要重做前面的階段 → 「規格回退」（清日期、RollbackCount +1）
+        //   · 誤按了「標記完成…」        → 「撤銷上一次標記完成」（/undo-done，只退一格、計數減回去）
+        // ⚠️ 只擋「往回」：往前調仍然放行（匯入資料的階段填錯往往是填少了）。
+        var oldN = int.TryParse(NormStage(before.stageCode), out var on0) ? on0 : 0;
+        var newN = int.TryParse(NormStage(req.stageCode), out var nn0) ? nn0 : 0;
+        if (oldN > 0 && newN > 0 && newN < oldN)
+            return Results.BadRequest(new
+            {
+                message = $"StatusID 不可以手動往回改（{StageText(before.stageCode)} → {StageText(req.stageCode)}）。\n\n"
+                        + "要退回前面的階段請用「🔄 規格回退」（規格變更、要重做）；"
+                        + "若是誤按了「標記完成…」，請用該階段旁的「撤銷完成」。"
+                        + "這兩條路都會把已走完階段的完成紀錄一併處理乾淨，直接改 StatusID 不會。",
                 fields = new[] { "stageCode" }
             });
 
@@ -1281,6 +1415,15 @@ app.MapPut("/api/requirements/{id}", async (int id, Requirement req) =>
             });
     }
 
+    // Status = Done ⇔ StatusID = 5（第 67 批）。⚠️ 只在其中一欄被改動時才驗（與 H2 同一條界線）——
+    // 既有的矛盾列不被動到就不擋。兩個 changed 旗標上面都算好了，這裡直接用
+    if (statusChanged || stageChanged)
+    {
+        var mismatch = StatusStageMismatch(req);
+        if (mismatch != null)
+            return Results.BadRequest(new { message = mismatch, fields = new[] { statusChanged ? "status" : "stageCode" } });
+    }
+
     // gating 要跟舊值比對才知道哪些欄位是「這次新填的」，所以排在 before 讀出來之後
     var badGates = PhaseGatingViolations(req, before);
     if (badGates.Length > 0)
@@ -1288,6 +1431,15 @@ app.MapPut("/api/requirements/{id}", async (int id, Requirement req) =>
         {
             message = "階段順序不正確，以下階段的前置階段還沒填完：" + string.Join("、", badGates),
             fields = badGates
+        });
+
+    // 已走完的階段不可清空、清空不可挖洞（第 66 批 H1）。前端 validateEdit 同一套
+    var badClear = PhaseClearViolations(req, before);
+    if (badClear.Length > 0)
+        return Results.BadRequest(new
+        {
+            message = "以下日期不可以清空：\n" + string.Join("\n", badClear.Select(b => "・" + b)),
+            fields = badClear
         });
 
     // 跨階段的 End 必須遞增（第 21 批）。只擋這次被動到的那一組，見 PhaseOrderViolations
@@ -1334,6 +1486,22 @@ app.MapPut("/api/requirements/{id}", async (int id, Requirement req) =>
         if (!string.IsNullOrWhiteSpace(oldActual))
             actualNotes[p] = $"原訂日重新排定，先前記錄的實際完成日 {oldActual} 已一併清除"
                            + "（延期／提早次數是既成事實，不會跟著回退）";
+
+        // ─── 提早／準時完成之後 End 又被改掉（第 71 批，2026-09-12）───
+        // 提早完成的完成日**就是 End 本身**（ApplyCompletionAsync 提早那條路只改 End、不寫 ActualEnd）。
+        // 延期那條上面有講（ActualEnd 清掉、次數不動），提早這條在此之前什麼都沒說 ——
+        // 稽核列裡「提早完成 · 完成日 09-10」下一筆就是「日期異動 09-10 → 09-09」，
+        // 讀的人分不出「完成日記錯了」還是「完成後又排了別的日子」，而 EarlyCount 兩種情況都不會變。
+        // 本機 NID 77 的 ③ 就是這樣。不擋（第 14 批那條界線：既有資料要改得動），只把落差寫進說明；
+        // 真的要更正完成日，出路是「撤銷」再重新標記（那條路才會把次數算對）。前端 donePanel 同一句話
+        var early = await ValidEarlyDoneOfAsync(conn, tx, id, p);
+        if (early is (var earlyDone, var earlyAt))
+        {
+            var word = p == "confirm" ? "確認日" : "結束日";
+            var line = $"此階段已於 {earlyAt} 標記完成（完成日 {earlyDone}），這次改的是完成後的{word}；"
+                     + "完成紀錄與提早次數不會跟著變，要更正完成日請先「撤銷」再重新標記完成";
+            actualNotes[p] = actualNotes.TryGetValue(p, out var prevNote) ? prevNote + "｜" + line : line;
+        }
     }
     // ⚠️ 四個 *History NVARCHAR 欄**不再由 PUT 寫入**（見 DB_table.md「History 欄位格式（已棄用）」）。
     // 軌跡自第 13 批起全部走 dbo.Controltable_History。原本照著前端送來的值回寫，
@@ -1501,6 +1669,8 @@ static DateTime? PhasePlannedEndOf(Requirement r, string phase)
 // ⚠️ 只看「最後一次規格回退之後」的紀錄，而且基準線必須是**同一個階段**的回退列 ——
 // 理由見下方 /done 端點裡原本那段註解（一個字都沒改，只是抽出來讓主要階段與
 // 「一併記錄的跳過階段」共用同一份 SQL）。app.jsx 的 phaseDoneEntry() 是同一套。
+// ⚠️ 第 66 批起基準線多一種 `撤銷完成`（/undo-done）：撤銷過的完成紀錄不再「有效」，
+//    否則撤銷之後那個階段會永遠 409、再也標不了完成。稽核列本身一筆都不刪。
 static async Task<bool> PhaseAlreadyDoneAsync(SqlConnection conn, SqlTransaction tx, int id, string phase)
 {
     using var dupCmd = new SqlCommand(@"
@@ -1509,10 +1679,32 @@ static async Task<bool> PhaseAlreadyDoneAsync(SqlConnection conn, SqlTransaction
           AND ChangeType IN (N'提早完成', N'延期完成')
           AND Id > ISNULL((SELECT MAX(Id) FROM dbo.Controltable_History
                            WHERE RequirementId = @Id AND Phase = @Phase
-                             AND ChangeType = N'規格回退'), 0)", conn, tx);
+                             AND ChangeType IN (N'規格回退', N'撤銷完成')), 0)", conn, tx);
     dupCmd.Parameters.AddWithValue("@Id", id);
     dupCmd.Parameters.AddWithValue("@Phase", phase);
     return Convert.ToInt32(await dupCmd.ExecuteScalarAsync()) > 0;
+}
+
+// 這個階段目前有效的 `提早完成` 紀錄（同一條基準線：最後一次 `規格回退`／`撤銷完成` 之後）。
+// 回 (完成日, 記錄時間)，沒有回 null。給 PUT 在「提早完成之後 End 又被改掉」時把落差寫進稽核列（第 71 批）
+static async Task<(string Completed, string ChangedAt)?> ValidEarlyDoneOfAsync(SqlConnection conn, SqlTransaction tx, int id, string phase)
+{
+    using var cmd = new SqlCommand(@"
+        SELECT TOP 1 NewEnd, NewConfirm, ChangedAt FROM dbo.Controltable_History
+        WHERE RequirementId = @Id AND Phase = @Phase
+          AND ChangeType = N'提早完成'
+          AND Id > ISNULL((SELECT MAX(Id) FROM dbo.Controltable_History
+                           WHERE RequirementId = @Id AND Phase = @Phase
+                             AND ChangeType IN (N'規格回退', N'撤銷完成')), 0)
+        ORDER BY Id DESC", conn, tx);
+    cmd.Parameters.AddWithValue("@Id", id);
+    cmd.Parameters.AddWithValue("@Phase", phase);
+    using var r = await cmd.ExecuteReaderAsync();
+    if (!await r.ReadAsync()) return null;
+    var completed = NormDate(phase == "confirm" ? ReadDate(r, "NewConfirm") : ReadDate(r, "NewEnd"));
+    var ord = r.GetOrdinal("ChangedAt");
+    var at = r.IsDBNull(ord) ? "" : r.GetDateTime(ord).ToString("yyyy-MM-dd HH:mm");
+    return completed == "" ? null : (completed, at);
 }
 
 // ─── 把「某一個階段完成了」寫進去（2026-09-10 / 第 60 批抽出）───
@@ -1610,8 +1802,10 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
     Requirement? cur = null;
     string curStage = "", curStatus = "";
     DateTime? plannedEnd = null;
+    // ⚠️ 四個 *ActualEnd 也要讀（第 68 批）：PrevPhaseEndOf() 拿它判「前一階段實際結束在哪一天」
     using (var readCmd = new SqlCommand($@"
-        SELECT NID, Status, StageCode, SpecStart, SpecEnd, MsdConfirm, MsdStart, MsdEnd, UatStart, UatEnd,
+        SELECT NID, Status, StageCode, SpecStart, SpecEnd, SpecActualEnd, MsdConfirm, MsdConfirmActualEnd,
+               MsdStart, MsdEnd, MsdActualEnd, UatStart, UatEnd, UatActualEnd,
                {cols.EndCol} AS PlannedEnd
         FROM dbo.Controltable WHERE Id = @Id AND IsDeleted = 0", conn, tx))
     {
@@ -1622,9 +1816,10 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
             cur = new Requirement
             {
                 nid = ReadString(r, "NID"),
-                spec = new Phase { start = ReadDate(r, "SpecStart"), end = ReadDate(r, "SpecEnd") },
-                msd  = new MsdPhase { confirm = ReadDate(r, "MsdConfirm"), start = ReadDate(r, "MsdStart"), end = ReadDate(r, "MsdEnd") },
-                uat  = new Phase { start = ReadDate(r, "UatStart"), end = ReadDate(r, "UatEnd") }
+                spec = new Phase { start = ReadDate(r, "SpecStart"), end = ReadDate(r, "SpecEnd"), actualEnd = ReadDate(r, "SpecActualEnd") },
+                msd  = new MsdPhase { confirm = ReadDate(r, "MsdConfirm"), confirmActualEnd = ReadDate(r, "MsdConfirmActualEnd"),
+                                      start = ReadDate(r, "MsdStart"), end = ReadDate(r, "MsdEnd"), actualEnd = ReadDate(r, "MsdActualEnd") },
+                uat  = new Phase { start = ReadDate(r, "UatStart"), end = ReadDate(r, "UatEnd"), actualEnd = ReadDate(r, "UatActualEnd") }
             };
             curStage = ReadString(r, "StageCode");
             curStatus = ReadString(r, "Status");
@@ -1658,7 +1853,30 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
     // 大小寫收了、空白沒收。`"Done "` 這種舊值會讓這行推不出 5，前端不給按的需求
     // 直接打 API 就會整個放行（詳見 StatusIs 上方的說明）
     if (curStageNum == 0 && StatusIs(curStatus, "Done")) curStageNum = 5;
-    if (curStageNum > 0 && cols.TargetStage - 1 < curStageNum)
+    // ─── 事後補記（第 70 批，2026-09-12 使用者選的）───
+    // 上面那道 guard 擋的是「已經走過的階段再按完成會推進 StatusID、計數多算」，但它指過去的出路
+    // （規格回退）第 60 批已經證實會清日期＋計數灌水，於是那些階段永遠停在「已略過此階段」——
+    // 匯入來的洞（NID 49 那種）也一直沒有出口。補記走的就是這條 guard 的反面：
+    //   · **只**接受已經走過的階段（沒走過的請走一般路徑，那條會推進 StatusID）
+    //   · StatusID / Status 一律不動（下方 newStage / newStatus 直接沿用目前值）
+    //   · 不收 alsoComplete（補記一次只做一個階段，鏈式範圍在這裡沒有意義）
+    //   · 完成日多一道上限：不可晚於下一階段實際結束的那一天（它已經走完了，這一階不可能比它晚）
+    //   · 重複檢查（PhaseAlreadyDoneAsync）與前一階段的下限照套 —— 計數欄的把關一條都不少
+    // ⚠️ StatusID 推不出來（0）時不給補記：無從判斷「走過了沒」，與第 33 批「空白一律不推斷」同一條
+    var backfill = body.backfill;
+    if (backfill)
+    {
+        if (curStageNum == 0)
+            return Results.BadRequest(new { message = "這筆需求的 StatusID 還沒設定，無法判斷這個階段是不是已經走過，不能事後補記。" });
+        if (cols.TargetStage - 1 >= curStageNum)
+            return Results.BadRequest(new
+            {
+                message = $"「{cols.Label}」還沒走過（目前 StatusID = {StageText(curStageNum.ToString())}），不是事後補記的對象；請用一般的「標記完成…」。"
+            });
+        if (body.alsoComplete != null && body.alsoComplete.Count > 0)
+            return Results.BadRequest(new { message = "事後補記一次只補一個階段，不能一併記錄其他階段。" });
+    }
+    if (!backfill && curStageNum > 0 && cols.TargetStage - 1 < curStageNum)
         return Results.BadRequest(new
         {
             // ⚠️ 訊息裡印的是 curStageNum 不是 curStage 原值 —— 上面的 Done → 5 推斷若沒有
@@ -1725,27 +1943,40 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
         {
             message = $"完成日不可以是未來的日期（{completed:yyyy-MM-dd} 晚於今天 {today:yyyy-MM-dd}）。"
         });
-    // 下限：有 Start 就是 Start（使用者要的是「今天 ~ Start 之間」），
-    // ② MSD確認中沒有 Start 欄、或 Start 根本沒填 → 退回**半年前**。
-    // ⚠️ Start 排在未來時要夾到今天，否則下限會大於上限、一天都選不到
-    //    （例：原訂 10/01 ~ 10/10，今天 9/20 就完成了）。這與下面那段
-    //    「提早完成時把 Start 一併夾到完成日」是同一個情境的兩半。
-    var startStr = PhaseDatesOf(cur, phase).start;
-    var startDate = ParseDate(startStr);
-    var floor = startDate.HasValue
-        ? (startDate.Value > today ? today : startDate.Value)
-        : today.AddMonths(-6);
-    if (completed < floor)
-        return Results.BadRequest(new
+    // 補記的第二道上限：下一階段已經走完（StatusID 在它後面）或至少壓了日期，這一階不可能比它更晚完成。
+    // 拿 max(下一階段的 End, 它的 ActualEnd)：延期完成的階段 End 不動、事實在 ActualEnd（與 PrevPhaseEndOf 同一套想法）。
+    // ⚠️ 提早完成會把這一階的 End 改成完成日，這道上限同時保證了 End 仍 ≤ 下一階段的 End（PhaseOrderViolations 不會被繞過）
+    // app.jsx 的 backfillMax() 是鏡像，改了要兩邊一起改
+    string? backfillCapLabel = null, backfillCap = null; var backfillCapActual = false;
+    if (backfill)
+    {
+        var (nLabel, nEnd) = NextPhaseEndOf(cur, phase);
+        if (nLabel != null)
         {
-            message = $"完成日 {completed:yyyy-MM-dd} 超出可選範圍。\n\n"
-                    + (startDate.HasValue
-                        ? $"「{cols.Label}」的開始日是 {startDate.Value:yyyy-MM-dd}，完成日不可以早於它。"
-                        : $"「{cols.Label}」沒有開始日，完成日最早只能回推到半年前（{floor:yyyy-MM-dd}）。")
-        });
-
-    // ⚠️ 「提早完成不可以把 End 拉到前一階段的 End 之前」那道檢查（第 22 批）**排在
-    //    alsoComplete 之後**，不在這裡 —— 第 61 批（2026-09-10）把順序調過來的理由見那一段。
+            var order = AllPhases();
+            var nAct = PhaseActualEndOf(cur, order[Array.IndexOf(order, phase) + 1]);
+            backfillCapActual = nAct != "" && (nEnd == null || string.CompareOrdinal(nAct, nEnd) > 0);
+            backfillCap = backfillCapActual ? nAct : nEnd;
+            backfillCapLabel = nLabel;
+        }
+        if (backfillCap != null && completed > ParseDate(backfillCap)!.Value)
+            return Results.BadRequest(new
+            {
+                message = $"「{cols.Label}」的完成日 {completed:yyyy-MM-dd} 晚於下一階段「{backfillCapLabel}」的"
+                        + $"{(backfillCapActual ? "實際完成日" : "日期")} {backfillCap}。\n\n這一階段不可能比後一階段更晚完成。"
+            });
+    }
+    // ⚠️ 下限**不再是這個階段的 Start**（2026-09-12 / 第 68 批）。第 58 批寫成「有 Start 就是 Start」，
+    //    但 ApplyStartDefaults() 早在存檔時就把沒填的 Start 補成 = End（本機 62 筆裡 58 筆 SpecStart = SpecEnd），
+    //    於是「③ 原訂 9/15、其實 9/9 就交了、9/20 才來補登」根本選不到 9/9 —— 只能記成準時 9/15：
+    //    EarlyCount 少算、End 停在原訂日而不是實際交件日，正是第 58 批要防的「補登被記錯」的另一半
+    //    （那一批只修了延期方向）。而 ② 沒有 Start 欄反而退回半年前，四個階段裡只有 ② 能補登提早。
+    //    使用者早就定調「Start 不重要」，拿它當界線本來就矛盾。
+    //    下限現在只有兩個來源，都排在 alsoComplete 之後算（前一階段就在清單裡時不套它）：
+    //      · 前一階段實際結束的那一天（PrevPhaseEndOf：max(原訂 End, ActualEnd)）—— 這一階段不可能比它更早完成
+    //      · 半年前（沒有前一階段、或它更早）—— 補登不該無限往回
+    //    Start 若比完成日晚，ApplyCompletionAsync 會一併夾到完成日並寫進稽核說明（那段本來就在）。
+    //    app.jsx 的 doneMainMin() / doneExtraBounds() 是**鏡像，改了要兩邊一起改**。
 
     // ─── 這一次點擊會跳過的階段，一併記成完成（2026-09-10 / 第 60 批，使用者要求）───
     // 使用者實際遇到的情況：② 已經壓了確認日 2026/09/08，但他沒按 ② 的「標記完成…」，
@@ -1850,19 +2081,18 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
         alsoStages.Sort((x, y) => x.Stage.CompareTo(y.Stage));
 
         // ─── 日期範圍：把要一併記的階段依代號排好、主要階段接在最後，形成一條鏈 ───
-        //   下限 = max(該階段的 Start／沒有就半年前, 前一列的完成日)
+        //   下限 = max(半年前, 前一列的完成日／第一列則是前一階段實際結束的那一天)
         //   上限 = min(今天, 下一列的完成日)
         // ⚠️⚠️ **上限少了「下一列的完成日」就會做出 MsdConfirm > MsdEnd**，之後
         //    PhaseOrderViolations 會把那筆需求整個鎖住，連改個現況描述都存不了。
         //    這兩個界線是拿鄰居的**完成日**去比，與下方那道 PrevPhaseEndOf
         //    「這一階段不可能比前一階段更早完成」是同一個道理的兩半。
+        // ⚠️ 第 68 批起下限不再看該階段的 Start（理由見主要階段那段）
         // ⚠️ app.jsx 完成視窗裡那段 min / max 是**鏡像，改了要兩邊一起改**。
         for (int i = 0; i < alsoStages.Count; i++)
         {
             var (astage, ap, alabel, adate) = alsoStages[i];
-            var astart = ParseDate(PhaseDatesOf(cur, ap).start);
-            // Start 排在未來時夾到今天，否則下限會大於上限、一天都選不到（與主要階段同一條）
-            var afloor = astart.HasValue ? (astart.Value > today ? today : astart.Value) : today.AddMonths(-6);
+            var afloor = today.AddMonths(-6);
             var aprev = i > 0 ? alsoStages[i - 1].Completed : ParseDate(PrevPhaseEndOf(cur, ap).End);
             if (aprev.HasValue && aprev.Value > afloor) afloor = aprev.Value;
             var aceil = i + 1 < alsoStages.Count ? alsoStages[i + 1].Completed : completed;
@@ -1899,22 +2129,42 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
     //      配上上一條可得 completed > 原訂日 —— 這道檢查要的結論自己就成立了。
     // ⚠️ 被上面「已經標記過完成」跳過的那幾階**不在 alsoStages 裡**，所以這道下限照樣套 ——
     //    那種階段的 End 已經定案，不是這一次會被覆蓋的值。
-    var isEarly = completed <= plannedEnd.Value;             // 同一天也算準時完成
+    // ⚠️ 第 68 批（2026-09-12）起這道下限**提早／延期都套**，而且比的是前一階段 **max(原訂 End, ActualEnd)**：
+    //    原本只在提早時比原訂 End（怕鎖住既有倒序資料），於是「② 延期到 9/10 才確認、③ 補登 9/05 完成」
+    //    整個放行 —— 這一支自己寫著「不可能比前一階段更早完成」，卻只做了一半。
+    //    既有倒序資料的顧慮：本機 8 筆倒序全是 StageCode 5（已結案，本來就按不到完成），
+    //    而且它是**這一次要寫入的完成日**在比，不是舊值 —— 使用者永遠可以選一個合法的日期。
     var completedStr = completed.ToString("yyyy-MM-dd");
     // 前一階段自己的代號 = 主要階段的代號 - 1 = (TargetStage - 1) - 1
     var prevAlsoListed = alsoStages.Any(x => x.Stage == cols.TargetStage - 2);
-    if (isEarly && !prevAlsoListed)
+    var floor = today.AddMonths(-6);
+    var floorFromPrev = false;
+    var (prevLabel, prevEnd, prevIsActual) = PrevPhaseEndOf(cur, phase);
+    if (!prevAlsoListed && prevEnd != null && ParseDate(prevEnd) is DateTime pe && pe > floor)
     {
-        var (prevLabel, prevEnd) = PrevPhaseEndOf(cur, phase);
-        if (prevEnd != null && string.CompareOrdinal(completedStr, prevEnd) < 0)
+        floor = pe;
+        floorFromPrev = true;
+    }
+    if (completed < floor)
+    {
+        if (!floorFromPrev)
             return Results.BadRequest(new
             {
-                message = $"「{cols.Label}」提早完成會把{(phase == "confirm" ? "確認日" : "結束日")}更新為 {completedStr}，"
-                        + $"但前一階段「{prevLabel}」的日期是 {prevEnd}，還在那之後。\n\n"
-                        + "這樣會做出「後面的階段比前面的階段早完成」的資料，之後那筆需求連改都改不動。\n\n"
-                        + $"請先確認「{prevLabel}」的日期是否正確"
-                        + $"，或在完成視窗上把「{prevLabel}」也一併記成完成。"
+                message = $"完成日 {completedStr} 超出可選範圍。\n\n補登最早只能回推到半年前（{floor:yyyy-MM-dd}）。"
             });
+        // 前一階段的原訂日還排在未來時，「一併記成完成」那條路走不到（後端不收原訂日在未來的），
+        // 出路只有「先確認它的日期」；已經到了就兩條都講
+        var prevInFuture = !prevIsActual && floor > today;
+        return Results.BadRequest(new
+        {
+            message = $"「{cols.Label}」的完成日 {completedStr} 早於前一階段「{prevLabel}」的"
+                    + $"{(prevIsActual ? "實際完成日" : "日期")} {prevEnd}。\n\n"
+                    + "這一階段不可能比前一階段更早完成"
+                    + (prevIsActual ? "" : "，而且提早完成會把日期更新成完成日，做出「後面的階段比前面早」的資料，之後那筆需求連改都改不動")
+                    + "。\n\n"
+                    + $"請先確認「{prevLabel}」的{(prevIsActual ? "實際完成日" : "日期")}是否正確"
+                    + (prevInFuture ? $"（它還排在今天之後）。" : $"，或在完成視窗上把「{prevLabel}」也一併記成完成。")
+        });
     }
 
     var (actor, actorSrc) = ResolveActor(new Requirement { actorEmpId = body.actorEmpId, actorSource = body.actorSource });
@@ -1931,16 +2181,21 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
         if (!one.Ok) return Results.NotFound(new { message = "找不到該筆需求（可能已被刪除）。" });
     }
 
+    // 補記的稽核列固定帶這個標記：/undo-done 撤銷它時 StatusID **不可以**退（那筆完成從來沒有推進過 StatusID），
+    // 靠的就是這幾個字；前端撤銷視窗同樣看它。⚠️ 改了字要三邊一起改（/undo-done 的 Contains、app.jsx 的 includes）
+    var backfillNote = backfill ? $"（事後補記：StatusID 已在 {StageText(curStageNum.ToString())}，不變）" : null;
     var main = await ApplyCompletionAsync(conn, tx, id, cur, phase, plannedEnd.Value, completed, today,
-                                          null, actor, actorSrc);
+                                          backfillNote, actor, actorSrc);
     if (!main.Ok) return Results.NotFound(new { message = "找不到該筆需求（可能已被刪除）。" });
 
     // StatusID 只前進不後退（curStageNum 已在上面的「走過的階段」檢查算好，共用同一個值）。
     // ⚠️ 只由**主要階段**決定 —— 一併記錄的那幾個階段不參與，那是第 60 批的核心不變量
-    var newStage = Math.Max(curStageNum, cols.TargetStage);
+    // ⚠️ 事後補記一律不動 StatusID / Status（那個階段早就走過了，補的只是紀錄與計數）
+    var newStage = backfill ? curStageNum : Math.Max(curStageNum, cols.TargetStage);
     // OverallStatus 連動：推到 5 就是結案；離開第 1 階段就從 Init 轉 Ongoing。
     // 其餘情況保留原值不覆蓋（Pending 已於 2026-08-22 移除，這條規則本身不變）
-    var newStatus = newStage >= 5 ? "Done"
+    var newStatus = backfill ? curStatus
+        : newStage >= 5 ? "Done"
         : (string.IsNullOrWhiteSpace(curStatus) || StatusIs(curStatus, "Init"))
             ? "Ongoing" : curStatus;
     using (var upd = new SqlCommand(@"
@@ -1965,7 +2220,10 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
     {
         // 一併記錄了哪幾個階段一定要講出來 —— 那幾筆是系統替使用者宣告的事實，
         // 只在視窗上問過、成功訊息卻不提的話，等於問完就把答案藏起來（第 60 批）
-        message = $"「{cols.Label}」已標記為{main.ChangeType}"
+        // 準時（完成日 == 原訂日）的 ChangeType 仍是 `提早完成`（第 20 批），但 toast 要照視窗上剛講過的字印
+        // 「準時完成」（第 71 批）—— 前端的標籤同樣印「準時完成」（app.jsx 的 entryLabelOf），三邊一組字
+        message = (backfill ? $"「{cols.Label}」已事後補記為{(main.Days == 0 && main.ChangeType == "提早完成" ? "準時完成" : main.ChangeType)}（StatusID 維持 {StageText(curStageNum.ToString())}）"
+                            : $"「{cols.Label}」已標記為{(main.Days == 0 && main.ChangeType == "提早完成" ? "準時完成" : main.ChangeType)}")
                 + (alsoStages.Count > 0
                     ? $"，並一併記錄「{string.Join("」「", alsoStages.Select(x => x.Label))}」完成"
                     : "")
@@ -1979,6 +2237,7 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
         days = main.Days,
         actualEnd = main.CompletedStr,
         backdated = completed != today,
+        backfill,
         plannedEnd = plannedEnd.Value.ToString("yyyy-MM-dd"),
         stageCode = newStage.ToString(),
         status = newStatus,
@@ -2031,9 +2290,14 @@ app.MapPost("/api/requirements/{id}/rollback", async (int id, RollbackRequest bo
     {
     Requirement? cur = null;
     string curStageRaw = "", curStatus = "";
+    // ⚠️ 四個 *ActualEnd 也要讀（第 69 批，2026-09-12）：回退會把它們一起清掉（StageDatesOf 的欄位表含 ActualCol），
+    //    但稽核列的快照只有 Start／End／Confirm —— 延期完成過的階段被回退後，資料列的 ⏰N 還在（計數是既成事實）、
+    //    「→ 實際 X」那行卻消失了，而回退那張卡只寫「結束 X → 未填」。同一件事走 PUT 改 End 那條路是有講的
+    //    （第 21 批「先前記錄的實際完成日 X 已一併清除」），只有這條路沒留話
     using (var readCmd = new SqlCommand(@"
         SELECT NID, Status, StageCode,
-               SpecStart, SpecEnd, MsdConfirm, MsdStart, MsdEnd, UatStart, UatEnd
+               SpecStart, SpecEnd, SpecActualEnd, MsdConfirm, MsdConfirmActualEnd,
+               MsdStart, MsdEnd, MsdActualEnd, UatStart, UatEnd, UatActualEnd
         FROM dbo.Controltable WHERE Id = @Id AND IsDeleted = 0", conn, tx))
     {
         readCmd.Parameters.AddWithValue("@Id", id);
@@ -2043,9 +2307,10 @@ app.MapPost("/api/requirements/{id}/rollback", async (int id, RollbackRequest bo
             cur = new Requirement
             {
                 nid = ReadString(r, "NID"),
-                spec = new Phase { start = ReadDate(r, "SpecStart"), end = ReadDate(r, "SpecEnd") },
-                msd  = new MsdPhase { confirm = ReadDate(r, "MsdConfirm"), start = ReadDate(r, "MsdStart"), end = ReadDate(r, "MsdEnd") },
-                uat  = new Phase { start = ReadDate(r, "UatStart"), end = ReadDate(r, "UatEnd") }
+                spec = new Phase { start = ReadDate(r, "SpecStart"), end = ReadDate(r, "SpecEnd"), actualEnd = ReadDate(r, "SpecActualEnd") },
+                msd  = new MsdPhase { confirm = ReadDate(r, "MsdConfirm"), confirmActualEnd = ReadDate(r, "MsdConfirmActualEnd"),
+                                      start = ReadDate(r, "MsdStart"), end = ReadDate(r, "MsdEnd"), actualEnd = ReadDate(r, "MsdActualEnd") },
+                uat  = new Phase { start = ReadDate(r, "UatStart"), end = ReadDate(r, "UatEnd"), actualEnd = ReadDate(r, "UatActualEnd") }
             };
             curStatus = ReadString(r, "Status");
             curStageRaw = ReadString(r, "StageCode");
@@ -2059,13 +2324,50 @@ app.MapPost("/api/requirements/{id}/rollback", async (int id, RollbackRequest bo
     if (curStage == 0 && StatusIs(curStatus, "Done")) curStage = 5;
     if (curStage == 0)
         return Results.BadRequest(new { message = "這筆需求的 StatusID 還沒設定，無法判斷要從哪個階段回退。" });
-    if (target >= curStage)
-        return Results.BadRequest(new { message = $"回退目標必須早於目前階段（目前 StatusID = {curStage}）。" });
+    // 目標可以是「目前這一階段自己」（第 70 批，2026-09-12，使用者選的）：StatusID=3、③④ 都壓了日期、
+    // 規格變了要重做 ③ —— 在此之前最少只能退到 ②，把走完的 ② 一起清掉、StatusID 退到 2；不然只能解鎖 ③④
+    // 逐一清空（兩筆 `日期異動`、⚠N +2、RollbackCount 不動 —— 一次規格變更被記成兩次無理由的異動）。
+    // 「回退到 ② ＝ ② 這個確認要重做」的語意本來就能套到目前階段：清空範圍仍是 ≥ 目標、StatusID 維持不變。
+    // ⚠️ 目標超過目前階段仍然不行：那不是「重做」，是把還沒走到的階段清掉，解鎖清空就夠了
+    if (target > curStage)
+        return Results.BadRequest(new { message = $"回退目標不可以晚於目前階段（目前 StatusID = {curStage}）；後面還沒走到的階段，直接解鎖清空日期即可。" });
+    // 呼叫端看到的「目前階段」要對得上（第 68 批，與 /undo-done 的 historyId 同一條）。
+    // 清空的範圍（≥ target）不受影響，差的是稽核列的「由 X 回退」與使用者以為會清掉什麼 ——
+    // 別人在另一台已經把 ③ 標完成了，這一次回退會連那筆完成一起清掉，而視窗上沒有提。
+    // ⚠️ 沒帶（null）才跳過，帶了就要相等
+    if (body.fromStage is int wantFrom && wantFrom != curStage)
+        return Results.Conflict(new
+        {
+            message = $"這筆需求在你開啟編輯視窗之後已經被其他人動過了（StatusID 現在是 {StageText(curStage.ToString())}，"
+                    + $"不是畫面上的 {StageText(wantFrom.ToString())}）。\n\n"
+                    + "為了避免清掉別人剛做的事，這次回退被擋下。請關閉視窗重新載入，確認最新內容後再決定要不要回退。",
+            conflict = true
+        });
 
     // ── 先把快照寫進稽核表，再清空。順序不能反，清掉就拿不回來了 ──
     var (actor, actorSrc) = ResolveActor(new Requirement { actorEmpId = body.actorEmpId, actorSource = body.actorSource });
     var curLabel = curStage == 5 ? "5_結案" : StageDatesOf(curStage).Label;
-    var note = $"由 {curLabel} 回退至 {StageDatesOf(target).Label}：{body.note!.Trim()}";
+    // 目標＝目前階段時不可以印「由 X 回退至 X」（同一個名字寫兩次讀起來像壞掉，第 59 批那條）
+    var note = target == curStage
+        ? $"{curLabel} 重做（StatusID 不變，清空這一階段（含）以後的日期）：{body.note!.Trim()}"
+        : $"由 {curLabel} 回退至 {StageDatesOf(target).Label}：{body.note!.Trim()}";
+    // 被清掉的實際完成日一併寫進說明（第 69 批）。
+    // ⚠️ 一定要寫在**所有快照列共用的**這一句 note 裡、不可以逐階段各補 —— 前端 changeGroups
+    //    把「型別／時間／人／分類／說明」五項全同的相鄰列併成一張卡（第 35 批），逐階段補會讓
+    //    四筆快照的說明不同，一次回退又被畫成四件事。
+    var clearedActual = new List<string>();
+    for (int s = target; s <= 4; s++)
+    {
+        var (p, label, _) = StageDatesOf(s);
+        var act = NormDate(p switch
+        {
+            "spec" => cur.spec?.actualEnd, "confirm" => cur.msd?.confirmActualEnd,
+            "msd" => cur.msd?.actualEnd, "uat" => cur.uat?.actualEnd, _ => null
+        });
+        if (act != "") clearedActual.Add($"{label} {act}");
+    }
+    if (clearedActual.Count > 0)
+        note += $"（一併清除實際完成日：{string.Join("、", clearedActual)}；延期／提早次數是既成事實，不會跟著回退）";
     var empty = ((string?)null, (string?)null, (string?)null);
 
     var cleared = new List<string>();
@@ -2106,11 +2408,276 @@ app.MapPost("/api/requirements/{id}/rollback", async (int id, RollbackRequest bo
 
     return Results.Ok(new
     {
-        message = $"已回退至「{StageDatesOf(target).Label}」",
+        message = target == curStage
+            ? $"已清空「{StageDatesOf(target).Label}」（含）以後的日期，StatusID 不變，請重新壓日期"
+            : $"已回退至「{StageDatesOf(target).Label}」",
         fromStage = curStage,
         targetStage = target,
         status = newStatus,
         clearedColumns = cleared
+    });
+    }
+    catch
+    {
+        // 早退（BadRequest / NotFound）走 return，交易由 using 的 Dispose 回捲
+        try { tx.Rollback(); } catch { /* 連線已斷，交易由 SQL Server 自行回捲 */ }
+        throw;
+    }
+});
+
+// ─── 撤銷上一次標記完成（2026-09-11 / 第 66 批，使用者要求）───
+// 誤按「標記完成…」在此之前只有兩條路，兩條都不對：手動把 StatusID 改回去（第 66 批 H2 起
+// 已經不給改，而且它留著 ActualEnd 與完成紀錄、計數欄也不動）、或「規格回退」
+// （清掉整段日期、RollbackCount +1 —— 宣稱發生過一次根本沒有的規格變更）。
+//
+// 語意：**只撤銷「最後一筆有效的完成紀錄」那一格**，LIFO。
+//   · 有效 = 那個階段最後一次 `規格回退`／`撤銷完成` 之後的 `提早完成`／`延期完成`
+//     （與 PhaseAlreadyDoneAsync / 前端 phaseDoneEntry() 同一條基準線）
+//   · 主要階段與「一併記錄」的階段各是一筆，寫入順序是代號遞增、主要階段最後，
+//     所以第一次撤銷的一定是使用者真的按下去的那一個；再按一次才輪到一併記錄的
+//   · 提早完成：End（②＝確認日）還原成稽核列的舊值、被夾過的 Start 一併還原、
+//     EarlyCount 減 1（**準時完成沒加過就不減**）
+//   · 延期完成：ActualEnd 清掉、DelayCount 減 1（原訂日本來就沒動）
+//   · StatusID 退到那個階段自己（只往回、不往前）；退出 5 時 Status 由 Done 轉 Ongoing
+//   · 原訂日期一律不動（撤銷的是「完成」這件事，不是排程）
+// ⚠️ End 在標記完成**之後**又被改過（解鎖修改，PUT 會順手清掉 ActualEnd）就**不還原**，
+//    只在稽核列講出來 —— 還原會把使用者後來的修改靜靜蓋掉。
+// ⚠️ 稽核列一筆都不刪：寫一筆 `撤銷完成`，Old = 撤銷前、New = 還原後。之後那筆完成紀錄
+//    就不再「有效」（PhaseAlreadyDoneAsync 的基準線含 `撤銷完成`），可以重新標記完成。
+// ⚠️ 計數欄用 CASE 夾住不小於 0：匯入來的資料計數欄與稽核表本來就可能對不上。
+app.MapPost("/api/requirements/{id}/undo-done", async (int id,
+    [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] UndoDoneRequest? body) =>
+{
+    using var conn = new SqlConnection(connectionString);
+    await conn.OpenAsync();
+    using var tx = conn.BeginTransaction();
+    try
+    {
+    Requirement? cur = null;
+    string curStageRaw = "", curStatus = "";
+    using (var readCmd = new SqlCommand(@"
+        SELECT NID, Status, StageCode,
+               SpecStart, SpecEnd, SpecActualEnd, MsdConfirm, MsdConfirmActualEnd,
+               MsdStart, MsdEnd, MsdActualEnd, UatStart, UatEnd, UatActualEnd
+        FROM dbo.Controltable WHERE Id = @Id AND IsDeleted = 0", conn, tx))
+    {
+        readCmd.Parameters.AddWithValue("@Id", id);
+        using var r = await readCmd.ExecuteReaderAsync();
+        if (await r.ReadAsync())
+        {
+            cur = new Requirement
+            {
+                nid = ReadString(r, "NID"),
+                spec = new Phase { start = ReadDate(r, "SpecStart"), end = ReadDate(r, "SpecEnd"), actualEnd = ReadDate(r, "SpecActualEnd") },
+                msd  = new MsdPhase { confirm = ReadDate(r, "MsdConfirm"), confirmActualEnd = ReadDate(r, "MsdConfirmActualEnd"),
+                                      start = ReadDate(r, "MsdStart"), end = ReadDate(r, "MsdEnd"), actualEnd = ReadDate(r, "MsdActualEnd") },
+                uat  = new Phase { start = ReadDate(r, "UatStart"), end = ReadDate(r, "UatEnd"), actualEnd = ReadDate(r, "UatActualEnd") }
+            };
+            curStatus = ReadString(r, "Status");
+            curStageRaw = ReadString(r, "StageCode");
+        }
+    }
+    if (cur == null) return Results.NotFound(new { message = "找不到該筆需求（可能已被刪除）。" });
+
+    // 最後一筆有效的完成紀錄（跨階段取 Id 最大的那一筆 = 最後按下去的那一個）
+    int hid = 0; string phase = "", changeType = "", changedAt = "", hNote = "";
+    (string? start, string? end, string? confirm) oldH = (null, null, null), newH = (null, null, null);
+    using (var hCmd = new SqlCommand(@"
+        SELECT TOP 1 h.Id, h.Phase, h.ChangeType, h.OldStart, h.OldEnd, h.OldConfirm, h.NewStart, h.NewEnd, h.NewConfirm, h.ChangedAt, h.Note
+        FROM dbo.Controltable_History h
+        WHERE h.RequirementId = @Id
+          AND h.ChangeType IN (N'提早完成', N'延期完成')
+          AND h.Id > ISNULL((SELECT MAX(b.Id) FROM dbo.Controltable_History b
+                             WHERE b.RequirementId = @Id AND b.Phase = h.Phase
+                               AND b.ChangeType IN (N'規格回退', N'撤銷完成')), 0)
+        ORDER BY h.Id DESC", conn, tx))
+    {
+        hCmd.Parameters.AddWithValue("@Id", id);
+        using var r = await hCmd.ExecuteReaderAsync();
+        if (await r.ReadAsync())
+        {
+            hid = r.GetInt32(r.GetOrdinal("Id"));
+            phase = ReadString(r, "Phase");
+            changeType = ReadString(r, "ChangeType");
+            oldH = (ReadDate(r, "OldStart"), ReadDate(r, "OldEnd"), ReadDate(r, "OldConfirm"));
+            newH = (ReadDate(r, "NewStart"), ReadDate(r, "NewEnd"), ReadDate(r, "NewConfirm"));
+            var ord = r.GetOrdinal("ChangedAt");
+            changedAt = r.IsDBNull(ord) ? "" : r.GetDateTime(ord).ToString("yyyy-MM-dd HH:mm");
+            hNote = ReadString(r, "Note");
+        }
+    }
+    if (hid == 0)
+        return Results.BadRequest(new { message = "這筆需求沒有可以撤銷的完成紀錄（最後一次規格回退之後沒有任何階段被標記完成，或都已撤銷）。" });
+
+    // ─── 呼叫端「以為要撤的是哪一筆」要對得上（2026-09-12 / 第 68 批）───
+    // 這一支自己挑「Id 最大的有效完成紀錄」，在此之前完全不看呼叫端說的是哪一筆。
+    // A 開著視窗看到 ② 旁的「撤銷」、B 在另一台把 ③ 標完成 → A 按下去撤掉的是 B 剛做的 ③，
+    // A 的視窗寫的卻是 ②，而且 B 不會知道。PUT 有 updatedAtToken、/done 有 PhaseAlreadyDone
+    // 與「已走過」兩道擋，只有這一支什麼都沒有。
+    // ⚠️ 與樂觀鎖同一條界線：**沒帶**（null）才跳過 —— curl／測試腳本照常可用；帶了就要相等。
+    var cols = DoneColumnsOf(phase);
+    if (body?.historyId is int wantId && wantId != hid)
+        return Results.Conflict(new
+        {
+            message = "這筆需求在你開啟編輯視窗之後已經被其他人動過了（最後一筆完成紀錄不是畫面上那一筆，"
+                    + $"現在是「{cols.Label}」的{changeType}）。\n\n"
+                    + "為了避免撤銷到別人剛做的事，這次撤銷被擋下。請關閉視窗重新載入，確認最新內容後再決定要不要撤銷。",
+            conflict = true
+        });
+    if (cols.TargetStage == 0)
+        return Results.BadRequest(new { message = $"稽核列 #{hid} 的階段「{phase}」無法辨識，不能撤銷。" });
+    var stage = cols.TargetStage - 1;
+    var word = phase == "confirm" ? "確認日" : "結束日";
+    var isEarly = changeType == "提早完成";
+
+    // 稽核列上記的：Old = 原訂、New = 完成日（提早時 End 被改成它；延期時它只寫進 ActualEnd）
+    var plannedH   = NormDate(phase == "confirm" ? oldH.confirm : oldH.end);
+    var completedH = NormDate(phase == "confirm" ? newH.confirm : newH.end);
+    var curD = PhaseDatesOf(cur, phase);
+    var curEnd = NormDate(phase == "confirm" ? curD.confirm : curD.end);
+    var curStart = NormDate(curD.start);
+    var curActual = NormDate(phase switch
+    {
+        "spec" => cur.spec?.actualEnd, "confirm" => cur.msd?.confirmActualEnd,
+        "msd" => cur.msd?.actualEnd, "uat" => cur.uat?.actualEnd, _ => null
+    });
+
+    var sets = new List<string>();
+    var notes = new List<string>();
+    var restoredEnd = curEnd;
+    var restoredStart = curStart;
+    DateTime? pOldEnd = ParseDate(plannedH), pOldStart = ParseDate(oldH.start);
+    if (isEarly)
+    {
+        if (plannedH != "" && curEnd == completedH)
+        {
+            sets.Add($"{cols.EndCol} = @OldEnd");
+            restoredEnd = plannedH;
+            // 準時完成時完成日 == 原訂日，不可以印「由 X 還原為 X」（第 59 批那條）
+            notes.Add(curEnd == plannedH ? $"{word}維持 {curEnd}（準時完成，原訂日沒被改過）"
+                                         : $"{word} {curEnd} 還原為原訂 {plannedH}");
+        }
+        else if (curEnd != completedH)
+            notes.Add($"{word}在標記完成之後已被改成 {(curEnd == "" ? "空白" : curEnd)}，未還原");
+        else
+            notes.Add($"{word}維持 {curEnd}");
+
+        // 提早完成時被夾到完成日的 Start 一併還原（同樣只在它沒有再被改過時）
+        // ⚠️ 還原後的 Start 不可以晚於**生效的** End（第 70 批，2026-09-12）。上面那條「End 在標記完成
+        //    之後又被改過就不還原」成立時 restoredEnd 是使用者改過的值，而原本的 Start 是相對於**原訂 End**
+        //    的 —— 照樣還原就做出 Start > End。實測 ZZ70-A：① 原訂 09-10、補登 09-01（Start 09-05 夾成 09-01）
+        //    → 解鎖把 End 改成 09-03 → 撤銷 → SpecStart 09-05 > SpecEnd 09-03，之後那筆連改個現況描述
+        //    都被 InvalidDateRanges 擋成 400，而畫面上沒有任何一格解釋得了。
+        //    End 有還原時 origStart ≤ 原訂 End 本來就成立，這道檢查只會在「End 沒還原」那條路上出手。
+        if (cols.StartCol != "" && NormDate(oldH.start) != "" && NormDate(oldH.start) != NormDate(newH.start))
+        {
+            var origStart = NormDate(oldH.start);
+            if (curStart != NormDate(newH.start))
+                // 被夾過、之後又被使用者改掉（`起日調整`）→ 不還原。前端撤銷視窗有這一句（startRestore 'modified'），
+                // 稽核列在此之前完全沒寫 —— 事後看會以為撤銷沒碰開始日是因為當初沒夾過（第 71 批）
+                notes.Add($"開始日在標記完成之後已被改成 {(curStart == "" ? "空白" : curStart)}，維持改過的值、不還原");
+            else if (restoredEnd != "" && string.CompareOrdinal(origStart, restoredEnd) > 0)
+                notes.Add($"開始日維持 {curStart}（原本的開始日 {origStart} 晚於目前的{word} {restoredEnd}，還原會變成開始日晚於結束日）");
+            else
+            {
+                sets.Add($"{cols.StartCol} = @OldStart");
+                restoredStart = origStart;
+                notes.Add($"開始日 {curStart} 還原為 {restoredStart}");
+            }
+        }
+
+        // 準時（完成日 == 原訂日）當初沒有加過 EarlyCount，就不減
+        if (completedH != "" && plannedH != "" && string.CompareOrdinal(completedH, plannedH) < 0)
+        {
+            sets.Add("EarlyCount = CASE WHEN EarlyCount > 0 THEN EarlyCount - 1 ELSE 0 END");
+            notes.Add("提早次數減 1");
+        }
+        else notes.Add("當初為準時完成，未計入提早次數，不必減");
+
+        // ─── 還原 End 不可以把它抬到下一階段的 End 之後（2026-09-11 / 第 67 批）───
+        // 提早完成把 End 壓成完成日之後，下一階段的日期是可以（也合法地）壓在
+        // [完成日, 原訂日) 之間的 —— PUT 的 PhaseOrderViolations 比的是**當時**的 End。
+        // 這裡若照樣把 End 抬回原訂日，就做出「① 09-10、② 09-03」這種倒序資料：
+        // 之後任何人碰到那兩欄都會被「階段日期的先後順序不合理」擋住（要同時改才過得了），
+        // 而資料列的 resolveDuePhase 會挑到日期最早的 ② 標成「最急」，StatusID 卻寫著 1。
+        // 實測（ZZ67-A）：① 原訂 09-10 提早 09-01 完成 → ② 壓 09-03 → 撤銷 → 改 ② 回 400。
+        // ⚠️ 選「擋下並講清楚」而不是「夾到下一階段的 End」：撤銷是「誤按」的出口，
+        //    使用者要的是還原，靜靜夾成另一個值會讓「還原」變成半真半假，而且那個值
+        //    不是任何人排過的日期。只在**真的要還原 End** 時才驗（End 已被改過就不還原、也不驗）。
+        if (restoredEnd != curEnd)
+        {
+            var (nextLabel, nextEnd) = NextPhaseEndOf(cur, phase);
+            if (nextEnd != null && string.CompareOrdinal(restoredEnd, nextEnd) > 0)
+                return Results.BadRequest(new
+                {
+                    message = $"撤銷會把「{cols.Label}」的{word}由 {curEnd} 還原為原訂 {restoredEnd}，"
+                            + $"但下一階段「{nextLabel}」的日期已經壓在 {nextEnd}，還原後會變成「後面的階段比前面早」，"
+                            + "之後那兩欄連改都改不動。\n\n"
+                            + $"請先把「{nextLabel}」的日期改到 {restoredEnd} 之後（或先清掉）再撤銷；"
+                            + $"若「{cols.Label}」真的要重做，請改用「🔄 規格回退」。",
+                    fields = new[] { nextLabel }
+                });
+        }
+    }
+    else
+    {
+        sets.Add($"{cols.ActualCol} = NULL");
+        notes.Add(curActual == "" ? $"實際完成日先前已被清過，原訂{word} {curEnd} 不動"
+                                  : $"實際完成日 {curActual} 已清除，原訂{word} {curEnd} 不動");
+        sets.Add("DelayCount = CASE WHEN DelayCount > 0 THEN DelayCount - 1 ELSE 0 END");
+        notes.Add("延期次數減 1");
+    }
+
+    // StatusID 只往回退到那個階段自己；已經在它前面（不該發生）就不動
+    var curStage = int.TryParse(NormStage(curStageRaw), out var cs) ? cs : 0;
+    if (curStage == 0 && StatusIs(curStatus, "Done")) curStage = 5;
+    // ⚠️ 事後補記的完成紀錄（第 70 批）從來沒有推進過 StatusID，撤銷它時 StatusID 也**不可以退** ——
+    //    StatusID 4 時補記 ②、再撤銷，退回 2 等於把 ③ 走過的事實一起抹掉。判斷靠稽核列 Note 裡
+    //    /done 寫死的那幾個字（與「未確認送出」同一種做法，app.jsx 撤銷視窗看同一個字串）
+    var wasBackfill = hNote.Contains("事後補記");
+    var newStage = (!wasBackfill && curStage > stage) ? stage : curStage;
+    var newStatus = (newStage < 5 && StatusIs(curStatus, "Done")) ? "Ongoing" : curStatus;
+    notes.Insert(0, newStage != curStage
+        ? $"StatusID {StageText(curStage.ToString())} → {StageText(newStage.ToString())}"
+        : wasBackfill ? $"StatusID 維持 {StageText(curStage.ToString())}（那筆是事後補記，沒有推進過 StatusID）"
+                      : $"StatusID 維持 {StageText(curStage.ToString())}");
+
+    var (actor, actorSrc) = ResolveActor(new Requirement { actorEmpId = body?.actorEmpId, actorSource = body?.actorSource });
+    var userNote = (body?.note ?? "").Trim();
+    var note = $"撤銷「{cols.Label}」的{changeType}紀錄（稽核 #{hid}，{changedAt}，完成日 {completedH}）"
+             + (userNote.Length > 0 ? $"：{userNote}" : "")
+             + "；" + string.Join("；", notes);
+    static string? Nz(string s) => s == "" ? null : s;
+    var oldD = phase == "confirm" ? ((string?)null, (string?)null, Nz(curEnd))
+                                  : (Nz(curStart), Nz(curEnd), (string?)null);
+    var newD = phase == "confirm" ? ((string?)null, (string?)null, Nz(restoredEnd))
+                                  : (Nz(restoredStart), Nz(restoredEnd), (string?)null);
+    await InsertHistoryAsync(conn, id, cur.nid, phase, "撤銷完成", null, note, actor, actorSrc, oldD, newD, tx);
+
+    sets.Add("StageCode = @Stage");
+    sets.Add("Status = @Status");
+    using (var upd = new SqlCommand($@"
+        UPDATE dbo.Controltable
+        SET {string.Join(", ", sets)}, UpdatedAt = SYSDATETIME()
+        WHERE Id = @Id AND IsDeleted = 0", conn, tx))
+    {
+        if (pOldEnd.HasValue) upd.Parameters.Add("@OldEnd", SqlDbType.Date).Value = pOldEnd.Value;
+        if (pOldStart.HasValue) upd.Parameters.Add("@OldStart", SqlDbType.Date).Value = pOldStart.Value;
+        upd.Parameters.AddWithValue("@Stage", newStage.ToString());
+        upd.Parameters.AddWithValue("@Status", NormStatusWrite(newStatus) ?? (object)DBNull.Value);
+        upd.Parameters.AddWithValue("@Id", id);
+        if (await upd.ExecuteNonQueryAsync() == 0)
+            return Results.NotFound(new { message = "找不到該筆需求（可能已被刪除）。" });
+    }
+
+    tx.Commit();
+
+    return Results.Ok(new
+    {
+        message = $"已撤銷「{cols.Label}」的{changeType}紀錄" + (newStage != curStage ? $"，StatusID 退回 {StageText(newStage.ToString())}" : ""),
+        phase, label = cols.Label, changeType, historyId = hid,
+        fromStage = curStage, toStage = newStage, status = newStatus,
+        details = notes
     });
     }
     catch
@@ -2141,22 +2708,20 @@ static (string Side, string? End, string? Actual) StageSideOf(Requirement r, int
     _ => ("", null, null)
 };
 
-// app.jsx 的 isPhasePassed()。⚠️ ③ 與 ④ 刻意沒有「下一階段有日期就算走完」的補救條件 ——
-// ④ 的驗收日 EMS 可以一開始就先壓一個預設值，壓了不代表 ③ 已經開發完（見 app.jsx 那段說明）
+// app.jsx 的 isPhasePassed()。**走完了沒只看 StatusID**：stage < StatusID 就是走完了。
+// ⚠️ 第 65 批把「下一階段有日期 → 這一階段走完」的反推收窄成只給 StageCode 空白的舊資料，
+//    第 66 批（2026-09-11）連那個例外也拿掉了：`17_stagecode_not_null.sql` 之後庫裡沒有空白的
+//    StageCode，匯入時空白由 InferStageCode() 推一次寫進去 —— 畫面與寄信這一側再也不推。
+// ⚠️ 「有 ActualEnd 就算走完」留著當保險：第 66 批 H2 之後手動 StatusID 不能往回、
+//    回退與撤銷都會清 ActualEnd，所以正常路徑上 stage ≥ StatusID 的階段不會有 ActualEnd，
+//    這一條實際上只會在髒資料上生效。
 static bool StagePassed(Requirement r, int stage)
 {
     if (StatusIs(r.status, "Done")) return true;
     var (_, _, actual) = StageSideOf(r, stage);
     if (NormDate(actual) != "") return true;            // 有實際完成日就一定走完了
     var stageNum = int.TryParse(NormStage(r.stageCode), out var n) ? n : 0;
-    return stage switch
-    {
-        1 => NormDate(r.msd?.confirm) != "" || stageNum >= 2,
-        2 => NormDate(r.msd?.start) != "" || NormDate(r.msd?.end) != "" || stageNum >= 3,
-        3 => stageNum >= 4,
-        4 => stageNum >= 5,
-        _ => false
-    };
+    return stage < stageNum;
 }
 
 // StatusID 走到哪一階段、那一階段自己就沒有日期 → 回傳那個階段。
@@ -2210,13 +2775,15 @@ static async Task<string> AssigneeEmailAsync(SqlConnection conn, string dept, st
     return v == null || v == DBNull.Value ? "" : ((string)v).Trim();
 }
 
-// 寄出一封純文字通知信。
+// 寄出一封通知信（純文字 + HTML 兩種格式一起附，見端點的 4b）。
 // 回傳：Error != null → **確定失敗**；Uncertain == true → 送出去了但**狀態未確認**
 //（與 dbmail 的 Queued 同一個語意，端點兩邊共用同一組變數與同一種措辭）。
 // ⚠️ 用內建的 System.Net.Mail，刻意不引入 MailKit —— 這個專案不加未經同意的 NuGet 套件，
 //    而內網 Domino relay 用得上的功能（匿名或帳密、選配 SSL）它都有。
+// selfCcEmail：按按鈕的本人要收的那份副本（第 62 批），空字串 = 不加。
 async Task<(string? Error, bool Uncertain, string Detail)> SendNotifyMailAsync(
-    string fromEmail, string fromName, string toEmail, string ccEmail, string subject, string body)
+    string fromEmail, string fromName, string toEmail, string ccEmail, string selfCcEmail,
+    string subject, string body, string htmlBody)
 {
     // ─── 先用一個「逾時真的算數」的 TCP 探測（2026-09-01）───
     // ⚠️ `SmtpClient.Timeout` **管不到 TCP 連線建立那一段**。實測：Timeout 設 8 秒、
@@ -2249,12 +2816,19 @@ async Task<(string? Error, bool Uncertain, string Detail)> SendNotifyMailAsync(
         msg.From = new MailAddress(fromEmail, fromName, System.Text.Encoding.UTF8);
         msg.To.Add(new MailAddress(toEmail));
         if (!string.IsNullOrWhiteSpace(ccEmail)) msg.CC.Add(new MailAddress(ccEmail));
+        if (!string.IsNullOrWhiteSpace(selfCcEmail)) msg.CC.Add(new MailAddress(selfCcEmail));
         msg.Subject = subject;
         msg.Body = body;
         msg.IsBodyHtml = false;
         // Notes 客戶端對編碼很敏感，主旨與內文都明講 UTF-8，否則中文會變問號
         msg.BodyEncoding = System.Text.Encoding.UTF8;
         msg.SubjectEncoding = System.Text.Encoding.UTF8;
+        // HTML 版另掛成 AlternateView（第 62 批）—— 純文字裡的網址在 Notes 點不動。
+        // ⚠️ 順序不可以反過來（Body 放 HTML、AlternateView 放純文字）：.NET 會把 Body 排成
+        //    multipart/alternative 的**第一段**、AlternateViews 排後面，而客戶端依 RFC 2046
+        //    偏好**最後一段** —— 反過來寫的話收到的仍然是純文字版，看起來就像這一段沒生效。
+        msg.AlternateViews.Add(AlternateView.CreateAlternateViewFromString(
+            htmlBody, System.Text.Encoding.UTF8, System.Net.Mime.MediaTypeNames.Text.Html));
 
         using var client = new SmtpClient(mailHost, mailPort) { EnableSsl = mailSsl, Timeout = mailTimeout };
         if (mailUser != "")
@@ -2359,11 +2933,15 @@ string MailFailureHint(System.Net.Sockets.SocketException? sock, bool selfTimeou
 //    所以這裡拿 `@mailitem_id` 回來輪詢 `sysmail_allitems` 的 `sent_status`。
 //
 // 回傳：Error != null → 確定失敗；Queued == true → 還在佇列裡，**狀態未確認**（不可當成成功講）
+// body 是 HTML（第 62 批起，@body_format = 'HTML'）；selfCcEmail 是本人副本，空字串 = 不加。
 async Task<(string? Error, bool Queued, int MailItemId, string Detail)> SendViaDbMailAsync(
-    SqlConnection conn, string fromEmail, string fromName, string toEmail, string ccEmail,
+    SqlConnection conn, string fromEmail, string fromName, string toEmail, string ccEmail, string selfCcEmail,
     string subject, string body)
 {
     int mailItemId;
+    // @copy_recipients 本來就吃分號分隔的清單（第 44 批已實測），本人副本就接在後面。
+    // ⚠️ 兩個都已在端點層通過 IsValidMailAddress()，這裡不會把壞值串進去
+    var ccList = string.Join(";", new[] { ccEmail, selfCcEmail }.Where(s => !string.IsNullOrWhiteSpace(s)));
     try
     {
         // ⚠️ @profile_name 傳 NULL 時 SQL Server 會用預設設定檔，所以設定檔名稱留空是合法的。
@@ -2377,7 +2955,7 @@ async Task<(string? Error, bool Queued, int MailItemId, string Detail)> SendViaD
                  @copy_recipients = @Cc,
                  @subject         = @Subject,
                  @body            = @Body,
-                 @body_format     = 'TEXT',
+                 @body_format     = 'HTML',
                  @from_address    = @From,
                  @reply_to        = @ReplyTo,
                  @mailitem_id     = @Id OUTPUT;
@@ -2385,7 +2963,7 @@ async Task<(string? Error, bool Queued, int MailItemId, string Detail)> SendViaD
         cmd.CommandTimeout = Math.Max(30, mailTimeout / 1000);
         cmd.Parameters.AddWithValue("@Profile", dbMailProfile == "" ? DBNull.Value : dbMailProfile);
         cmd.Parameters.AddWithValue("@To", toEmail);
-        cmd.Parameters.AddWithValue("@Cc", string.IsNullOrWhiteSpace(ccEmail) ? DBNull.Value : ccEmail);
+        cmd.Parameters.AddWithValue("@Cc", ccList == "" ? DBNull.Value : ccList);
         cmd.Parameters.AddWithValue("@Subject", subject);
         cmd.Parameters.AddWithValue("@Body", body);
         cmd.Parameters.AddWithValue("@From",
@@ -2615,6 +3193,17 @@ app.MapPost("/api/requirements/{id}/notify-unset", async (int id, NotifyRequest?
                     + "這個值來自 appsettings.json 的 Mail:From，請管理者修正後重新啟動服務。"
         });
 
+    // ── 3c. 按按鈕的人自己也收一份副本（2026-09-11 / 第 62 批，使用者要求）──
+    // 寄件者是本人時，他的寄件匣裡**不會**有這封信（信是這台主機透過 relay 送出去的，
+    // 不經過他的郵件客戶端），所以在此之前他自己完全沒有留底，只能回這裡看稽核列。
+    // ⚠️ 只在 fromIsSelf 時做：退回 Mail:From 的那條路我們根本不知道他是誰。
+    // ⚠️ 他自己已經是收件者或副本時不再加（同一個人收兩封）。
+    // ⚠️ 走 CC 不走 BCC：收件者看得到「發信的人自己也在副本裡」，這封信才對得起「有問題可以直接回覆本信」那句。
+    var selfCcEmail = fromIsSelf
+                   && !string.Equals(fromEmail, toEmail, StringComparison.OrdinalIgnoreCase)
+                   && !string.Equals(fromEmail, ccEmail, StringComparison.OrdinalIgnoreCase)
+                    ? fromEmail : "";
+
     // ── 4. 組信 ──
     var who = string.Join(" / ", new[] { cur.nid == "" ? null : $"NID {cur.nid}", cur.mainCat, cur.subCat }
                                  .Where(s => !string.IsNullOrWhiteSpace(s)));
@@ -2653,20 +3242,32 @@ app.MapPost("/api/requirements/{id}/notify-unset", async (int id, NotifyRequest?
         ? $"（本信由「{fromName}」透過需求管控表發出，有問題可以直接回覆本信。）"
         : "（本信由需求管控表系統自動發出，請勿直接回覆本信箱。）");
     var mailBody = string.Join("\r\n", lines);
+    // ── 4b. 同一封信的 HTML 版（2026-09-11 / 第 62 批，使用者要求「點擊網址就可以開啟」）──
+    // 純文字信裡的網址在 Notes 客戶端**不會自動變成超連結**（使用者實際回報），
+    // 所以另外做一份 HTML：內容與純文字版**一字不差**（同一個 lines 轉出來的），
+    // 只把網址那一行包成 <a href>。smtp 兩種格式都附（multipart/alternative，
+    // 客戶端挑得動 HTML 就用 HTML），dbmail 只能擇一、送 HTML。
+    // ⚠️ 每一行都要先 HtmlEncode：現況描述是使用者自由輸入的文字，直接塞進 HTML 會被當標記解讀。
+    var mailHtml = "<div style=\"font-family:Segoe UI,Microsoft JhengHei,sans-serif;font-size:14px;line-height:1.6\">"
+                 + string.Join("<br>", lines.Select(l =>
+                       mailAppUrl != "" && l.StartsWith("需求管控表：", StringComparison.Ordinal)
+                           ? $"需求管控表：<a href=\"{System.Net.WebUtility.HtmlEncode(mailAppUrl)}\">{System.Net.WebUtility.HtmlEncode(mailAppUrl)}</a>"
+                           : System.Net.WebUtility.HtmlEncode(l)))
+                 + "</div>";
 
     // ── 5. 寄出（兩種傳輸方式，內容完全一樣）──
     var queued = false; var queuedNote = ""; var mailItemId = 0;
     string? sendError;
     if (useDbMail)
     {
-        var r = await SendViaDbMailAsync(conn, fromEmail, fromName, toEmail, ccEmail, subject, mailBody);
+        var r = await SendViaDbMailAsync(conn, fromEmail, fromName, toEmail, ccEmail, selfCcEmail, subject, mailHtml);
         sendError = r.Error; queued = r.Queued; queuedNote = r.Detail; mailItemId = r.MailItemId;
     }
     else
     {
         // ⚠️ smtp 也會回「未確認送出」（第 44 批）：對話逾時是被我們自己切斷的，
         //    信可能已經送出去了 —— 與 dbmail 的佇列狀態共用同一組變數與同一種措辭
-        var r = await SendNotifyMailAsync(fromEmail, fromName, toEmail, ccEmail, subject, mailBody);
+        var r = await SendNotifyMailAsync(fromEmail, fromName, toEmail, ccEmail, selfCcEmail, subject, mailBody, mailHtml);
         sendError = r.Error; queued = r.Uncertain; queuedNote = r.Detail;
     }
     if (sendError != null)
@@ -2682,6 +3283,8 @@ app.MapPost("/api/requirements/{id}/notify-unset", async (int id, NotifyRequest?
                      : ccMissing ? $"，副本 {ccName}（{(ccBadFormat ? "信箱格式不正確" : "查無信箱")}，未寄送）" : "")
                   // 寄件者也要記：日後查「這封信到底是誰的名義寄出去的」只有這裡查得到
                   + $"；寄件者 {fromName} <{fromEmail}>" + (fromIsSelf ? "" : "（系統預設信箱）")
+                  // ⚠️ 寫在寄件者**後面**：前端 NOTIFY_TO_RE 抓的是「收件者」後第一個 <…>，這裡不能插到它前面
+                  + (selfCcEmail != "" ? "（本人亦收副本）" : "")
                   // ⚠️ 「排入佇列但沒確認送出」一定要在軌跡上跟「已確認送出」分得出來 ——
                   //    這一列日後就是「到底通知了沒」的唯一依據，兩種混在一起等於這一列不能用
                   // ⚠️ 「未確認送出」這四個字是這一列日後唯一分得出兩種狀態的依據，
@@ -2707,12 +3310,13 @@ app.MapPost("/api/requirements/{id}/notify-unset", async (int id, NotifyRequest?
     var okMsg = (queued ? $"通知已交給郵件系統，但尚未確認送出（收件者 {toName} <{toEmail}>）"
                         : $"已寄出通知給 {toName} <{toEmail}>")
               + (ccEmail != "" ? $"，副本 {ccName} <{ccEmail}>" : "")
+              + (selfCcEmail != "" ? "，你自己也會收到一份副本" : "")
               + (ccMissing ? $"\n\n⚠️ {ccReason}" : "");
     return Results.Ok(new
     {
         message = okMsg, phase = phaseKey, phaseLabel,
         to = toEmail, toName, cc = ccEmail, ccName, ccMissing, ccReason, subject,
-        from = fromEmail, fromName, fromIsSelf,
+        from = fromEmail, fromName, fromIsSelf, selfCc = selfCcEmail,
         transport = useDbMail ? "dbmail" : "smtp", queued, mailItemId, queuedNote
     });
 });
@@ -3078,6 +3682,7 @@ app.MapPost("/api/import", async (HttpContext context) =>
     //    「ExecuteNonQuery requires the command to have a transaction」。
     using var tx = conn.BeginTransaction();
     int imported = 0;
+    var stageInferred = new List<string>();   // StatusID 空白而由日期推出來的列（第 66 批）
     // NID 重複已經在上面的前置檢查擋掉了（第 21 批），這裡不必再累計
     try
     {
@@ -3153,6 +3758,14 @@ app.MapPost("/api/import", async (HttpContext context) =>
         // 來源 Excel 常常只填 End 不填 Start，照使用者的規則補成同一天（見 ApplyStartDefaults）
         ApplyStartDefaults(req);
 
+        // StatusID 空白就用日期推一次寫進去（第 66 批）。欄位已是 NOT NULL，而且畫面上
+        // 再也不做日期反推 —— 這是那條反推唯一還存在的地方。推了哪幾筆會回在 stageInferred 裡
+        if (NormStage(req.stageCode) == "")
+        {
+            req.stageCode = InferStageCode(req);
+            stageInferred.Add($"{req.nid}→{req.stageCode}");
+        }
+
         using var cmd = new SqlCommand(@"
             INSERT INTO dbo.Controltable (NID, RegDate, YearMonth, MainCat, SubCat, Status, StageCode, Remark, NotesLink, EmsOwner, MsdOwner, CurrentStatus, MpSaving,
                                           SpecStart, SpecEnd, SpecHistory, MsdConfirm, MsdConfirmNote, MsdConfirmHistory, MsdStart, MsdEnd, MsdHistory, UatStart, UatEnd, UatHistory)
@@ -3188,7 +3801,7 @@ app.MapPost("/api/import", async (HttpContext context) =>
     // BeginTransaction 之前就整檔擋下（回 400 並列出編號），所以走到這裡它永遠是空陣列 ——
     // 留著只會讓下一個人以為「成功的匯入也可能夾帶重複」而去寫一段永遠不會執行的處理
     var unmapped = fieldCandidates.Where(f => !colMap.ContainsKey(f.Field)).Select(f => f.Field).ToArray();
-    return Results.Ok(new { message = "Imported", imported, unmappedFields = unmapped });
+    return Results.Ok(new { message = "Imported", imported, unmappedFields = unmapped, stageInferred = stageInferred.ToArray() });
 });
 
 // 字串 -> SQL 參數，空字串一律視為 NULL
@@ -3292,10 +3905,28 @@ static bool StatusIs(string? s, string name) => NormStatusVal(s) == NormStatusVa
 //    而且它是暫時的功能）。
 // ⚠️ 呼叫端要負責「只在值真的被改動時才驗」（見 PUT 的 stageChanged）——
 //    一律驗的話，既有那些超出 1~5 的舊資料會連改個現況描述都存不了。
+// ⚠️ **空值自第 66 批起不再合法**（2026-09-11，`17_stagecode_not_null.sql` 把欄位改成
+//    NOT NULL + CHECK）。StatusID 是「走完了沒」的唯一依據（第 65 批），空白就等於
+//    整套逾期判定對這一筆閉著眼睛。POST 一律擋；PUT 另外多一道「不管有沒有改都不可以是空」
+//    （DB 本來就寫不進去，與其 500 不如講清楚）。匯入時空白改由 InferStageCode() 推一次寫進去。
 static bool IsValidStageCode(string? s)
 {
     var c = NormStage(s);
-    return c == "" || (c.Length == 1 && c[0] >= '1' && c[0] <= '5');
+    return c.Length == 1 && c[0] >= '1' && c[0] <= '5';
+}
+
+// ─── 匯入時 StatusID 空白就用日期推一次（2026-09-11 / 第 66 批）───
+// 這就是第 65 批從 isPhasePassed() / StagePassed() 拿掉的那條「下一階段有日期 → 這一階段走完」
+// 反推，搬到唯一該在的地方：**資料進來的那一刻，推一次、寫進 DB、看得見、改得了**。
+// 畫面上再也不推 —— 推出來的值就是 StatusID，之後一切以它為準。
+// 順序刻意與舊的反推一致：Done → 5；③ 有日期（Start 或 End）→ 3；② 有確認日 → 2；否則 1。
+// ⚠️ ④ 有日期**不**推成 4：驗收日 EMS 可以一開始就先壓，壓了不代表 ③ 開發完（與第 25 批同一條）。
+static string InferStageCode(Requirement r)
+{
+    if (StatusIs(r.status, "Done")) return "5";
+    if (ParseDate(r.msd?.end).HasValue || ParseDate(r.msd?.start).HasValue) return "3";
+    if (ParseDate(r.msd?.confirm).HasValue) return "2";
+    return "1";
 }
 
 // ─── Status（OverallStatus）只允許「空值」或 Init / Ongoing / Done（2026-08-23 / 第 23 批）───
@@ -3397,29 +4028,39 @@ static async Task InsertHistoryAsync(SqlConnection conn, int reqId, string? nid,
 // extraNotes：系統要補在說明後面的話（key 為 phase）。目前唯一的用途是
 // 「End 改了所以順手清掉該階段的 ActualEnd」——那件事使用者看不見，
 // 不寫進軌跡的話資料列會出現「⏰ 延期 1」卻查不到任何實際完成日的組合（第 21 批）。
-// ─── 每個 phase 最後一筆稽核列的 ChangeType（2026-08-27 / 第 35 批）───
-// 只有一個用途：分辨「這個階段的 End 是空的」是**從來沒填過**，還是**剛被回退清掉**。
-// ⚠️ 一次查詢撈完四個階段（ROW_NUMBER 取每組最新），不要在迴圈裡一個階段查一次 ——
-// 那會變成每存一次檔多送四趟 round trip，而這支在匯入時是逐列呼叫的。
+// ─── 哪幾個 phase 的 End 在稽核表裡「曾經」有過值（2026-09-12 / 第 69 批）───
+// 只有一個用途：分辨「這個階段的 End 是空的」是**從來沒填過**（→ `init`），
+// 還是**之前有過、被清掉了**（→ `重新排程`）。
+// ⚠️ 第 35 批到第 68 批的做法是看「這個 phase **最後一筆**稽核列是不是 `規格回退`／清空 End 的
+//    `日期異動`」，補了兩次側門（第 68 批排除 `通知寄送`、加 `日期異動`）之後第三個側門還是在：
+//    回退 → 只填 Start 存一次（記成 `init`，End 空）→ 再填 End → 最後一筆是 `init` → 又判成 `init`。
+//    「手動清空 End → 只調 Start（`起日調整`）→ 再填 End」同一條。實測 `ZZ69-A`：
+//    #516 規格回退 → #517 init（S 09-10, E 空）→ #518 **init**（E 空 → 09-12）。
+//    根本的問題是「最後一筆是誰」與「End 為什麼是空的」是兩個問題 —— 中間插進任何一筆
+//    不動 End 的列（通知、起日調整、只填 Start 的 init）都會把答案洗掉。
+//    改問正確的那個問題：**End 曾經有過值，現在重填就不可能是首次填寫**。任何一列的
+//    Old/New End（② 是 Confirm）非空就算；`通知寄送`／`手動調整`／`刪除` 日期全空，自然不算。
+// ⚠️ 一次查詢撈完四個階段（GROUP BY Phase），不要在迴圈裡一個階段查一次 ——
+//    那會變成每存一次檔多送四趟 round trip，而這支在匯入時是逐列呼叫的。
 // 一定要吃同一個 tx：回退與重排若落在同一個交易裡，讀不到未 commit 的資料會判錯。
-static async Task<Dictionary<string, string>> LastChangeTypeByPhaseAsync(
+static async Task<HashSet<string>> PhasesWithEndEverSetAsync(
     SqlConnection conn, int reqId, SqlTransaction? tx = null)
 {
-    var map = new Dictionary<string, string>();
+    var set = new HashSet<string>();
     using var cmd = new SqlCommand(@"
-        SELECT Phase, ChangeType FROM (
-            SELECT Phase, ChangeType,
-                   ROW_NUMBER() OVER (PARTITION BY Phase ORDER BY Id DESC) AS rn
-            FROM dbo.Controltable_History WHERE RequirementId = @Id
-        ) t WHERE rn = 1", conn, tx);
+        SELECT Phase FROM dbo.Controltable_History
+        WHERE RequirementId = @Id
+          AND (OldEnd IS NOT NULL OR NewEnd IS NOT NULL
+               OR OldConfirm IS NOT NULL OR NewConfirm IS NOT NULL)
+        GROUP BY Phase", conn, tx);
     cmd.Parameters.AddWithValue("@Id", reqId);
     using var r = await cmd.ExecuteReaderAsync();
     while (await r.ReadAsync())
     {
         var p = ReadString(r, "Phase");
-        if (!string.IsNullOrEmpty(p)) map[p] = ReadString(r, "ChangeType") ?? "";
+        if (!string.IsNullOrEmpty(p)) set.Add(p);
     }
-    return map;
+    return set;
 }
 
 static async Task WriteAuditAsync(SqlConnection conn, int reqId, Requirement req, Requirement? oldReq,
@@ -3427,8 +4068,8 @@ static async Task WriteAuditAsync(SqlConnection conn, int reqId, Requirement req
                                   IReadOnlyDictionary<string, string>? extraNotes = null)
 {
     // 新增（oldReq == null）不必查：那時候還沒有任何稽核列，全部都是真的 init
-    var lastType = oldReq == null ? new Dictionary<string, string>()
-                                  : await LastChangeTypeByPhaseAsync(conn, reqId, tx);
+    var endEverSet = oldReq == null ? new HashSet<string>()
+                                    : await PhasesWithEndEverSetAsync(conn, reqId, tx);
     foreach (var phase in AllPhases())
     {
         var newD = PhaseDatesOf(req, phase);
@@ -3460,10 +4101,13 @@ static async Task WriteAuditAsync(SqlConnection conn, int reqId, Requirement req
         // 只是被判成 init，於是沉到面板最下面的「初始時程」區，標題還寫著「初始」。
         // 那一列因此也不會計入 ⚠N（isDateChange 只認 `日期異動`），而且同一個階段
         // 會出現兩筆 init，前端 initStamp 的收合（時間戳去重）跟著失效。
-        // 判定只看「這個階段最後一筆是不是 `規格回退`」—— 會把 End 清空的路徑只有回退
-        // （手動清掉既有日期時 oldEnd 不是空的，會落在 `日期異動`）。
-        var rescheduled = oldEnd == "" && newEnd != ""
-                          && lastType.TryGetValue(phase, out var lt) && lt == "規格回退";
+        // 判定看「這個階段的 End 在稽核表裡曾經有過值」（第 69 批，2026-09-12）：
+        //   有過 → 現在是空的必然是被清掉的（`規格回退`、或第 66 批 H1 仍允許的手動清空 `日期異動`），
+        //   重填就是 `重新排程`；從來沒有過 → 才是真的 `init`。
+        // ⚠️ 不要改回「看最後一筆是誰」（第 35→68 批的做法）：中間插進任何一筆不動 End 的列
+        //    （`通知寄送`、`起日調整`、只填 Start 的 `init`）都會把答案洗掉 —— 同一個 bug 已經
+        //    從三個側門各回來一次。理由與實測見 PhasesWithEndEverSetAsync()
+        var rescheduled = oldEnd == "" && newEnd != "" && endEverSet.Contains(phase);
         var changeType = oldEnd == newEnd ? (AnyDate(oldD) ? "起日調整" : "init")
                        : oldEnd == ""     ? (rescheduled ? "重新排程" : "init")
                                           : "日期異動";
@@ -3599,6 +4243,13 @@ public class DoneRequest
     // ⚠️ 沒帶就是空 —— curl／測試腳本行為與第 59 批完全一樣（沿用 completedAt 的作法）。
     // ⚠️ 前端送什麼一律不看，每一筆後端都自己再驗一次（範圍、有沒有日期、是不是已經完成過）。
     public List<DoneAlso>? alsoComplete { get; set; }
+    // 事後補記（第 70 批，2026-09-12 使用者選的）：這個階段 **StatusID 早就走過了**、卻從來沒有完成紀錄
+    //（匯入資料、手動把 StatusID 往前調、第 60 批之前直接按後面的階段）—— 畫面上一直停在灰字「已略過此階段」。
+    // true 時：只接受「已經走過」的階段（沒走過的回 400，請走一般路徑）、**StatusID 與 Status 一律不動**、
+    // 不收 alsoComplete、完成日多一道上限「不可晚於下一階段實際結束的那一天」。
+    // 稽核列說明後面固定接「（事後補記：StatusID 已在 X，不變）」—— /undo-done 靠這個標記判斷撤銷時 StatusID 該不該退。
+    // ⚠️ 沒帶就是 false，curl／測試腳本行為不變。
+    public bool backfill { get; set; }
     public string? actorEmpId { get; set; }
     public string? actorSource { get; set; }
 }
@@ -3634,10 +4285,23 @@ public class NotifyRequest
 }
 
 // POST /api/requirements/{id}/rollback 的請求內容
+// 撤銷上一次標記完成（第 66 批）。note 選填 —— 誤按是常態，逼人為此打一段理由只會讓人改去手動改資料
+public class UndoDoneRequest
+{
+    public string? note { get; set; }
+    // 畫面上那顆「撤銷」旁邊的完成紀錄 Id（第 68 批）。後端仍然自己挑「最後一筆有效的」，
+    // 這個值只拿來對：對不上就代表別人在中間動過、回 409。沒帶（null）不驗
+    public int? historyId { get; set; }
+    public string? actorEmpId { get; set; }
+    public string? actorSource { get; set; }
+}
+
 public class RollbackRequest
 {
     // 要退回到哪個 StatusID（1~4）。≥ 這個階段的日期都會被清空
     public int targetStage { get; set; }
+    // 畫面上看到的「目前 StatusID」（第 68 批）。與 DB 對不上就回 409，理由同 UndoDoneRequest.historyId。沒帶不驗
+    public int? fromStage { get; set; }
     // 文字說明，必填。異動原因分類固定是「規格變更」，不必由前端帶
     public string? note { get; set; }
     public string? actorEmpId { get; set; }

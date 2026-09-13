@@ -995,6 +995,7 @@ select.ctl {
 
 .present-zoom {
   zoom: var(--present-zoom, 1.5);
+  --eff-zoom: var(--present-zoom, 1.5);
 }
 
 /* 字級（2026-08-24 / 第 29 批）。與 .present-zoom 完全同一個機制，
@@ -1005,6 +1006,23 @@ select.ctl {
 
 .ui-zoom {
   zoom: var(--ui-zoom, 1);
+  --eff-zoom: var(--ui-zoom, 1);
+}
+
+/* 視窗（Modal）的高度上限（2026-09-11 / 第 62 批，使用者回報「儲存跟取消按鈕看不到」）。
+     六個視窗全部渲染在 <main> 裡面，而 <main> 掛著上面那兩個 zoom ——
+     ⚠️ CSS zoom 會把 `vh` 也一起放大：字級 115% 時 `max-h-[90vh]` 算出 720px、
+     畫出來卻是 828px（實測 1440×800 視窗：卡片 y = −14 ~ 814），
+     底部那排「取消／儲存變更」整個落在螢幕外面，而卡片內容自己會捲、
+     所以怎麼捲都捲不到它。130% 時是 117% 螢幕高，更慘。
+     解法是把上限除回倍率（`--eff-zoom` 由 .ui-zoom / .present-zoom 各自帶進來）：
+     `90vh / 1.15` 算出 626px，zoom 之後剛好 720px = 真的 90% 螢幕高。
+     ⚠️ 100% 時 `--eff-zoom` 沒定義 → 落回 1，與原本的 `max-h-[90vh]` 一模一樣。
+     ⚠️ overlay 本身的 `fixed inset-0` 不受影響（實測仍是 800px）—— zoom 只放大
+     長度，不放大定位用的 inset；會壞的只有這種寫了 vh 的尺寸。 */
+
+.modal-card-tall {
+  max-height: calc(90vh / var(--eff-zoom, 1));
 }
 
 /* 投影機的實際對比遠低於螢幕（黑階其實是灰的，會議室還開著燈）。
@@ -1366,6 +1384,10 @@ select.ctl {
   margin-right: 0.25rem;
 }
 
+.mr-1\.5 {
+  margin-right: 0.375rem;
+}
+
 .mt-0\.5 {
   margin-top: 0.125rem;
 }
@@ -1482,14 +1504,6 @@ select.ctl {
   max-height: 8rem;
 }
 
-.max-h-56 {
-  max-height: 14rem;
-}
-
-.max-h-\[110px\] {
-  max-height: 110px;
-}
-
 .max-h-\[260px\] {
   max-height: 260px;
 }
@@ -1572,6 +1586,10 @@ select.ctl {
 
 .min-w-\[190px\] {
   min-width: 190px;
+}
+
+.max-w-3xl {
+  max-width: 48rem;
 }
 
 .max-w-4xl {
@@ -1755,14 +1773,19 @@ select.ctl {
   gap: 1.5rem;
 }
 
+.gap-x-1 {
+  -moz-column-gap: 0.25rem;
+       column-gap: 0.25rem;
+}
+
+.gap-x-1\.5 {
+  -moz-column-gap: 0.375rem;
+       column-gap: 0.375rem;
+}
+
 .gap-x-2 {
   -moz-column-gap: 0.5rem;
        column-gap: 0.5rem;
-}
-
-.gap-x-3 {
-  -moz-column-gap: 0.75rem;
-       column-gap: 0.75rem;
 }
 
 .gap-x-4 {
@@ -1782,6 +1805,12 @@ select.ctl {
   --tw-space-y-reverse: 0;
   margin-top: calc(0.125rem * calc(1 - var(--tw-space-y-reverse)));
   margin-bottom: calc(0.125rem * var(--tw-space-y-reverse));
+}
+
+.space-y-1 > :not([hidden]) ~ :not([hidden]) {
+  --tw-space-y-reverse: 0;
+  margin-top: calc(0.25rem * calc(1 - var(--tw-space-y-reverse)));
+  margin-bottom: calc(0.25rem * var(--tw-space-y-reverse));
 }
 
 .space-y-1\.5 > :not([hidden]) ~ :not([hidden]) {
@@ -2092,6 +2121,14 @@ select.ctl {
 
 .pr-8 {
   padding-right: 2rem;
+}
+
+.pt-1 {
+  padding-top: 0.25rem;
+}
+
+.pt-1\.5 {
+  padding-top: 0.375rem;
 }
 
 .pt-2 {
@@ -2550,6 +2587,14 @@ select.ctl {
     display: block !important;
   }
 
+  /* 開著視窗（完整軌跡／編輯／確認…）按列印時，遮罩與視窗都不印（第 73 批，2026-09-13）：
+     它們是 position:fixed，某些瀏覽器會在每一頁都疊印一層半透明黑底，而視窗裡的內容
+     使用者明講過不需要紙本版（第 72 批） */
+
+  [data-ct-modal] {
+    display: none !important;
+  }
+
   /* 螢幕上收起的兩塊在紙上一定要回來（見上面 .legend-strip / .chips-print 的說明） */
 
   .legend-strip.is-collapsed, .chips-print {
@@ -2617,10 +2662,6 @@ select.ctl {
     overflow: visible !important;
     max-height: none !important;
   }
-}
-
-.last\:mb-0:last-child {
-  margin-bottom: 0px;
 }
 
 .hover\:bg-black\/10:hover {

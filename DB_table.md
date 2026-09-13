@@ -33,7 +33,7 @@
 | `MainCat` | NVARCHAR(100) | 主分類 |
 | `SubCat` | NVARCHAR(100) | 次分類 |
 | `Status` | NVARCHAR(50) | **整體狀態**，對應 Excel「OverallStatus」欄：`Init` / `Ongoing` / `Done`。`Pending` 已於 2026-08-22 移除（程式端一律收斂成 `Ongoing`；欄位型別不變，沒有腳本）。⚠️ 2026-08-23 起寫入端會把關（見下方「Status 與 StageCode 的寫入把關」） |
-| `StageCode` | NVARCHAR(10) | **階段代號**，對應 Excel「StatusID」欄。**純數字 `1`~`5`，不含括號**（`05` 腳本已正規化）。與上方 `Status` 意義不同，不可混用。⚠️ 2026-08-23 起寫入端會把關（見下方「StageCode 的寫入把關」） |
+| `StageCode` | NVARCHAR(10) **NOT NULL**，`CK_Controltable_StageCode` CHECK IN (`1`..`5`) | **階段代號**，對應 Excel「StatusID」欄。**純數字 `1`~`5`，不含括號**（`05` 腳本已正規化；**`17` 起 NOT NULL + CHECK**，2026-09-11 / 第 66 批 —— 它是「走完了沒」的唯一依據，空白等於整套逾期判定對那一筆閉著眼睛）。與上方 `Status` 意義不同，不可混用。⚠️ 2026-08-23 起寫入端會把關（見下方「StageCode 的寫入把關」）；匯入時空白由 `InferStageCode()` 推一次寫進去 |
 | `Remark` | NVARCHAR(500) | **需求補充**（Excel `Remark`），針對子分類的描述補充。**純文字不是網址**，畫面上不可做成超連結。`08` 腳本由舊的 `NotesLink` 欄改名而來 |
 | `NotesLink` | NVARCHAR(500) | **超連結**（Excel `NotesLink`），實際值多為 `Notes://...` 的 Lotus Notes 連結。`08` 腳本新增的乾淨欄位 |
 | `EmsOwner` | NVARCHAR(50) | EMS 窗口 |
@@ -472,6 +472,7 @@
 | `14_fix_reschedule_changetype.sql` | 2026-08-27 | **已執行** | **資料修正，非架構變更**：把「回退之後重新壓的日期」由 `init` 改判為 `重新排程`。判定＝同一個 `(RequirementId, Phase)` 之下前一筆是 `規格回退` 的 `init`（與 `Program.cs` 的 `rescheduled` 等價）。只改 `ChangeType`，日期／`ChangedAt`／`ChangedBy` 原封不動。**目前符合條件的只有 1 列**（`Id 242` / NID 4 / spec / 2026-08-27 22:21）。冪等（改完就不再符合條件） |
 | `13_nid_unique.sql` | 2026-08-22 | **已執行** | 建立 `UX_Controltable_NID_Active`（`UNIQUE (NID) WHERE IsDeleted = 0 AND NID IS NOT NULL`），並移除被它取代的 `IX_Controltable_Active`。**有重複 NID 時不建立索引，只印出待處理清單**。實際執行：62 筆 / 62 個相異 NID / 0 筆 NID 為空，**無重複**，索引建立成功、舊索引已移除；重跑確認 idempotent（兩段都走「已存在／不存在」跳過） |
 | `16_grant_dbmail_permission.sql` | 2026-09-01 | **尚未執行**（要 DBA 在 **DB 主機**上以 sysadmin 執行） | **不改 `dbo.Controltable` 的結構**，改的是 `msdb` 的權限：讓應用程式的連線帳號可以呼叫 `msdb.dbo.sp_send_dbmail`（加入 `DatabaseMailUserRole`）並查詢 `sysmail_allitems` / `sysmail_event_log`。⚠️ **後者不可以省** —— 程式靠它確認 `sent_status`，沒有的話寄失敗會靜靜躺在 `sysmail_faileditems`，畫面卻顯示已通知。腳本開頭會先印出版本、`Database Mail XPs` 是否啟用、以及現有的設定檔名稱（`Mail:DbMailProfile` 要填的就是那個）。⚠️ 腳本裡的 `@LoginName` 預設是 `testuser`，正式環境要先改成實際帳號。已用 `SET PARSEONLY ON` 驗過語法 |
+| `17_stagecode_not_null.sql` | 2026-09-11 | **已執行** | `StageCode` 改為 **NOT NULL** 並加 `CK_Controltable_StageCode CHECK (StageCode IN ('1'..'5'))`。先印現況（含 `IsDeleted = 1` 的列 —— NOT NULL 是整張表的約束）、去括號正規化、仍為空白／壞值的依日期推一次（`Done`→5、`MsdEnd`/`MsdStart`→3、`MsdConfirm`→2、否則 1；`UatEnd` 不推 4，驗收日可以先壓），再 ALTER + CHECK。實際執行：65 active + 20 deleted **全部已是 1~5，回填 0 筆**，欄位改 NOT NULL、約束建立成功；重跑確認 idempotent（兩段都走「已是／已存在，跳過」）。⚠️ 執行後 `INSERT`/`UPDATE` 送空值會直接被 DB 拒絕（Msg 515 / 547），所以 `POST`/`PUT` 在程式端先擋成 400 |
 | `15_add_assignee_email.sql` | 2026-08-31 | **已執行** | `dbo.Assignee` 新增 `EMAIL NVARCHAR(255) NULL`，並回填「玉婷／MSD」＝`Sariel_Lin@UMCG`。回填比對 `(DEPT, NAME)`（＝`UX_Assignee_Dept_Name` 的鍵，**不用 `Id`** —— IDENTITY 各環境不保證一致），且只在 `EMAIL IS NULL` 時才寫，重跑不會蓋掉人工改過的值。實際執行：欄位已新增、回填 **1 筆**（`Id 9`），13 筆中僅該筆有值。⚠️ 本檔含中文，`sqlcmd` 要加 **`-f 65001`**，否則 `N'玉婷'` 會被當 ANSI 讀進去、比對不到任何一列，而且**不報錯只回填 0 筆** |
 
 > 📌 **第 14 批（階段順序 gating）沒有 DB 變更**，純前端 + 後端驗證，所以沒有它專屬的腳本。
@@ -497,7 +498,7 @@
 > 同批一併把 `GET /api/requirements` 的 catch 訊息改成印出真正的例外，並補一句
 > 「若訊息是 Invalid column name，代表累加腳本還沒全部執行」。
 
-> ⚠️ **執行順序**：`01` → `02` → … → `13`，不可跳號。`05`～`13` 皆可重複執行。
+> ⚠️ **執行順序**：`01` → `02` → … → `17`，不可跳號（`16` 是 DB 主機上的 msdb 權限，與本表無關，可以另外排）。`05`～`17` 皆可重複執行。
 > 執行前已備份為 `dbo.Controltable_bak_20260816`（7 筆，欄位為遷移前的舊結構）。
 > 確認新結構沒問題後可以自行 `DROP TABLE dbo.Controltable_bak_20260816`。
 
@@ -538,8 +539,11 @@ SQL Server 的 `TRY_CONVERT(DATE, '')` **不會回傳 NULL，而是回傳 `1900-
 3. 同一個階段出現**兩筆 `init`**，前端 `initStamp` 的時間戳去重跟著失效，
    「初始時程」那一區從共用一個標題退化成每行各印一個時間
 
-程式面已於第 35 批修正（`LastChangeTypeByPhaseAsync()` + `rescheduled`），
+程式面已於第 35 批修正（當時是 `LastChangeTypeByPhaseAsync()` + `rescheduled`；
+第 69 批 2026-09-12 改成 `PhasesWithEndEverSetAsync()`「End 曾經有過值」，見 `FIELD_SPEC.md`），
 但**只對之後的寫入生效**，既有的錯誤分類要靠這支腳本補。
+⚠️ 第 69 批那種側門（回退 → 只填 Start → 再填 End）留下的 `init` 這支腳本**抓不到**
+（它只認「前一筆是 `規格回退`」）。本機 DB 查過：沒有這種既有案例，所以沒有另寫修正腳本。
 
 ⚠️ 這是**修正一個分類錯誤，不是竄改事實**：只改 `ChangeType`，
 `OldStart`/`NewEnd`/`ChangedAt`/`ChangedBy` 全部原封不動。
