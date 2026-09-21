@@ -7,6 +7,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- 使用者手冊由 GET /manual 直接讀 docs/ 底下的檔案回傳（見 Program.cs）。
+         docs/ 不在 wwwroot 底下，dotnet publish 預設不會帶出去，這裡明列讓它跟著發佈。 -->
+    <Content Include="docs\使用者手冊.html" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="ClosedXML" Version="0.105.1" />
     <!-- Windows 驗證 (Negotiate/NTLM)，供稽核表的「異動人員」自動帶入登入者。
          版本對齊 C:\Gantt 專案（同一台內網主機、同為 net9.0），⚠ 維持 9.0.x 不跳 10.x。 -->

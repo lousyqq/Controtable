@@ -15,6 +15,11 @@
 | `dbo.Controltable` | 需求管控主表 | `schema.sql` |
 | `dbo.Controltable_History` | **時程異動稽核表** | `09_create_history_table.sql`（`Program.cs` 啟動時另有 idempotent bootstrap） |
 | `dbo.Assignee` | **指派人員主檔**（EMS / MSD 負責人名單） | `11_create_assignee.sql`（`Program.cs` 啟動時另有 idempotent bootstrap） |
+| `dbo.AccessRules` | **頁面瀏覽權限的允許規則**（第 74 批） | `18_add_access_control.sql`（`Program.cs` 啟動時另有 idempotent bootstrap） |
+| `dbo.AppSettings` | 開關類設定（目前只有 `AccessControlEnabled`） | `18_add_access_control.sql`（同上） |
+| `dbo.AccessLog` | 瀏覽權限規則增刪／開關切換／管理者增刪的稽核 | `18_add_access_control.sql`（同上；`19` 擴充 CHECK） |
+| `dbo.AccessAdmins` | **瀏覽權限的管理者清單**（第 75 批） | `19_add_access_admins.sql`（`Program.cs` 啟動時另有 idempotent bootstrap，只建空表） |
+| `[WEB].[dbo].[notes_person]` | **人員名冊（唯讀、不屬於本專案）**：`EMPNO / NAME / ENAME / DEPTNAME / DEPT_1~4 / EMAIL …`。瀏覽權限拿登入工號來查部門 | 遠端是跨 server 的 VIEW；本機是 `C:\Gantt\sim_create_WEB_notes_person.sql` 建的模擬表。**本專案不建立、不修改它**，名稱由 `appsettings` 的 `Access:PersonView` 指定 |
 > ⚠️ 2026-08-21 起人員名單改用 `dbo.Assignee`。舊的 `dbo.Personnel` 已由 `12_drop_personnel.sql` **刪除**，
 > 內容留檔在下方「已刪除的 dbo.Personnel」一節。
 
@@ -452,6 +457,70 @@
 
 ---
 
+## dbo.AccessRules / dbo.AppSettings / dbo.AccessLog（頁面瀏覽權限，第 74 批 / 2026-09-21）
+
+做法對齊 `C:\Gantt`（`11_add_access_control.sql` + `12_access_rules_multi_field.sql`）：登入者的 Windows 工號 →
+查 `[WEB].[dbo].[notes_person]` 拿部門 → 比對 `dbo.AccessRules`。開關預設 **false**（不卡控）。
+
+### dbo.AccessRules
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| `RuleId` | INT IDENTITY PK | |
+| `Empno` | NVARCHAR(50) NULL | 工號（`notes_person.EMPNO`）。**只填這一欄＝白名單**，不查名冊也放行（名冊掛了仍能用） |
+| `DeptName` | NVARCHAR(50) NULL | `notes_person.DEPTNAME`（完整部門路徑，如 `12A_PTI/ESI/MSD`） |
+| `Dept1` / `Dept2` / `Dept3` | NVARCHAR(50) NULL | `notes_person.DEPT_1 / DEPT_2 / DEPT_3`。最常用的一條是 `Dept3 = 'MSD'`（MSD 全員） |
+| `Note` | NVARCHAR(200) NULL | 備註（選填） |
+| `CreatedBy` / `CreatedAt` | NVARCHAR(50) / DATETIME2(0) | 建立者工號（Windows 帳號）與時間 |
+
+- `CK_AccessRules_AnyField`：五個條件欄位**至少一個非空**。
+- **比對規則**：同一條規則內有填的欄位**全部符合**才通過（AND）；多條規則之間**任一符合**即放行（OR）。大小寫不分、兩邊都 trim。
+- 名冊查詢失敗或查不到這個人 → **含部門條件的規則一律不成立**（fail-closed），純工號規則不受影響。
+- 「相同條件組合」由端點以 `ISNULL(...,'') = ISNULL(...,'')` 五欄比對擋成 409；沒有建 UNIQUE 索引（NULL 語意用索引不好表達，Gantt 也沒建）。
+- 結構與 Gantt 的 `dbo.AccessRules` 完全相同，日後兩邊的規則可以直接對照或搬移。
+
+### dbo.AppSettings
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| `KeyName` | NVARCHAR(50) PK | 目前只有 `AccessControlEnabled` |
+| `Value` | NVARCHAR(200) NOT NULL | `'true'` / `'false'`（字串，與 Gantt 一致） |
+| `UpdatedBy` / `UpdatedAt` | | 最後一次切換的人與時間 |
+
+- 本專案在此之前**沒有**這張表。日後其他「主管在網頁上切的開關」照這個格式放進來，不要各開一張表。
+- `PUT /api/access-control` 用 `UPDATE … IF @@ROWCOUNT = 0 INSERT` 寫入，列不存在也不會失敗。
+
+### dbo.AccessLog
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| `Id` | INT IDENTITY PK | |
+| `Action` | NVARCHAR(20) NOT NULL | `ADD_RULE` / `DELETE_RULE` / `ENABLE` / `DISABLE` / `ADD_ADMIN` / `DELETE_ADMIN`（`CK_AccessLog_Action`，後兩種由 `19` 擴充） |
+| `Detail` | NVARCHAR(400) NULL | 規則的文字描述（`工號=X 且 DEPT_3=Y（備註）`）；開啟時附「當時 N 條規則」 |
+| `Actor` | NVARCHAR(50) NULL | 操作者工號。這幾支端點都要求 Negotiate，所以一定有值 |
+| `At` | DATETIME2(0) | |
+
+- 為什麼不寫進 `dbo.Controltable_History`：那張表的 `RequirementId` 是 NOT NULL、每一列都綁一筆需求，瀏覽權限的異動跟任何需求都無關。
+- 與規則／開關的寫入**同一個 `SqlTransaction`**（與第 21 批「寫入端點一律包交易」同一條）。
+- 面板的「最近異動」讀最新 30 筆（`TOP 30 … ORDER BY Id DESC`）。
+
+### dbo.AccessAdmins（第 75 批 / 2026-09-21，`19_add_access_admins.sql`）
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| `Id` | INT IDENTITY PK | |
+| `Empno` | NVARCHAR(50) NOT NULL，`UQ_AccessAdmins_Empno` UNIQUE | 工號（Windows 帳號剝掉網域後的值） |
+| `Note` | NVARCHAR(200) NULL | 備註（選填） |
+| `CreatedBy` / `CreatedAt` | | 建立者工號與時間 |
+
+- **實際生效的管理者 ＝ 這張表 ∪ `appsettings.json` 的 `Access:Admins`**。DB 那份在面板上維護、進 `AccessLog`；設定檔那份是**後備**（第一個管理者從哪來、DB 那份被刪光了怎麼辦），正式主機平常留空。
+- **管理者一律可瀏覽、不受規則限制**，也是唯一能開 🔐 面板的人。
+- 端點擋兩件事：**不能移除自己**、**不能移除最後一位**（設定檔後備的算進去）。
+- 為什麼從設定檔搬過來：2026-09-21 使用者實際踩到 .NET 設定檔 JSON 陣列**跨檔依索引覆寫**的坑（`appsettings.Development.json` 的 `["yu-tinglin"]` 蓋掉 `appsettings.json` 的第 0 筆 `00002732`）；而且「哪些人是管理者」是會隨人事變動的業務資料，該與規則放在同一個面板、同一份稽核。
+- `19` 種入了 `00002732`、`00041817`、`yu-tinglin`（開發機本機帳號，**正式 DB 可刪**）。
+
+---
+
 ## 變更歷史
 
 | 腳本 | 日期 | 狀態 | 內容 |
@@ -473,6 +542,8 @@
 | `13_nid_unique.sql` | 2026-08-22 | **已執行** | 建立 `UX_Controltable_NID_Active`（`UNIQUE (NID) WHERE IsDeleted = 0 AND NID IS NOT NULL`），並移除被它取代的 `IX_Controltable_Active`。**有重複 NID 時不建立索引，只印出待處理清單**。實際執行：62 筆 / 62 個相異 NID / 0 筆 NID 為空，**無重複**，索引建立成功、舊索引已移除；重跑確認 idempotent（兩段都走「已存在／不存在」跳過） |
 | `16_grant_dbmail_permission.sql` | 2026-09-01 | **尚未執行**（要 DBA 在 **DB 主機**上以 sysadmin 執行） | **不改 `dbo.Controltable` 的結構**，改的是 `msdb` 的權限：讓應用程式的連線帳號可以呼叫 `msdb.dbo.sp_send_dbmail`（加入 `DatabaseMailUserRole`）並查詢 `sysmail_allitems` / `sysmail_event_log`。⚠️ **後者不可以省** —— 程式靠它確認 `sent_status`，沒有的話寄失敗會靜靜躺在 `sysmail_faileditems`，畫面卻顯示已通知。腳本開頭會先印出版本、`Database Mail XPs` 是否啟用、以及現有的設定檔名稱（`Mail:DbMailProfile` 要填的就是那個）。⚠️ 腳本裡的 `@LoginName` 預設是 `testuser`，正式環境要先改成實際帳號。已用 `SET PARSEONLY ON` 驗過語法 |
 | `17_stagecode_not_null.sql` | 2026-09-11 | **已執行** | `StageCode` 改為 **NOT NULL** 並加 `CK_Controltable_StageCode CHECK (StageCode IN ('1'..'5'))`。先印現況（含 `IsDeleted = 1` 的列 —— NOT NULL 是整張表的約束）、去括號正規化、仍為空白／壞值的依日期推一次（`Done`→5、`MsdEnd`/`MsdStart`→3、`MsdConfirm`→2、否則 1；`UatEnd` 不推 4，驗收日可以先壓），再 ALTER + CHECK。實際執行：65 active + 20 deleted **全部已是 1~5，回填 0 筆**，欄位改 NOT NULL、約束建立成功；重跑確認 idempotent（兩段都走「已是／已存在，跳過」）。⚠️ 執行後 `INSERT`/`UPDATE` 送空值會直接被 DB 拒絕（Msg 515 / 547），所以 `POST`/`PUT` 在程式端先擋成 400 |
+| `18_add_access_control.sql` | 2026-09-21 | **已執行**（本機） | 頁面瀏覽權限卡控（第 74 批，做法對齊 `C:\Gantt`）：建立 `dbo.AccessRules`（允許規則，五個條件欄位皆可空、`CK_AccessRules_AnyField` 至少一欄）、`dbo.AppSettings`（開關存放處，本專案首次有這張表；初始化 `AccessControlEnabled = 'false'`）、`dbo.AccessLog`（規則增刪與開關切換的稽核）。**不建立、不修改 `[WEB].[dbo].[notes_person]`**（遠端是跨 server 的 VIEW；本機用 `C:\Gantt\sim_create_WEB_notes_person.sql` 的模擬表，34 筆）。實際執行：三張表建立成功、開關初始化 false、規則 0 筆；重跑確認 idempotent（三段都走「已存在，跳過」）。`Program.cs` 啟動時另有同內容的 bootstrap |
+| `19_add_access_admins.sql` | 2026-09-21 | **已執行**（本機） | 瀏覽權限的管理者清單搬進 DB（第 75 批）：建立 `dbo.AccessAdmins`（`Empno` UNIQUE）、種入 `00002732` / `00041817` / `yu-tinglin`、`CK_AccessLog_Action` 擴充 `ADD_ADMIN` / `DELETE_ADMIN`。實際執行：表建立、種入 3 筆、CHECK 重建成功；重跑確認 idempotent（種入 0 筆、CHECK 走「已含，跳過」）。⚠️ 正式 DB 執行前可先把 `yu-tinglin` 那一列從 VALUES 拿掉（開發機本機帳號） |
 | `15_add_assignee_email.sql` | 2026-08-31 | **已執行** | `dbo.Assignee` 新增 `EMAIL NVARCHAR(255) NULL`，並回填「玉婷／MSD」＝`Sariel_Lin@UMCG`。回填比對 `(DEPT, NAME)`（＝`UX_Assignee_Dept_Name` 的鍵，**不用 `Id`** —— IDENTITY 各環境不保證一致），且只在 `EMAIL IS NULL` 時才寫，重跑不會蓋掉人工改過的值。實際執行：欄位已新增、回填 **1 筆**（`Id 9`），13 筆中僅該筆有值。⚠️ 本檔含中文，`sqlcmd` 要加 **`-f 65001`**，否則 `N'玉婷'` 會被當 ANSI 讀進去、比對不到任何一列，而且**不報錯只回填 0 筆** |
 
 > 📌 **第 14 批（階段順序 gating）沒有 DB 變更**，純前端 + 後端驗證，所以沒有它專屬的腳本。

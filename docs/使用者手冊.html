@@ -177,6 +177,28 @@ ol.steps b{display:block}
 .faq .body{padding:4px 16px 14px 32px}
 .faq .body p{margin:8px 0}
 
+/* ── part divider（第一部／第二部）── */
+.part{margin:0 0 30px; padding:16px 20px; border:1px solid var(--brand-line); background:var(--brand-soft); border-radius:10px; max-width:76ch}
+.part .pn{font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.18em; text-transform:uppercase; color:var(--brand); font-weight:700}
+.part .pt{font-family:"Noto Serif TC",Georgia,serif; font-size:20px; font-weight:700; margin:2px 0 4px; line-height:1.35}
+.part p{margin:0; color:var(--ink-2); font-size:13.5px; max-width:none}
+section+.part{margin-top:64px}
+nav.toc .grp{font-size:10.5px; letter-spacing:.16em; text-transform:uppercase; color:var(--ink-3); font-weight:700; margin:14px 0 4px 8px}
+nav.toc li:first-child .grp{margin-top:0}
+
+/* ── role tags ── */
+.tag{display:inline-block; font-size:10.5px; font-weight:700; letter-spacing:.06em; padding:1px 7px; border-radius:20px; white-space:nowrap; vertical-align:1px}
+.tag.ems{background:var(--s1f); color:var(--s1)} .tag.msd{background:var(--s3f); color:var(--s3)}
+.tag.sys{background:var(--card-2); color:var(--ink-3); border:1px solid var(--rule)}
+
+/* ── 兩個動作（大字卡）── */
+.two{display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:18px 0; max-width:76ch}
+@media (max-width:640px){ .two{grid-template-columns:1fr} }
+.two .act{border:1px solid var(--rule); border-radius:10px; background:var(--card); padding:14px 16px; box-shadow:var(--shadow)}
+.two .act .k{font-family:"IBM Plex Mono",monospace; font-size:11px; font-weight:600; color:var(--brand); letter-spacing:.08em}
+.two .act .t{font-size:16px; font-weight:700; margin:2px 0 6px}
+.two .act p{font-size:13.5px; margin:4px 0; max-width:none}
+
 footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid var(--rule);
   font-size:12px; color:var(--ink-3); display:flex; flex-wrap:wrap; gap:6px 22px; justify-content:space-between}
 
@@ -199,9 +221,9 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
   <header class="mast">
     <p class="eyebrow">使用者手冊 · Controltable</p>
     <h1>MSD 需求管控表</h1>
-    <p class="lede">EMS 提需求、MSD 開發、EMS 驗收 —— 這套系統把一筆需求從提出到結案的四個階段、每一次日期異動的理由、以及每週要 review 的逾期項目，全部收在同一張表裡。本手冊涵蓋日常操作、判讀規則與疑難排解。</p>
+    <p class="lede">EMS 提需求、MSD 開發、EMS 驗收 —— 這套系統把一筆需求從提出到結案的四個階段、每一次日期異動的理由、以及每週要 review 的逾期項目，全部收在同一張表裡。<b>第一部</b>依你的角色（EMS／MSD／主管）一步一步講「輪到我時要按哪裡」，<b>第二部</b>是逐一功能的完整參考。第一次用請從 <a href="#ra">A 章</a> 開始。</p>
     <p class="meta">
-      <span><b>版本</b> 20260913005</span>
+      <span><b>版本</b> 20260921003</span>
       <span><b>適用</b> 需求列表 · 統計報表</span>
       <span><b>對象</b> EMS／MSD 負責人、主管</span>
       <span><b>權威規格</b> FIELD_SPEC.md</span>
@@ -211,7 +233,11 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
   <nav class="toc" aria-label="章節目錄">
     <p class="toc-h">目錄</p>
     <ol>
-      <li><a href="#c1"><span class="n">01</span><span>系統概觀與名詞</span></a></li>
+      <li><p class="grp">第一部 · 依角色操作</p><a href="#ra"><span class="n">A</span><span>先看這一頁：兩個動作</span></a></li>
+      <li><a href="#rb"><span class="n">B</span><span>EMS 負責人</span></a></li>
+      <li><a href="#rc"><span class="n">C</span><span>MSD 負責人</span></a></li>
+      <li><a href="#rd"><span class="n">D</span><span>主管與每週會議</span></a></li>
+      <li><p class="grp">第二部 · 功能參考</p><a href="#c1"><span class="n">01</span><span>系統概觀與名詞</span></a></li>
       <li><a href="#c2"><span class="n">02</span><span>畫面導覽</span></a></li>
       <li><a href="#c3"><span class="n">03</span><span>新增需求</span></a></li>
       <li><a href="#c4"><span class="n">04</span><span>編輯需求與壓日期</span></a></li>
@@ -224,12 +250,283 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
       <li><a href="#c11"><span class="n">11</span><span>統計報表</span></a></li>
       <li><a href="#c12"><span class="n">12</span><span>顯示、投影與列印</span></a></li>
       <li><a href="#c13"><span class="n">13</span><span>Excel 匯出與匯入</span></a></li>
-      <li><a href="#c14"><span class="n">14</span><span>疑難排解</span></a></li>
-      <li><a href="#c15"><span class="n">15</span><span>附錄：欄位對照</span></a></li>
+      <li><a href="#c14"><span class="n">14</span><span>瀏覽權限（管理者）</span></a></li>
+      <li><a href="#c15"><span class="n">15</span><span>疑難排解</span></a></li>
+      <li><a href="#c16"><span class="n">16</span><span>附錄：欄位對照</span></a></li>
     </ol>
   </nav>
 
   <main>
+
+  <div class="part">
+    <div class="pn">第一部</div>
+    <div class="pt">依角色操作：輪到我的時候要按哪裡</div>
+    <p>A 章五分鐘讀完整套邏輯；B、C 章分別是 EMS 與 MSD 負責人從頭到尾的操作順序；D 章給主管。每一步都附「詳見第 N 章」，需要細節時再往第二部翻。</p>
+  </div>
+
+  <!-- ═══ A ═══ -->
+  <section id="ra">
+    <h2><span class="n">A</span><span>先看這一頁：每個階段只有兩個動作</span></h2>
+    <p class="sub">不管你是 EMS 還是 MSD，輪到你的階段要做的事都一樣：<b>先壓一個結束日，做完那天按「標記完成…」</b>。其餘的紅字、徽章、信件，都是系統在提醒你這兩件事。</p>
+
+    <h3>一筆需求的一生：誰、在哪一階段、做什麼</h3>
+    <div class="tw"><table>
+      <thead><tr><th style="width:150px">階段</th><th style="width:70px">誰</th><th>這一階段在做什麼</th><th>你要在系統裡做的兩件事</th></tr></thead>
+      <tbody>
+        <tr><td><b style="color:var(--s1)">① EMS 規格確認</b></td><td><span class="tag ems">EMS</span></td><td>EMS 把需求規格寫清楚、交給 MSD</td><td>壓 <b>End Date</b>（預計交規格的日子）→ 交出去那天按 <span class="ui">標記完成…</span></td></tr>
+        <tr><td><b style="color:var(--s2)">② MSD 確認中</b></td><td><span class="tag msd">MSD</span></td><td>MSD 看過規格、確認做得了、怎麼做</td><td>壓 <b>Confirm EMS Spec Date</b>（預計確認完的日子）→ 確認完按 <span class="ui">標記完成…</span></td></tr>
+        <tr><td><b style="color:var(--s3)">③ MSD 開發中</b></td><td><span class="tag msd">MSD</span></td><td>開發</td><td>壓 <b>Start／End Date</b>（Start 可不填）→ 開發完按 <span class="ui">標記完成…</span></td></tr>
+        <tr><td><b style="color:var(--s4)">④ EMS 驗收</b></td><td><span class="tag ems">EMS</span></td><td>EMS 驗收</td><td>壓 <b>Start／End Date</b> → 驗收通過按 <span class="ui">標記完成…</span></td></tr>
+        <tr><td><b style="color:var(--s5)">⑤ 結案</b></td><td>—</td><td>沒有事要做</td><td>④ 標記完成後系統自動結案（Status 變 <code>Done</code>）</td></tr>
+      </tbody>
+    </table></div>
+    <p>畫面上的 <b>StatusID</b> 欄就是「現在走到哪一階」—— 每按一次「標記完成…」它就往前一階，棒子就交到下一個人手上。</p>
+
+    <div class="two">
+      <div class="act">
+        <div class="k">動作 1</div>
+        <div class="t">壓結束日</div>
+        <p>＝承諾「我預計哪一天做完」。在<b>編輯視窗</b>（資料列最右邊的 ✎）那一階段的 End Date 欄填日期，按 <span class="ui">儲存變更</span>。</p>
+        <p>壓好之後系統就會盯著這個日子：快到期灰字「剩 N 天」，過了就紅字「逾期 N 天」。<b>第一次填不必寫理由</b>；之後要改才要。</p>
+      </div>
+      <div class="act">
+        <div class="k">動作 2</div>
+        <div class="t">標記完成…</div>
+        <p>＝宣告「做完了，實際是哪一天」。編輯視窗那一階段標題旁的<b>藍色</b>鈕，會跳一個小視窗要你填<b>實際完成日</b>（預設今天，可以往回選）。</p>
+        <p>系統拿它比原訂的結束日，記成準時／提早／延期，然後把 StatusID 推到下一階。</p>
+      </div>
+    </div>
+    <div class="note warn">
+      <span class="lb">兩件事的順序不能反</span>
+      <p>「標記完成…」這顆鈕<b>只在那一階段已經壓了日期、而且存過檔之後</b>才會出現。所以一定是：壓日期 → 儲存變更（視窗會關掉）→ 做完那天再開 ✎ → 標記完成…。想直接跳到「做完了」也得先補一個日期存檔。</p>
+      <p>另外<b>不要用「✎ 手動修正 StatusID」來推進階段</b> —— 那是修 Excel 匯入資料用的，不會留下完成紀錄，主管看到的「延期 0 次」可能只是有人用下拉跳過去的結果。</p>
+    </div>
+
+    <h3>系統怎麼告訴你「輪到你了」</h3>
+    <div class="tw"><table>
+      <thead><tr><th style="width:220px">訊號</th><th style="width:170px">在哪裡看到</th><th>代表什麼、該做什麼</th></tr></thead>
+      <tbody>
+        <tr><td>一封主旨「<b>[需求管控表] 請壓定「◯◯」日期：…</b>」的信</td><td>你的信箱</td><td>上一棒完成了、輪到你壓日期。寄件者是按按鈕的那個人本人，可以直接回信問他。信裡的網址點開就是系統。</td></tr>
+        <tr><td>紅色徽章 <span class="badge a">⚠ 未壓日期</span></td><td>資料列的階段時程欄（精簡模式是「目前階段時程」欄）</td><td>目前走到你的階段，但你還沒壓日期。<b>直接點徽章</b>，編輯視窗會開在那一欄上。</td></tr>
+        <tr><td>紅字「<b>逾期 N 天</b>」／「今天到期」</td><td>同一欄</td><td>你壓的日子到了還沒按「標記完成…」。做完了就去標記；還沒做完就解鎖改日期並留理由（B-2／C-3 有講怎麼選）。</td></tr>
+      </tbody>
+    </table></div>
+    <p>三種訊號背後是同一份規則，所以頁籤上的紅數字、工具列「逾期」下拉的「需關注」、統計報表的「需關注」卡，數字必然一致（詳見第 10 章）。</p>
+
+    <h3>你會在哪裡按：編輯視窗長什麼樣</h3>
+    <p>按資料列最右邊的 <b>✎</b> 開啟。由上而下：</p>
+    <ol class="list">
+      <li><b>基本資料</b>：NID、註冊日期、Status、StatusID、Main Cat（專案名稱）、Sub Cat（子項目分類）、MP Saving、EMS／MSD 負責人。</li>
+      <li><b style="color:var(--s1)">1_EMS規格確認</b>（Start／End）、然後是需求補充（Remark）與 Notes Link。</li>
+      <li><b style="color:var(--s2)">2_MSD確認中</b>（Confirm EMS Spec Date，只有一個日期）。</li>
+      <li><b style="color:var(--s3)">3_MSD開發中</b>（Start／End）。</li>
+      <li><b style="color:var(--s4)">4_EMS驗收</b>（Start／End）。</li>
+      <li><b>現況說明</b>：目前進度的文字，展開明細與精簡模式都看得到，寄出的通知信也會附上。</li>
+      <li>最底下 <span class="ui">取消</span>／<span class="ui">儲存變更</span>。</li>
+    </ol>
+    <p>每個階段區塊的<b>標題列</b>就是那一階段的「儀表板」：階段名旁邊會依狀態出現 <span class="ui">🔒 已鎖定，點此修改</span>（已有日期，防誤改，點一下解鎖）、灰色實心鎖（前一階段還沒填完，先補前面）、藍色 <span class="ui">標記完成…</span>（可以按）、或綠色 <span class="badge g">✓ 準時完成 · 09/02</span>／紅色 <span class="badge a">✓ 延期完成 · 09/20</span>（已經完成的結果，點不動）。底下還有這一階段的異動紀錄一行摘要。</p>
+
+    <h3>我想要…（對照表）</h3>
+    <div class="tw"><table>
+      <thead><tr><th style="width:230px">我想要</th><th>去哪裡按</th><th style="width:110px">詳見</th></tr></thead>
+      <tbody>
+        <tr><td>建一筆新需求</td><td>工具列右上 <span class="ui">＋ 新增需求</span></td><td>B-1、第 03 章</td></tr>
+        <tr><td>壓我這一階段的日期</td><td>點那一列的 <span class="badge a">⚠ 未壓日期</span>（或 ✎ → 該階段的 End Date）→ <span class="ui">儲存變更</span></td><td>B-2、C-2、第 04 章</td></tr>
+        <tr><td>我做完了</td><td>✎ → 該階段標題旁 <span class="ui">標記完成…</span> → 填實際完成日</td><td>第 05 章</td></tr>
+        <tr><td>提醒下一個人來壓日期</td><td>那一列徽章底下的 <span class="ui">✉</span></td><td>第 10 章</td></tr>
+        <tr><td>日期要延後／提前（還沒做完）</td><td>✎ → <span class="ui">🔒</span> 解鎖 → 改 End Date → 選分類、填理由 → <span class="ui">儲存變更</span></td><td>第 04 章</td></tr>
+        <tr><td>更新目前進度的文字</td><td>✎ → 最底下「現況說明」→ <span class="ui">儲存變更</span>（不必解鎖、不必理由）</td><td>—</td></tr>
+        <tr><td>只看我自己負責的</td><td>工具列 <span class="ui">EMS</span> 或 <span class="ui">MSD</span> 下拉選自己的名字</td><td>第 09 章</td></tr>
+        <tr><td>看我有哪些快到期</td><td>工具列 <span class="ui">逾期</span> 下拉 → 需關注（或頁籤上的紅數字）</td><td>第 10 章</td></tr>
+        <tr><td>規格改了，前面的階段要重做</td><td>✎ → StatusID 下方 <span class="ui">🔄 規格回退</span></td><td>B-5、第 06 章</td></tr>
+        <tr><td>按錯「標記完成…」了</td><td>✎ → 那個階段 ✓ 旁邊的 <span class="ui">撤銷</span>（不是規格回退）</td><td>第 05 章</td></tr>
+        <tr><td>找已經結案的需求</td><td>工具列 <span class="ui">進度</span> 改「不限進度」，或按階段列的 <span class="ui">5 結案</span></td><td>第 09 章</td></tr>
+        <tr><td>把現在這份清單傳給同事</td><td>複製網址列整條貼給他（篩選與排序都在網址裡）</td><td>第 09 章</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <!-- ═══ B ═══ -->
+  <section id="rb">
+    <h2><span class="n">B</span><span>EMS 負責人：從提需求到驗收結案</span></h2>
+    <p class="sub">你負責 <b style="color:var(--s1)">①</b> 與 <b style="color:var(--s4)">④</b>，中間的 ②③ 是 MSD 的。整條路：建需求 → 壓 ① 的日期 → 交出規格後標記 ① 完成 → 通知 MSD → 等 → 壓 ④ 的日期 → 驗收通過標記 ④ 完成 → 自動結案。</p>
+
+    <h3>B-1 建立一筆需求</h3>
+    <ol class="steps">
+      <li><b>按工具列右上的 <span class="ui">＋ 新增需求</span></b>游標會自動停在 NID。</li>
+      <li><b>填四個必填欄位</b>NID（需求編號，自己編、不可重複）、Main Cat（專案名稱）、Sub Cat（子項目分類）、<b>EMS 負責人選你自己</b>。MSD 負責人知道是誰就一併選；還不知道可以先空著，之後任何一方都能在編輯視窗補上 —— 但要 ✉ 通知 MSD 之前一定要先指派。</li>
+      <li><b>「1_EMS規格確認」的 End Date：預計把規格交給 MSD 的日子</b>排不出來就先空著，<b>不要隨手填一個假日期</b>（系統會把它當真，算進逾期與統計）。空著的話系統會把這筆標成 <span class="badge a">⚠ 未壓日期</span> 提醒你回來補。</li>
+      <li><b>需求補充（Remark）：把需求內容寫清楚</b>MSD 看的是這一段。</li>
+      <li><b>按 <span class="ui">確認新增</span></b>成功後清單重新載入，新的那一筆會在裡面（預設畫面只看進行中，新需求一定在）。</li>
+    </ol>
+    <div class="note">
+      <span class="lb">存完可能會跳一個「要不要寄信通知」的視窗</span>
+      <p>① 沒壓日期時，系統會問要不要通知「① 的負責人」壓日期 —— 那就是<b>你自己</b>（副本 MSD）。這個視窗是給「幫別人建需求」的情況用的；自己建、自己壓，直接按「取消」就好，什麼都不會寄。</p>
+    </div>
+
+    <h3>B-2 壓 ① 的結束日、交出規格後標記完成</h3>
+    <ol class="steps">
+      <li><b>壓日期</b>點那一列紅色的 <span class="badge a">⚠ 未壓日期</span>（或 ✎），游標會停在 ① 的 End Date。填預計交規格的日子 → <span class="ui">儲存變更</span>。原本是空的，<b>不必填理由</b>。</li>
+      <li><b>規格交出去那天，標記完成</b>✎ → 「1_EMS規格確認」標題旁的藍色 <span class="ui">標記完成…</span> → 小視窗裡填<b>實際交出去的那一天</b>（預設今天；隔幾天才來補也可以往回選，系統照實際那天算，不會因為晚按就變延期）→ 確認。</li>
+      <li><b>系統會做的事</b>StatusID 推到 <b style="color:var(--s2)">2_MSD確認中</b>、Status 從 Init 變 Ongoing。棒子交給 MSD 了。</li>
+      <li><b>通知 MSD 壓 ② 的日期</b>標記完成之後<b>系統不會自動問要不要寄信</b>。回到清單，那一列 ② 那一格會出現 <span class="badge a">⚠ 未壓日期</span>，徽章底下有一顆 <span class="ui">✉</span> —— 按它，確認收件者是 MSD 負責人（副本是你），按確認就寄出。MSD 還沒指派的話先在編輯視窗指派。<b>MSD 沒回應可以再按</b>，視窗只會提醒你「已經通知過了，這會是第二封」，不會擋你。</li>
+    </ol>
+    <div class="note warn">
+      <span class="lb">日期到了規格還沒交出去，怎麼辦？</span>
+      <p>兩種做法都正當，看你在哪個時間點：</p>
+      <ul>
+        <li><b>還沒交、但已經知道會晚</b> → 改日期：✎ → <span class="ui">🔒 已鎖定，點此修改</span> → 改 End Date → 選異動原因分類、填文字說明 → 儲存變更。這是「重新承諾」，那一格會掛上 <span class="badge a">⚠ 1</span>（改過一次），MSD 與主管都看得到新的日子。</li>
+        <li><b>已經交了、只是比原訂晚</b> → 直接「標記完成…」填實際交出去的日子。系統記成「延期完成」，資料列同時顯示原訂（灰字）與實際（紅字），⏰ 延期次數 +1。</li>
+      </ul>
+      <p>兩種各自計數、互不抵銷。<b>不要</b>為了避開 ⏰ 先把 End 改到今天再標記完成 —— 那會多留一筆 ⚠ 日期異動與理由，主管兩種都看得到。</p>
+    </div>
+
+    <h3>B-3 MSD 在 ②③ 期間，你可以做什麼</h3>
+    <ul>
+      <li><b>看進度</b>：資料列的 StatusID 欄（2_MSD確認中／3_MSD開發中）與四個階段時程欄看 MSD 壓了什麼日子；<b>點整列展開明細</b>看 MSD 寫的現況描述。精簡模式（工具列右邊）把四個階段收成一欄「目前階段時程」，只留最急的那一階，再加一整欄現況描述 —— 想快速掃過一遍時用它。</li>
+      <li><b>催</b>：MSD 該壓的日期沒壓（那一格 <span class="badge a">⚠ 未壓日期</span>）→ 按 <span class="ui">✉</span>。壓了但逾期（紅字）→ 系統<b>沒有</b>「催逾期」的信，那種直接找人。</li>
+      <li><b>什麼時候輪回你</b>：MSD 把 ③ 標記完成後 StatusID 變成 4_EMS驗收，你會收到「請壓定「4_EMS驗收」日期」的信（MSD 有按 ✉ 的話）。就算沒收到信，那一列 ④ 那一格也會亮 <span class="badge a">⚠ 未壓日期</span>，「需關注」也會算進去 —— 每週用 B-6 那條清單掃一次就不會漏。</li>
+    </ul>
+
+    <h3>B-4 驗收：壓 ④ 的日期、驗收通過標記完成</h3>
+    <ol class="steps">
+      <li><b>壓驗收日程</b>點 ④ 那一格的徽章（或 ✎ → 4_EMS驗收），填 Start／End（Start 可不填＝與 End 同一天）→ 儲存變更。End 不可早於 ③ 的結束日；③ 若是延期完成的，欄位底下會有黃字提醒「④ 的完成日下限是 ③ 的實際完成日」—— 把 End 壓在那之後，不然 ④ 之後只能記成延期。</li>
+      <li><b>驗收通過那天</b><span class="ui">標記完成…</span> → 填實際驗收通過的日子 → 確認。</li>
+      <li><b>系統會做的事</b>StatusID → <b style="color:var(--s5)">5 結案</b>、Status → <code>Done</code>。這一筆會從預設畫面消失（預設只看進行中）—— <b>沒有被刪掉</b>，工具列「進度」改「不限進度」或按 <span class="ui">5 結案</span> 就看得到。</li>
+      <li><b>順手填 MP Saving</b>完成後的效益（例：<code>0.5 人/月</code>），✎ → MP Saving → 儲存變更。結案之後也能改，不需要理由。</li>
+    </ol>
+    <div class="note">
+      <span class="lb">驗收不過怎麼辦</span>
+      <p><b>規格沒錯，只是有 bug 要修</b> → 什麼都不必回退。StatusID 停在 4，跟 MSD 講好修完的日子，把 ④ 的 End Date 改過去（解鎖、填理由「技術問題」）；修好再驗、通過再標記完成。</p>
+      <p><b>規格本身錯了、要重做</b> → 用 B-5 的規格回退。</p>
+    </div>
+
+    <h3>B-5 規格變了、前面的階段要重做</h3>
+    <ol class="steps">
+      <li><b>✎ → StatusID 下方 <span class="ui">🔄 規格回退</span></b>視窗裡有沒存的變更會先被擋下，先儲存。</li>
+      <li><b>選退回哪一階段</b>可以選 1 到目前這一階（含）。退回 ② 的意思是「MSD 要重新確認一次」；選目前這一階代表「這一階重做，前面不動」。</li>
+      <li><b>填說明（必填）→ 確認</b>系統會清掉「目標階段（含）以後」的全部日期，🔄 回退次數 +1，退回去的階段重新變成 <span class="badge a">⚠ 未壓日期</span>。</li>
+      <li><b>重新壓日期</b>回退之後重填的日期<b>不必填理由</b>（回退那一筆已經帶著說明）。退回 ② 或 ③ 時記得按那一格的 <span class="ui">✉</span> 通知 MSD 重壓 —— 回退過的階段，系統會把它當成「還沒通知過」，之後存檔也會再問一次。</li>
+    </ol>
+    <div class="note stop">
+      <span class="lb">只是按錯「標記完成…」，不要用回退</span>
+      <p>回退會清掉日期、回退次數 +1，那是「規格真的變了」的紀錄。誤按了完成鈕請用那個階段 ✓ 旁邊的 <span class="ui">撤銷</span>：日期不清、次數不加，StatusID 退回那一階（第 05 章）。</p>
+    </div>
+
+    <h3>B-6 每週花三分鐘</h3>
+    <ol class="list">
+      <li>工具列 <span class="ui">EMS</span> 下拉選你自己的名字。</li>
+      <li><span class="ui">逾期</span> 下拉選「需關注」。</li>
+      <li>畫面上剩下的就是你這週要處理的：<b>未壓日期的排最上面</b>（去壓，或按 ✉ 催 MSD），再來是已逾期、7 日內到期的（做完了就標記完成，做不完就改日期留理由）。</li>
+    </ol>
+    <p>這個畫面可以直接加書籤 —— 篩選寫在網址裡，下週打開就是同一份清單。</p>
+  </section>
+
+  <!-- ═══ C ═══ -->
+  <section id="rc">
+    <h2><span class="n">C</span><span>MSD 負責人：確認與開發</span></h2>
+    <p class="sub">你負責 <b style="color:var(--s2)">②</b> 與 <b style="color:var(--s3)">③</b>。從 EMS 把 ① 標記完成那一刻起這筆就是你的；③ 標記完成後交回 EMS 驗收。中間你會碰到的每一顆按鈕都在這一章。</p>
+
+    <h3>C-1 怎麼知道有一筆輪到你了</h3>
+    <ul>
+      <li>一封主旨「<b>[需求管控表] 請壓定「2_MSD確認中」日期：NID … / 專案 / 子項目</b>」的信。寄件者是 EMS 本人，有問題直接回信；信裡有 NID、分類、現況描述與系統網址。</li>
+      <li>沒收到信也看得到：工具列 <span class="ui">MSD</span> 下拉選你自己 → <span class="ui">逾期</span> 下拉選「需關注」→ 標著 <span class="badge a">⚠ 未壓日期</span> 的就是。</li>
+      <li>更快的訊號：頁籤「需求列表」右上角的紅色數字＝目前需關注的件數（不分人）。</li>
+    </ul>
+
+    <h3>C-2 ② 確認：壓確認日、確認完標記完成</h3>
+    <ol class="steps">
+      <li><b>壓確認日</b>點那一列的 <span class="badge a">⚠ 未壓日期</span>（或 ✎ → 2_MSD確認中），在 <b>Confirm EMS Spec Date</b> 填預計把規格確認完的日子。這一階段只有一個日期。</li>
+      <li><b>順手把 ③ 也壓了（可選）</b>填了 ② 的日期之後，③ 的 Start／End 會<b>立刻</b>解鎖 —— 已經排得出開發時程的話，同一個視窗一起填、一次儲存，省得之後再進來一趟。</li>
+      <li><b><span class="ui">儲存變更</span></b>第一次填不必理由。</li>
+      <li><b>規格確認完成那天</b>✎ → 「2_MSD確認中」標題旁 <span class="ui">標記完成…</span> → 填實際確認完的日子 → 確認。StatusID 推到 <b style="color:var(--s3)">3_MSD開發中</b>。</li>
+      <li><b>③ 還沒壓日期的話</b>那一格會亮 <span class="badge a">⚠ 未壓日期</span>，但 ③ 也是你的階段 —— 不必按 ✉ 寄給自己，直接點徽章去壓。</li>
+    </ol>
+    <div class="note warn">
+      <span class="lb">規格看了有問題，要 EMS 改</span>
+      <p><b>不要標記完成</b>（那等於宣告「確認 OK」）。直接跟 EMS 談；他改好之後你再確認。確認日會因此延後的話，解鎖改 Confirm 日期並填理由（分類選「規格變更」）。EMS 要大改規格時由他做「規格回退」退回 ①，你的 ② 會被清空、之後重壓。</p>
+    </div>
+
+    <h3>C-3 ③ 開發：壓開發日程、完成後標記完成</h3>
+    <ol class="steps">
+      <li><b>壓開發日程</b>✎ → 3_MSD開發中 → Start Date／End Date（Start 可不填，存檔時自動帶成與 End 同一天）。End 不可早於 ② 的確認日。→ <span class="ui">儲存變更</span>。</li>
+      <li><b>開發期間更新「現況說明」</b>編輯視窗最底下那個文字框，寫目前做到哪、卡在哪。EMS 與主管展開明細就看得到，精簡模式是一整欄，通知信也會附上。改它不必解鎖、不必理由。</li>
+      <li><b>開發完成那天</b><span class="ui">標記完成…</span> → 填實際完成日 → 確認。StatusID 推到 <b style="color:var(--s4)">4_EMS驗收</b>。</li>
+      <li><b>通知 EMS 來壓驗收日</b>標記完成之後<b>系統不會自動問</b>。回到清單，那一列 ④ 那一格會出現 <span class="badge a">⚠ 未壓日期</span>，按徽章底下的 <span class="ui">✉</span>：收件者是 EMS 負責人、副本是你，寄件者是你本人（EMS 可以直接回信）。</li>
+    </ol>
+    <div class="note">
+      <span class="lb">如果你跳過了 ② 直接按 ③ 的完成</span>
+      <p>沒按 ② 的「標記完成…」就直接按 ③ 的，完成視窗會多列一區「這一次會跳過的階段」，把 ② 列出來、<b>預設勾選、日期預設是 ② 原本壓的確認日</b>（＝記成準時，什麼次數都不動）。② 其實延期的話，把那一列的日期改成真正確認完的那天。不勾的話 ② 就會永遠顯示「已略過此階段」。詳見第 05 章。</p>
+    </div>
+    <div class="note warn">
+      <span class="lb">開發會延期，怎麼記？</span>
+      <ul>
+        <li><b>還沒做完、已經知道會晚</b> → 改日期：✎ → <span class="ui">🔒 已鎖定，點此修改</span> → 改 End Date → 選異動原因分類、填說明 → 儲存變更。這是「重新承諾」，那一格掛上 <span class="badge a">⚠ 1</span>，EMS 與主管看得到新的日子。</li>
+        <li><b>已經做完、只是比原訂晚</b> → 直接「標記完成…」填實際完成日。記成「延期完成」：原訂日保留（灰字）、旁邊多一行紅字的實際日，⏰ 延期次數 +1。</li>
+      </ul>
+      <p>兩種各自計數、互不抵銷。<b>不要</b>為了避開 ⏰ 先把 End 改到今天再標記完成 —— 那會多留一筆 ⚠ 日期異動與理由，主管兩種都看得到，反而更難看。</p>
+    </div>
+
+    <h3>C-4 驗收不過、要修</h3>
+    <ul>
+      <li><b>小修（bug）</b>：什麼都不必回退。StatusID 留在 4，修完告訴 EMS 繼續驗；④ 的日期要延後由 EMS 改（或你幫他改，一樣要填理由）。</li>
+      <li><b>規格錯了、③ 要重做</b>：✎ → <span class="ui">🔄 規格回退</span> → 選「3_MSD開發中（目前）」→ 填說明。③④ 的日期會被清掉、回退次數 +1，重新壓 ③ 的日期時不必填理由。要連 ② 的確認一起重做就選 ②。</li>
+      <li><b>只是按錯「標記完成…」</b>：用 ✓ 旁邊的 <span class="ui">撤銷</span>，不是回退（第 05 章）。</li>
+    </ul>
+
+    <h3>C-5 每週花三分鐘</h3>
+    <ol class="list">
+      <li>工具列 <span class="ui">MSD</span> 下拉選你自己的名字。</li>
+      <li><span class="ui">逾期</span> 下拉選「需關注」。</li>
+      <li>剩下的就是你這週的清單：<b>未壓日期的排最上面</b>（去壓）、再來是已逾期與 7 日內到期的（做完就標記完成，做不完就改日期留理由）。</li>
+    </ol>
+    <p>加書籤即可，篩選都寫在網址裡。</p>
+  </section>
+
+  <!-- ═══ D ═══ -->
+  <section id="rd">
+    <h2><span class="n">D</span><span>主管與每週會議</span></h2>
+    <p class="sub">你不需要按任何寫入的按鈕。要看的是：哪幾筆卡住了、卡在誰身上、整體趨勢。</p>
+
+    <h3>打開網頁看到的是什麼</h3>
+    <ul>
+      <li>預設<b>只列進行中</b>的需求，已結案的收起來（工具列「進度」下拉改「不限進度」就全部出現）。</li>
+      <li>工具列下方 <span class="ui">ALL</span> 與五顆階段鈕，上面的數字就是各階段目前幾筆，點一顆只看那一階。</li>
+      <li>列序預設<b>逾期優先</b>（未壓日期 → 已逾期 → 快到期）、結案的置底 —— 最上面幾列就是最該問的。</li>
+      <li>右上角的 <span class="ui">需關注 N</span>：未壓日期 + 已逾期 + 7 日內到期的件數。頁籤上的紅數字是同一個。</li>
+    </ul>
+
+    <h3>三顆徽章怎麼讀</h3>
+    <div class="tw"><table>
+      <thead><tr><th style="width:120px">徽章</th><th>意思</th><th style="width:220px">該問誰</th></tr></thead>
+      <tbody>
+        <tr><td><span class="badge a">⚠ 未壓日期</span></td><td>走到某一階段了，負責人還沒排日期</td><td>那一階段的負責人（①④ EMS、②③ MSD）</td></tr>
+        <tr><td><span class="badge w">⏰ N</span></td><td>這筆延期完成過 N 次（做完了，但比承諾晚）</td><td>N ≥ 2 會轉紅，值得問原因</td></tr>
+        <tr><td><span class="badge v">🔄 N</span></td><td>規格回退過 N 次（規格一直變）</td><td>多半是需求端的問題，不是開發端</td></tr>
+        <tr><td><span class="badge a">⚠ N</span>（時程欄內）</td><td>那一階段的結束日被改過 N 次（每次都有留理由）</td><td>展開明細看「時程變更軌跡」，滑鼠移到日期鏈上看理由</td></tr>
+      </tbody>
+    </table></div>
+
+    <h3>會議上怎麼用</h3>
+    <ol class="list">
+      <li>工具列右邊開 <span class="ui">精簡模式</span>：16 欄收成 9 欄，四個階段時程併成一欄「目前階段時程」只留最急的那一階，右邊一整欄現況描述。這個模式是<b>唯讀</b>的，紅色徽章點不動是刻意的（不會在投影時誤改資料）。</li>
+      <li>投影機上按頁首 <span class="ui">📽 投影</span>（要先開精簡模式）：整體放大、加對比、自動淺色底。畫面上若出現 <span class="badge a">⚠ 右邊被切掉</span>，點一下降倍率 —— 台上看自己的螢幕不會發現布幕右邊少了幾欄。</li>
+      <li>要問某一筆的來龍去脈：點整列展開，「時程變更軌跡」一階段一行，日期鏈上每一跳滑鼠移上去就有誰、何時、為什麼；「完整軌跡 ↗」看逐筆。</li>
+      <li>要留紙本：直接列印，A4 橫向、白底、條件與圖例一定會印出來。</li>
+    </ol>
+
+    <h3>統計報表頁籤</h3>
+    <p>由上而下：五張 KPI 卡（件數不為 0 的都可點，點了會切到需求列表並套好篩選）→ 風險預警明細 → 各年月 × 目前階段的交叉表（帶年月區間選擇器）→ 各年月案件數趨勢圖（與交叉表同區間）→ 人員負載（<b>不分區間</b>，是「現在誰身上壓著幾件」的快照）。「時程異動」卡的大數字是<b>異動次數</b>，副標的「涉及 N 件」才是需求件數。詳見第 11 章。</p>
+
+    <h3>把一份清單交辦出去</h3>
+    <p>篩好、排好之後，網址列整條複製貼給負責人，他打開就是一模一樣的畫面（例如「EMS＝某人 + 需關注」）。深淺色、精簡模式這種個人偏好不會跟著網址走。</p>
+  </section>
+
+  <div class="part">
+    <div class="pn">第二部</div>
+    <div class="pt">功能參考：依畫面與功能逐一說明</div>
+    <p>第一部每一步引用的「第 N 章」都在這裡。每條規則為什麼這樣設計、被擋下時畫面會說什麼，都寫在對應章節。</p>
+  </div>
 
   <!-- ═══ 01 ═══ -->
   <section id="c1">
@@ -286,6 +583,7 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
       <tbody>
         <tr><td><span class="ui">需求列表</span> / <span class="ui">統計報表</span></td><td>切換兩個頁籤。頁籤上的紅色數字＝目前需關注的件數。</td></tr>
         <tr><td><span class="badge a">⚠ 右邊被切掉</span></td><td><b>只在投影模式下才會出現</b>（台上的人看自己的螢幕，不會發現布幕右邊少了幾欄）。點一下降一級投影倍率。平常使用不會看到它 —— 右邊放不下時整個版面會一起變寬，橫向捲動即可。</td></tr>
+        <tr><td><span class="ui">🔐</span> / <span class="ui">🔐 卡控中</span></td><td><b>只有管理者看得到。</b>開「瀏覽權限」面板（第 14 章）。藍色實心＋「卡控中」＝目前有在限制誰能看這個網頁。</td></tr>
         <tr><td><span class="ui">📽 投影</span></td><td>會議室投影模式。<b>必須先開精簡模式、而且在需求列表頁</b>才能按。</td></tr>
         <tr><td><span class="ui">Ａ 100%</span></td><td>字級循環 100% → 115% → 130%。只放大需求列表本身，設定會被記住。放大後右邊放不下時<b>整個版面會一起變寬</b>，用橫向捲動看完整 16 欄。</td></tr>
         <tr><td><span class="ui">☾ 深色</span> / <span class="ui">☀ 淺色</span></td><td>深淺色切換，設定會被記住。</td></tr>
@@ -1004,7 +1302,55 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
 
   <!-- ═══ 14 ═══ -->
   <section id="c14">
-    <h2><span class="n">14</span><span>疑難排解</span></h2>
+    <h2><span class="n">14</span><span>瀏覽權限（管理者）</span></h2>
+    <p class="sub">限制「誰看得到這個網頁」。做法與 Gantt 專案追蹤總表相同：以登入者的 Windows 工號查公司人員名冊（<code>notes_person</code>）拿部門，再比對允許規則。</p>
+
+    <h3>誰能設定</h3>
+    <p>只有<b>管理者</b>看得到頁首的 <span class="ui">🔐</span> 鈕。管理者清單在面板底部的「👑 管理者」區塊維護（填工號＋選填備註）。<b>管理者一律可以瀏覽、不受規則限制</b> —— 所以不會發生「把自己鎖在門外」的事。</p>
+    <p>兩道防呆：<b>不能移除自己</b>（請由另一位管理者操作）、<b>不能移除最後一位</b>。清單裡若出現虛線框、標著「設定檔後備」的工號，那是系統維護人員在伺服器設定檔裡放的備援管理者，網頁上不能移除。</p>
+    <p>卡控開著時，<span class="ui">🔐</span> 鈕會變成藍色實心並寫著 <span class="ui">🔐 卡控中</span>；管理者不必開面板就看得出目前有沒有在卡控。</p>
+
+    <h3>面板裡的幾塊</h3>
+    <div class="tw"><table>
+      <thead><tr><th style="width:150px">區塊</th><th>作用</th></tr></thead>
+      <tbody>
+        <tr><td>總開關</td><td><span class="ui">開啟卡控</span> / <span class="ui">關閉卡控</span>。<b>預設是關的</b>（所有人皆可瀏覽）。開著且沒有任何規則時，只有管理者看得到網頁 —— 面板上會用黃字提醒。</td></tr>
+        <tr><td>新增允許規則</td><td>五個條件欄：<b>工號</b>、<b>DEPTNAME</b>（完整部門路徑，如 <code>12A_PTI/ESI/MSD</code>）、<b>DEPT_1 / 2 / 3</b>（三層部門）。任填一欄以上，再加選填的備註。</td></tr>
+        <tr><td>目前允許規則</td><td>每條規則以晶片顯示條件，右側 🗑 刪除。建立者與時間在 tooltip。</td></tr>
+        <tr><td>以工號測試規則</td><td>輸入任何工號，看他<b>會不會被擋、名冊上是誰、屬於哪個部門、被擋的原因</b>。<b>不受總開關影響</b> —— 開卡控之前先用幾個工號試過。</td></tr>
+        <tr><td>管理者</td><td>可以開這個面板的人。新增（工號＋備註）、移除；自己那一列的 🗑 是灰的。</td></tr>
+        <tr><td>最近異動</td><td>展開可看最近 30 筆：誰在什麼時候新增／刪除了哪條規則、開了或關了卡控、加了或移除了哪位管理者。</td></tr>
+      </tbody>
+    </table></div>
+
+    <h3>規則怎麼比對</h3>
+    <ul>
+      <li><b>同一條規則內填了多個欄位＝全部符合才通過（且）</b>。例：<code>DEPT_2=ESI 且 DEPT_3=MSD</code>。</li>
+      <li><b>多條規則之間任一符合即放行（或）</b>。例：一條 <code>DEPT_3=MSD</code>、一條 <code>工號=00058897</code>，兩種人都能看。</li>
+      <li><b>只填工號＝白名單</b>，不查名冊也放行。名冊臨時查不到時，這種規則照常有效。</li>
+      <li>最常見的設法：一條 <code>DEPT_3=MSD</code>（MSD 全員）＋ 幾條 EMS 窗口的工號。</li>
+    </ul>
+
+    <div class="note warn">
+      <span class="lb">建議的開啟順序</span>
+      <p>① 先新增規則 → ② 用「以工號測試」拿幾個實際的工號驗過（該過的過、該擋的擋）→ ③ 再按 <span class="ui">開啟卡控</span>。規則與開關的變更於<b>下一次進站或重新整理</b>時生效，已經在瀏覽中的人不會被中途踢出。</p>
+    </div>
+
+    <h3>被擋的人會看到什麼</h3>
+    <p>整頁只剩一張「🚫 無權限瀏覽此頁面」卡片：<b>登入工號</b>、<b>名冊上的姓名與部門</b>、<b>被擋的原因</b>（不在名冊／部門與工號皆不符／名冊查詢失敗），沒有頁首、也不會載入任何需求資料。請他把那張卡截圖給管理者，管理者依上面的部門或工號加規則即可。</p>
+    <div class="note">
+      <span class="lb">三種「被擋」的原因不一樣，找的人也不一樣</span>
+      <p><b>不在人員名冊中</b>：名冊裡沒有這個工號 —— 用「工號」白名單直接放他進來。<b>部門與工號皆不符合</b>：名冊查得到但沒有規則收他 —— 加部門或工號規則。<b>人員名冊查詢失敗</b>：這不是規則的問題，是名冊那張表連不上（跨伺服器），請聯絡系統維護人員；在那之前只有「工號白名單」的規則還能放人。</p>
+    </div>
+    <div class="note">
+      <span class="lb">卡控擋的是「畫面」</span>
+      <p>卡控開著時，不符合規則的人看不到任何一列資料。它不影響 Excel 匯出檔的傳遞、寄信通知，也不影響管理者在後台的操作。</p>
+    </div>
+  </section>
+
+  <!-- ═══ 15 ═══ -->
+  <section id="c15">
+    <h2><span class="n">15</span><span>疑難排解</span></h2>
 
     <details class="faq"><summary>日期欄位是灰的，改不動</summary><div class="body">
       <p>看鎖頭的樣子：<b>「🔒 已鎖定，點此修改」</b>代表這階段已經有日期，點一下就解鎖。<b>灰色實心、點不動的鎖頭</b>代表前一階段的結束日還沒填 —— 補完前一階段，這一階段會立刻開放（見第 4 章）。</p>
@@ -1058,9 +1404,9 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
     </div></details>
   </section>
 
-  <!-- ═══ 15 ═══ -->
-  <section id="c15">
-    <h2><span class="n">15</span><span>附錄：欄位對照</span></h2>
+  <!-- ═══ 16 ═══ -->
+  <section id="c16">
+    <h2><span class="n">16</span><span>附錄：欄位對照</span></h2>
     <p class="sub">Excel 欄名是匯入匯出的對應鍵，<b>不會因為畫面上的名稱調整而改變</b>。</p>
 
     <div class="tw"><table>

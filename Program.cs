@@ -146,6 +146,75 @@ using (var conn = new SqlConnection(connectionString))
         cmd.ExecuteNonQuery();
     }
 }
+// 頁面瀏覽權限的三張表（第 74 批，2026-09-21）。正式的變更紀錄在 18_add_access_control.sql，
+// 這裡只讓沒跑過腳本的環境也能啟動 —— 開關的預設值 'false' 也在這裡補，
+// 否則 /api/access-status 查不到那一列會被當成「沒開」，而那正好是想要的結果，但寧可明寫。
+using (var conn = new SqlConnection(connectionString))
+{
+    conn.Open();
+    using (var cmd = new SqlCommand(@"
+        IF OBJECT_ID(N'dbo.AccessRules', N'U') IS NULL
+        BEGIN
+            CREATE TABLE dbo.AccessRules (
+                RuleId    INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_AccessRules PRIMARY KEY,
+                Empno     NVARCHAR(50)  NULL,
+                DeptName  NVARCHAR(50)  NULL,
+                Dept1     NVARCHAR(50)  NULL,
+                Dept2     NVARCHAR(50)  NULL,
+                Dept3     NVARCHAR(50)  NULL,
+                Note      NVARCHAR(200) NULL,
+                CreatedBy NVARCHAR(50)  NULL,
+                CreatedAt DATETIME2(0)  NOT NULL CONSTRAINT DF_AccessRules_CreatedAt DEFAULT (SYSDATETIME()),
+                CONSTRAINT CK_AccessRules_AnyField CHECK (COALESCE(Empno, DeptName, Dept1, Dept2, Dept3) IS NOT NULL)
+            );
+        END
+        IF OBJECT_ID(N'dbo.AppSettings', N'U') IS NULL
+        BEGIN
+            CREATE TABLE dbo.AppSettings (
+                KeyName   NVARCHAR(50)  NOT NULL CONSTRAINT PK_AppSettings PRIMARY KEY,
+                Value     NVARCHAR(200) NOT NULL,
+                UpdatedBy NVARCHAR(50)  NULL,
+                UpdatedAt DATETIME2(0)  NOT NULL CONSTRAINT DF_AppSettings_UpdatedAt DEFAULT (SYSDATETIME())
+            );
+        END
+        IF NOT EXISTS (SELECT 1 FROM dbo.AppSettings WHERE KeyName = N'AccessControlEnabled')
+            INSERT INTO dbo.AppSettings (KeyName, Value, UpdatedBy) VALUES (N'AccessControlEnabled', N'false', N'system');
+        IF OBJECT_ID(N'dbo.AccessLog', N'U') IS NULL
+        BEGIN
+            CREATE TABLE dbo.AccessLog (
+                Id      INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_AccessLog PRIMARY KEY,
+                Action  NVARCHAR(20)  NOT NULL,
+                Detail  NVARCHAR(400) NULL,
+                Actor   NVARCHAR(50)  NULL,
+                At      DATETIME2(0)  NOT NULL CONSTRAINT DF_AccessLog_At DEFAULT (SYSDATETIME()),
+                CONSTRAINT CK_AccessLog_Action CHECK (Action IN (N'ADD_RULE', N'DELETE_RULE', N'ENABLE', N'DISABLE', N'ADD_ADMIN', N'DELETE_ADMIN'))
+            );
+        END
+        -- 管理者清單（第 75 批，19_add_access_admins.sql）。⚠️ 種子資料只在腳本裡，這裡只建空表
+        IF OBJECT_ID(N'dbo.AccessAdmins', N'U') IS NULL
+        BEGIN
+            CREATE TABLE dbo.AccessAdmins (
+                Id        INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_AccessAdmins PRIMARY KEY,
+                Empno     NVARCHAR(50)  NOT NULL,
+                Note      NVARCHAR(200) NULL,
+                CreatedBy NVARCHAR(50)  NULL,
+                CreatedAt DATETIME2(0)  NOT NULL CONSTRAINT DF_AccessAdmins_CreatedAt DEFAULT (SYSDATETIME()),
+                CONSTRAINT UQ_AccessAdmins_Empno UNIQUE (Empno)
+            );
+        END
+        -- 第 74 批建的 CHECK 沒有 ADD_ADMIN；既有環境靠這段補
+        IF EXISTS (SELECT 1 FROM sys.check_constraints
+                   WHERE name = N'CK_AccessLog_Action' AND parent_object_id = OBJECT_ID(N'dbo.AccessLog')
+                     AND definition NOT LIKE N'%ADD_ADMIN%')
+        BEGIN
+            ALTER TABLE dbo.AccessLog DROP CONSTRAINT CK_AccessLog_Action;
+            ALTER TABLE dbo.AccessLog WITH CHECK
+                ADD CONSTRAINT CK_AccessLog_Action CHECK (Action IN (N'ADD_RULE', N'DELETE_RULE', N'ENABLE', N'DISABLE', N'ADD_ADMIN', N'DELETE_ADMIN'));
+        END", conn))
+    {
+        cmd.ExecuteNonQuery();
+    }
+}
 // Add MsdConfirmHistory column if it doesn't exist
 using (var conn = new SqlConnection(connectionString))
 {
@@ -444,6 +513,23 @@ static bool IsCrossSiteRequest(HttpContext ctx)
 
 // ─── API Endpoints ───
 
+// ─── 使用者手冊（第 76 批，2026-09-21 使用者要求「把手冊路徑加到網頁上」）───
+// 手冊的唯一來源是 docs/使用者手冊.html（不在 wwwroot 底下，靜態檔中介軟體不會服務它）。
+// 這裡不搬檔、不複製一份進 wwwroot —— 兩份的話日後一定只會改到其中一邊。
+// 改由這支端點直接讀那個檔回傳；csproj 另有 Content 項目讓 dotnet publish 也把 docs/ 帶出去。
+// 網址用 ASCII 的 /manual（前端 api('/manual')，子路徑部署照樣對），避免中文檔名進 URL。
+// ⚠️ 匿名、不套瀏覽權限卡控：卡控擋的是資料畫面，手冊裡沒有任何需求資料。
+// ⚠️ no-cache：手冊改完部署就要立刻看到新的，它沒有 ?v= 版本號可帶。
+app.MapGet("/manual", async (HttpContext ctx) =>
+{
+    var file = Path.Combine(app.Environment.ContentRootPath, "docs", "使用者手冊.html");
+    if (!File.Exists(file))
+        return Results.Problem(statusCode: 404, title: "找不到使用者手冊",
+                               detail: "伺服器上沒有 docs/使用者手冊.html，請確認部署時有一併複製 docs 資料夾。");
+    ctx.Response.Headers.CacheControl = "no-cache, no-store, must-revalidate";
+    return Results.Text(await File.ReadAllTextAsync(file), "text/html", System.Text.Encoding.UTF8);
+});
+
 // 取得桌機目前 Windows 登入者。未帶認證票證的請求會收到 401 + WWW-Authenticate: Negotiate，
 // 網域內瀏覽器會自動補上；非網域環境前端 catch 掉即可（帳號視為 null，寫入照常、ChangedBy 留空）。
 app.MapGet("/api/whoami", (HttpContext ctx) =>
@@ -458,6 +544,520 @@ app.MapGet("/api/whoami", (HttpContext ctx) =>
 // 模擬帳號是否開放（前端要知道要不要顯示切換入口）。這支不需要驗證，
 // 否則非網域環境連「能不能模擬」都問不到，等於整個功能鎖死
 app.MapGet("/api/authinfo", () => Results.Ok(new { allowSimulation }));
+
+// ─── 頁面瀏覽權限卡控（第 74 批，2026-09-21）───
+// 做法對齊 C:\Gantt（Program.cs 的 /api/access-check 那一段）：登入者工號 → 查
+// [WEB].[dbo].[notes_person] 名冊拿部門 → 比對 dbo.AccessRules。**同一條規則內有填的欄位
+// 全部符合才通過（AND）；多條規則之間任一符合即放行（OR）**；只填工號＝白名單，不查名冊。
+// 開關 dbo.AppSettings.AccessControlEnabled 預設 false（腳本一跑就把全公司鎖在門外是最糟的部署）。
+//
+// ⚠️ 與 Gantt 的三個刻意差異（使用者 2026-09-21 拍板）：
+//   1. **工號由後端自己從 ctx.User 讀**（這幾支都掛 Negotiate），不收前端的 ?empId ——
+//      Gantt 那支收參數，改網址就能用別人的工號過門。模擬帳號（AllowSimulation）因此也
+//      不能拿來過門：它只存在前端 state 裡，這裡看不到。
+//   2. **誰能改規則 = appsettings 的 Access:Admins 工號清單**，不是「自己選主管登入」。
+//      管理者**一律可瀏覽、不受規則限制** —— 規則設錯時唯一的出路不能只剩 SSMS。
+//   3. 卡控**只擋畫面**：/api/requirements 等端點維持匿名，curl／測試腳本／寄信路徑完全不受影響。
+//      這一點與 Gantt 相同，是已知且接受的邊界（見 系統架構.md 第 6 節）。
+//
+// ⚠️ 名冊查詢失敗（遠端 VIEW 掛了）時：**含部門條件的規則一律不成立**、只有純工號規則還能過
+//    （fail-closed）。畫面上要講「名冊查詢失敗」而不是「你不在名單上」—— 那是兩件事、找的人不同。
+
+// 名冊的三段式名稱可由 appsettings 覆寫（即時讀取）。⚠️ 它會被串進 SQL，所以只准 [字元／底線／點／中括號]，
+// 認不得的一律退回預設值 —— 設定檔打錯字得到的是「查不到人」而不是 SQL 注入
+string PersonView()
+{
+    var v = (app.Configuration["Access:PersonView"] ?? "").Trim();
+    return v != "" && Regex.IsMatch(v, @"^[\w\[\]\.]+$") ? v : "[WEB].[dbo].[notes_person]";
+}
+
+// 管理者清單 ＝ **dbo.AccessAdmins ∪ appsettings 的 Access:Admins**（第 75 批，2026-09-21）。
+// DB 那份是正式的（面板上維護、進 AccessLog）；設定檔那份是**後備**：第一個管理者從哪來、
+// 把自己刪光了怎麼辦，都靠它。正式主機平常留空。
+// 設定檔接受兩種寫法：JSON 陣列 ["a","b"]，或一個字串 "a, b"（逗號／分號分隔）。每一筆都先剝網域。
+// ⚠️⚠️ **陣列在多個設定檔之間是「依索引覆寫」不是「合併」**（2026-09-21 使用者實際踩到）：
+//    appsettings.json 寫 ["00002732","yu-tinglin"]、appsettings.Development.json 寫 ["yu-tinglin"]
+//    → Development 的 Admins:0 蓋掉 appsettings 的 Admins:0，結果是 ["yu-tinglin","yu-tinglin"]，
+//    00002732 **靜靜消失**，面板測他會顯示「會被擋下」而兩個檔案看起來都沒寫錯。
+//    這正是清單搬進 DB 的原因；設定檔那份只留後備用途。
+HashSet<string> ConfigAdmins()
+{
+    var sec = app.Configuration.GetSection("Access:Admins");
+    IEnumerable<string?> raw = sec.Value != null
+        ? sec.Value.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
+        : sec.GetChildren().Select(c => c.Value);
+    return raw.Select(a => StripDomain(a ?? "", authStripPrefix)).Where(a => a != "")
+              .ToHashSet(StringComparer.OrdinalIgnoreCase);
+}
+// 寫入端點開頭那道「只有管理者」的門。自己開一條連線 —— 那幾支的交易連線是在 try 裡才開的，
+// 門要擋在交易之前，多一條短連線比把 403 塞進交易裡乾淨
+async Task<bool> IsAccessAdminAsync(string? me)
+{
+    if (me == null) return false;
+    using var conn = new SqlConnection(connectionString);
+    await conn.OpenAsync();
+    return (await AccessAdminsAsync(conn)).Contains(me);
+}
+async Task<HashSet<string>> AccessAdminsAsync(SqlConnection conn)
+{
+    var set = ConfigAdmins();
+    using var cmd = new SqlCommand("SELECT Empno FROM dbo.AccessAdmins", conn);
+    using var r = await cmd.ExecuteReaderAsync();
+    while (await r.ReadAsync())
+    {
+        var e = StripDomain(r.GetString(0), authStripPrefix);
+        if (e != "") set.Add(e);
+    }
+    return set;
+}
+
+// 目前這個請求的 Windows 工號。掛了 Negotiate 的端點才會有值；其餘是 null
+string? WindowsEmpId(HttpContext ctx)
+{
+    var s = StripDomain(ctx.User?.Identity?.Name ?? "", authStripPrefix);
+    return string.IsNullOrWhiteSpace(s) ? null : s;
+}
+
+async Task<bool> AccessEnabledAsync(SqlConnection conn)
+{
+    using var cmd = new SqlCommand("SELECT Value FROM dbo.AppSettings WHERE KeyName = N'AccessControlEnabled'", conn);
+    return string.Equals((await cmd.ExecuteScalarAsync()) as string, "true", StringComparison.OrdinalIgnoreCase);
+}
+
+// 規則 → 「工號=X 且 DEPT_3=Y」這種描述。稽核列與回應訊息共用同一支
+static string AccessRuleDesc(string? empno, string? deptName, string? d1, string? d2, string? d3)
+{
+    var parts = new List<string>();
+    if (empno != null)    parts.Add("工號=" + empno);
+    if (deptName != null) parts.Add("DEPTNAME=" + deptName);
+    if (d1 != null)       parts.Add("DEPT_1=" + d1);
+    if (d2 != null)       parts.Add("DEPT_2=" + d2);
+    if (d3 != null)       parts.Add("DEPT_3=" + d3);
+    return string.Join(" 且 ", parts);
+}
+
+// 拿一個工號去跑一遍規則。isAdmin 的人直接放行（見上面第 2 點）。
+async Task<AccessVerdict> EvaluateAccessAsync(SqlConnection conn, string empId, bool isAdmin)
+{
+    // 讀規則
+    var rules = new List<(string? Empno, string? DeptName, string? D1, string? D2, string? D3)>();
+    using (var cmd = new SqlCommand("SELECT Empno, DeptName, Dept1, Dept2, Dept3 FROM dbo.AccessRules", conn))
+    using (var r = await cmd.ExecuteReaderAsync())
+        while (await r.ReadAsync())
+            rules.Add((r.IsDBNull(0) ? null : r.GetString(0).Trim(),
+                       r.IsDBNull(1) ? null : r.GetString(1).Trim(),
+                       r.IsDBNull(2) ? null : r.GetString(2).Trim(),
+                       r.IsDBNull(3) ? null : r.GetString(3).Trim(),
+                       r.IsDBNull(4) ? null : r.GetString(4).Trim()));
+
+    // 查名冊。遠端是跨 server 的 VIEW，查詢失敗是可預期的 —— 記下來、不要讓整支 500
+    AccessPerson? person = null;
+    string? lookupError = null;
+    try
+    {
+        using var cmd = new SqlCommand(
+            $"SELECT TOP 1 NAME, ENAME, DEPTNAME, DEPT_1, DEPT_2, DEPT_3 FROM {PersonView()} WHERE LTRIM(RTRIM(EMPNO)) = @id", conn);
+        cmd.Parameters.AddWithValue("@id", empId);
+        using var r = await cmd.ExecuteReaderAsync();
+        if (await r.ReadAsync())
+            person = new AccessPerson(empId,
+                r.IsDBNull(0) ? null : r.GetString(0).Trim(),
+                r.IsDBNull(1) ? null : r.GetString(1).Trim(),
+                r.IsDBNull(2) ? null : r.GetString(2).Trim(),
+                r.IsDBNull(3) ? null : r.GetString(3).Trim(),
+                r.IsDBNull(4) ? null : r.GetString(4).Trim(),
+                r.IsDBNull(5) ? null : r.GetString(5).Trim());
+    }
+    catch (Exception ex)
+    {
+        lookupError = $"人員名冊（{PersonView()}）查詢失敗";
+        app.Logger.LogError(ex, "notes_person 查詢失敗");
+    }
+
+    if (isAdmin)
+        return new AccessVerdict(true, "管理者，不受規則限制", person, lookupError != null);
+
+    var cmp = StringComparer.OrdinalIgnoreCase;
+    bool Matches((string? Empno, string? DeptName, string? D1, string? D2, string? D3) rule)
+    {
+        bool hasDept = rule.DeptName != null || rule.D1 != null || rule.D2 != null || rule.D3 != null;
+        if (hasDept && person == null) return false;            // 名冊查不到／查詢失敗 → 含部門條件的規則不成立
+        if (rule.Empno != null && !cmp.Equals(rule.Empno, empId)) return false;
+        if (rule.DeptName != null && !cmp.Equals(rule.DeptName, person!.deptname ?? "")) return false;
+        if (rule.D1 != null && !cmp.Equals(rule.D1, person!.dept1 ?? "")) return false;
+        if (rule.D2 != null && !cmp.Equals(rule.D2, person!.dept2 ?? "")) return false;
+        if (rule.D3 != null && !cmp.Equals(rule.D3, person!.dept3 ?? "")) return false;
+        return true;
+    }
+    if (rules.Any(Matches))
+        return new AccessVerdict(true, "符合允許瀏覽的條件", person, lookupError != null);
+    if (lookupError != null)
+        return new AccessVerdict(false, lookupError + "，且工號不在白名單。請聯絡系統管理員", person, true);
+    if (person == null)
+        return new AccessVerdict(false, $"工號 {empId} 不在人員名冊中，且不在工號白名單", null, false);
+    return new AccessVerdict(false,
+        $"您的部門（{person.deptname ?? "-"}；{person.dept1 ?? "-"} / {person.dept2 ?? "-"} / {person.dept3 ?? "-"}）與工號皆不符合允許瀏覽的條件",
+        person, false);
+}
+
+// 開關而已，匿名可查。前端在 /api/access-check 拿到 401（非網域環境）時靠這一支決定
+// 「沒有工號」該放行還是該擋：開關沒開就放行（與 Gantt 相同結果），開著就擋。
+app.MapGet("/api/access-status", async () =>
+{
+    try
+    {
+        using var conn = new SqlConnection(connectionString);
+        await conn.OpenAsync();
+        return Results.Ok(new { enabled = await AccessEnabledAsync(conn) });
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(ex, "access-status 查詢失敗");
+        return Results.Problem("讀取瀏覽權限開關失敗", statusCode: 500);
+    }
+});
+
+// 這個人能不能看。工號由後端自己讀（見上面第 1 點）。
+// ?testEmpId=X：管理者面板的「工號測試」—— 只有管理者能用、不看總開關、拿 X 而不是自己去跑規則。
+// 非管理者帶這個參數一律 403，否則它就是一支「查任何人部門」的端點。
+app.MapGet("/api/access-check", async (HttpContext ctx, string? testEmpId) =>
+{
+    try
+    {
+        var me = WindowsEmpId(ctx);
+        using var conn = new SqlConnection(connectionString);
+        await conn.OpenAsync();
+        var admins = await AccessAdminsAsync(conn);
+        var isAdmin = me != null && admins.Contains(me);
+        var enabled = await AccessEnabledAsync(conn);
+
+        var test = (testEmpId ?? "").Trim();
+        if (test != "")
+        {
+            if (!isAdmin) return Results.Json(new { message = "只有管理者可以測試其他工號" }, statusCode: 403);
+            var target = StripDomain(test, authStripPrefix);
+            var tv = await EvaluateAccessAsync(conn, target, admins.Contains(target));
+            return Results.Ok(new { enabled, allowed = tv.allowed, reason = tv.reason, empId = target,
+                                    isAdmin = admins.Contains(target), person = tv.person, rosterError = tv.rosterError, preview = true });
+        }
+
+        // Negotiate 過了卻拿不到名字（理論上不會）：當成沒有工號
+        if (me == null)
+            return Results.Ok(new { enabled, allowed = !enabled, reason = enabled ? "無法取得您的 Windows 登入工號，無法驗證瀏覽權限" : (string?)null,
+                                    empId = (string?)null, isAdmin = false, person = (AccessPerson?)null, rosterError = false, preview = false });
+
+        if (!enabled)
+            return Results.Ok(new { enabled, allowed = true, reason = (string?)null, empId = me, isAdmin, person = (AccessPerson?)null, rosterError = false, preview = false });
+
+        var v = await EvaluateAccessAsync(conn, me, isAdmin);
+        return Results.Ok(new { enabled, allowed = v.allowed, reason = v.reason, empId = me, isAdmin, person = v.person, rosterError = v.rosterError, preview = false });
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(ex, "access-check 失敗");
+        return Results.Problem("瀏覽權限檢查失敗", statusCode: 500);
+    }
+}).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
+
+// 管理者面板：開關 + 規則清單 + 最近的稽核列
+app.MapGet("/api/access-rules", async (HttpContext ctx) =>
+{
+    try
+    {
+        var me = WindowsEmpId(ctx);
+        using var conn = new SqlConnection(connectionString);
+        await conn.OpenAsync();
+        var adminSet = await AccessAdminsAsync(conn);
+        if (me == null || !adminSet.Contains(me))
+            return Results.Json(new { message = "只有管理者可以檢視瀏覽權限規則" }, statusCode: 403);
+        var enabled = await AccessEnabledAsync(conn);
+        // 管理者清單（DB 那份逐筆列出；設定檔那份只回工號，面板標成「設定檔後備」）
+        var cfgAdmins = ConfigAdmins();
+        var admins = new List<object>();
+        using (var cmd = new SqlCommand("SELECT Id, Empno, Note, CreatedBy, CreatedAt FROM dbo.AccessAdmins ORDER BY Id", conn))
+        using (var r = await cmd.ExecuteReaderAsync())
+            while (await r.ReadAsync())
+                admins.Add(new
+                {
+                    id        = r.GetInt32(0),
+                    empno     = r.GetString(1),
+                    note      = r.IsDBNull(2) ? null : r.GetString(2),
+                    createdBy = r.IsDBNull(3) ? null : r.GetString(3),
+                    createdAt = r.GetDateTime(4).ToString("yyyy-MM-dd HH:mm"),
+                    isSelf    = string.Equals(r.GetString(1).Trim(), me, StringComparison.OrdinalIgnoreCase)
+                });
+        var rules = new List<object>();
+        using (var cmd = new SqlCommand("SELECT RuleId, Empno, DeptName, Dept1, Dept2, Dept3, Note, CreatedBy, CreatedAt FROM dbo.AccessRules ORDER BY RuleId", conn))
+        using (var r = await cmd.ExecuteReaderAsync())
+            while (await r.ReadAsync())
+                rules.Add(new
+                {
+                    id        = r.GetInt32(0),
+                    empno     = r.IsDBNull(1) ? null : r.GetString(1),
+                    deptName  = r.IsDBNull(2) ? null : r.GetString(2),
+                    dept1     = r.IsDBNull(3) ? null : r.GetString(3),
+                    dept2     = r.IsDBNull(4) ? null : r.GetString(4),
+                    dept3     = r.IsDBNull(5) ? null : r.GetString(5),
+                    note      = r.IsDBNull(6) ? null : r.GetString(6),
+                    createdBy = r.IsDBNull(7) ? null : r.GetString(7),
+                    createdAt = r.GetDateTime(8).ToString("yyyy-MM-dd HH:mm")
+                });
+        var log = new List<object>();
+        using (var cmd = new SqlCommand("SELECT TOP 30 Id, Action, Detail, Actor, At FROM dbo.AccessLog ORDER BY Id DESC", conn))
+        using (var r = await cmd.ExecuteReaderAsync())
+            while (await r.ReadAsync())
+                log.Add(new
+                {
+                    id     = r.GetInt32(0),
+                    action = r.GetString(1),
+                    detail = r.IsDBNull(2) ? null : r.GetString(2),
+                    actor  = r.IsDBNull(3) ? null : r.GetString(3),
+                    at     = r.GetDateTime(4).ToString("yyyy-MM-dd HH:mm")
+                });
+        return Results.Ok(new { enabled, rules, log, personView = PersonView(), admins, configAdmins = cfgAdmins.OrderBy(a => a).ToArray(), me });
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(ex, "access-rules 查詢失敗");
+        return Results.Problem("讀取瀏覽權限規則失敗", statusCode: 500);
+    }
+}).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
+
+// 新增規則。至少填一欄；相同條件組合已存在回 409。規則與稽核列同一個交易
+app.MapPost("/api/access-rules", async (HttpContext ctx, AccessRuleRequest body) =>
+{
+    if (IsCrossSiteRequest(ctx)) return Results.Json(new { message = "拒絕跨站請求" }, statusCode: 403);
+    var me = WindowsEmpId(ctx);
+    if (!await IsAccessAdminAsync(me))
+        return Results.Json(new { message = "只有管理者可以新增瀏覽權限規則" }, statusCode: 403);
+
+    static string? Clean(string? s, int max) { var t = (s ?? "").Trim(); return t == "" ? null : (t.Length > max ? t[..max] : t); }
+    var empno = Clean(body.empno, 50); var deptName = Clean(body.deptName, 50);
+    var d1 = Clean(body.dept1, 50); var d2 = Clean(body.dept2, 50); var d3 = Clean(body.dept3, 50);
+    var note = Clean(body.note, 200);
+    if (empno != null) empno = StripDomain(empno, authStripPrefix);
+    if (empno == null && deptName == null && d1 == null && d2 == null && d3 == null)
+        return Results.BadRequest(new { message = "至少填寫一個條件欄位（工號或部門）" });
+
+    try
+    {
+        using var conn = new SqlConnection(connectionString);
+        await conn.OpenAsync();
+        using var tx = conn.BeginTransaction();
+        using (var dup = new SqlCommand(@"
+            SELECT COUNT(*) FROM dbo.AccessRules
+            WHERE ISNULL(Empno,N'') = ISNULL(@E,N'') AND ISNULL(DeptName,N'') = ISNULL(@DN,N'')
+              AND ISNULL(Dept1,N'') = ISNULL(@D1,N'') AND ISNULL(Dept2,N'') = ISNULL(@D2,N'') AND ISNULL(Dept3,N'') = ISNULL(@D3,N'')", conn, tx))
+        {
+            dup.Parameters.AddWithValue("@E",  (object?)empno ?? DBNull.Value);
+            dup.Parameters.AddWithValue("@DN", (object?)deptName ?? DBNull.Value);
+            dup.Parameters.AddWithValue("@D1", (object?)d1 ?? DBNull.Value);
+            dup.Parameters.AddWithValue("@D2", (object?)d2 ?? DBNull.Value);
+            dup.Parameters.AddWithValue("@D3", (object?)d3 ?? DBNull.Value);
+            if ((int)(await dup.ExecuteScalarAsync())! > 0)
+                return Results.Json(new { message = "相同條件組合的規則已存在" }, statusCode: 409);
+        }
+        int newId;
+        using (var ins = new SqlCommand(@"
+            INSERT INTO dbo.AccessRules (Empno, DeptName, Dept1, Dept2, Dept3, Note, CreatedBy)
+            OUTPUT INSERTED.RuleId VALUES (@E, @DN, @D1, @D2, @D3, @N, @By)", conn, tx))
+        {
+            ins.Parameters.AddWithValue("@E",  (object?)empno ?? DBNull.Value);
+            ins.Parameters.AddWithValue("@DN", (object?)deptName ?? DBNull.Value);
+            ins.Parameters.AddWithValue("@D1", (object?)d1 ?? DBNull.Value);
+            ins.Parameters.AddWithValue("@D2", (object?)d2 ?? DBNull.Value);
+            ins.Parameters.AddWithValue("@D3", (object?)d3 ?? DBNull.Value);
+            ins.Parameters.AddWithValue("@N",  (object?)note ?? DBNull.Value);
+            ins.Parameters.AddWithValue("@By", me);
+            newId = (int)(await ins.ExecuteScalarAsync())!;
+        }
+        var desc = AccessRuleDesc(empno, deptName, d1, d2, d3) + (note != null ? $"（{note}）" : "");
+        await WriteAccessLogAsync(conn, tx, "ADD_RULE", desc, me);
+        await tx.CommitAsync();
+        return Results.Ok(new { success = true, id = newId, desc });
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(ex, "access-rules 新增失敗");
+        return Results.Problem("新增瀏覽權限規則失敗", statusCode: 500);
+    }
+}).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
+
+app.MapDelete("/api/access-rules/{id:int}", async (HttpContext ctx, int id) =>
+{
+    if (IsCrossSiteRequest(ctx)) return Results.Json(new { message = "拒絕跨站請求" }, statusCode: 403);
+    var me = WindowsEmpId(ctx);
+    if (!await IsAccessAdminAsync(me))
+        return Results.Json(new { message = "只有管理者可以刪除瀏覽權限規則" }, statusCode: 403);
+    try
+    {
+        using var conn = new SqlConnection(connectionString);
+        await conn.OpenAsync();
+        using var tx = conn.BeginTransaction();
+        string? desc = null;
+        using (var sel = new SqlCommand("SELECT Empno, DeptName, Dept1, Dept2, Dept3, Note FROM dbo.AccessRules WHERE RuleId = @Id", conn, tx))
+        {
+            sel.Parameters.AddWithValue("@Id", id);
+            using var r = await sel.ExecuteReaderAsync();
+            if (await r.ReadAsync())
+                desc = AccessRuleDesc(r.IsDBNull(0) ? null : r.GetString(0), r.IsDBNull(1) ? null : r.GetString(1),
+                                      r.IsDBNull(2) ? null : r.GetString(2), r.IsDBNull(3) ? null : r.GetString(3),
+                                      r.IsDBNull(4) ? null : r.GetString(4))
+                       + (r.IsDBNull(5) ? "" : $"（{r.GetString(5)}）");
+        }
+        if (desc == null) return Results.NotFound(new { message = "規則不存在或已刪除" });
+        using (var del = new SqlCommand("DELETE FROM dbo.AccessRules WHERE RuleId = @Id", conn, tx))
+        {
+            del.Parameters.AddWithValue("@Id", id);
+            await del.ExecuteNonQueryAsync();
+        }
+        await WriteAccessLogAsync(conn, tx, "DELETE_RULE", desc, me);
+        await tx.CommitAsync();
+        return Results.Ok(new { success = true, desc });
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(ex, "access-rules 刪除失敗");
+        return Results.Problem("刪除瀏覽權限規則失敗", statusCode: 500);
+    }
+}).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
+
+// 總開關。開啟時若一條規則都沒有，回 warning 但照樣開 —— 「只有管理者能看」是做得出來、
+// 也可能是刻意的（先開著只讓自己看）；畫面上那句黃字負責講清楚。
+app.MapPut("/api/access-control", async (HttpContext ctx, AccessToggleRequest body) =>
+{
+    if (IsCrossSiteRequest(ctx)) return Results.Json(new { message = "拒絕跨站請求" }, statusCode: 403);
+    var me = WindowsEmpId(ctx);
+    if (!await IsAccessAdminAsync(me))
+        return Results.Json(new { message = "只有管理者可以切換瀏覽權限卡控" }, statusCode: 403);
+    try
+    {
+        using var conn = new SqlConnection(connectionString);
+        await conn.OpenAsync();
+        using var tx = conn.BeginTransaction();
+        using (var up = new SqlCommand(@"
+            UPDATE dbo.AppSettings SET Value = @V, UpdatedBy = @By, UpdatedAt = SYSDATETIME() WHERE KeyName = N'AccessControlEnabled';
+            IF @@ROWCOUNT = 0 INSERT INTO dbo.AppSettings (KeyName, Value, UpdatedBy) VALUES (N'AccessControlEnabled', @V, @By);", conn, tx))
+        {
+            up.Parameters.AddWithValue("@V", body.enabled ? "true" : "false");
+            up.Parameters.AddWithValue("@By", me);
+            await up.ExecuteNonQueryAsync();
+        }
+        int ruleCount;
+        using (var cnt = new SqlCommand("SELECT COUNT(*) FROM dbo.AccessRules", conn, tx))
+            ruleCount = (int)(await cnt.ExecuteScalarAsync())!;
+        await WriteAccessLogAsync(conn, tx, body.enabled ? "ENABLE" : "DISABLE",
+            body.enabled ? $"開啟卡控（當時 {ruleCount} 條規則）" : "關閉卡控", me);
+        await tx.CommitAsync();
+        return Results.Ok(new { success = true, enabled = body.enabled, ruleCount,
+                                warning = body.enabled && ruleCount == 0 ? "目前沒有任何規則：卡控開著時只有管理者（Access:Admins）看得到這個網頁" : (string?)null });
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(ex, "access-control 切換失敗");
+        return Results.Problem("切換瀏覽權限卡控失敗", statusCode: 500);
+    }
+}).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
+
+// ─── 管理者清單（第 75 批）───
+// 新增管理者。工號剝網域、唯一；與稽核列同一個交易
+app.MapPost("/api/access-admins", async (HttpContext ctx, AccessAdminRequest body) =>
+{
+    if (IsCrossSiteRequest(ctx)) return Results.Json(new { message = "拒絕跨站請求" }, statusCode: 403);
+    var me = WindowsEmpId(ctx);
+    if (!await IsAccessAdminAsync(me))
+        return Results.Json(new { message = "只有管理者可以新增管理者" }, statusCode: 403);
+    var empno = StripDomain(body.empno ?? "", authStripPrefix);
+    if (empno == "") return Results.BadRequest(new { message = "請填寫工號" });
+    if (empno.Length > 50) empno = empno[..50];
+    var note = (body.note ?? "").Trim(); if (note.Length > 200) note = note[..200];
+    try
+    {
+        using var conn = new SqlConnection(connectionString);
+        await conn.OpenAsync();
+        using var tx = conn.BeginTransaction();
+        using (var dup = new SqlCommand("SELECT COUNT(*) FROM dbo.AccessAdmins WHERE Empno = @E", conn, tx))
+        {
+            dup.Parameters.AddWithValue("@E", empno);
+            if ((int)(await dup.ExecuteScalarAsync())! > 0)
+                return Results.Json(new { message = $"{empno} 已經是管理者" }, statusCode: 409);
+        }
+        int newId;
+        using (var ins = new SqlCommand("INSERT INTO dbo.AccessAdmins (Empno, Note, CreatedBy) OUTPUT INSERTED.Id VALUES (@E, @N, @By)", conn, tx))
+        {
+            ins.Parameters.AddWithValue("@E", empno);
+            ins.Parameters.AddWithValue("@N", note == "" ? DBNull.Value : note);
+            ins.Parameters.AddWithValue("@By", me!);
+            newId = (int)(await ins.ExecuteScalarAsync())!;
+        }
+        await WriteAccessLogAsync(conn, tx, "ADD_ADMIN", "工號=" + empno + (note != "" ? $"（{note}）" : ""), me!);
+        await tx.CommitAsync();
+        return Results.Ok(new { success = true, id = newId, empno });
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(ex, "access-admins 新增失敗");
+        return Results.Problem("新增管理者失敗", statusCode: 500);
+    }
+}).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
+
+// 刪除管理者。⚠️ 兩道防呆：**不能刪自己**、**不能刪掉最後一個**（設定檔後備的也算進去）——
+// 少了任何一道，一個手滑之後唯一的出路就是 SSMS 或登上 IIS 主機改檔案
+app.MapDelete("/api/access-admins/{id:int}", async (HttpContext ctx, int id) =>
+{
+    if (IsCrossSiteRequest(ctx)) return Results.Json(new { message = "拒絕跨站請求" }, statusCode: 403);
+    var me = WindowsEmpId(ctx);
+    if (!await IsAccessAdminAsync(me))
+        return Results.Json(new { message = "只有管理者可以移除管理者" }, statusCode: 403);
+    try
+    {
+        using var conn = new SqlConnection(connectionString);
+        await conn.OpenAsync();
+        using var tx = conn.BeginTransaction();
+        string? empno = null, note = null;
+        using (var sel = new SqlCommand("SELECT Empno, Note FROM dbo.AccessAdmins WHERE Id = @Id", conn, tx))
+        {
+            sel.Parameters.AddWithValue("@Id", id);
+            using var r = await sel.ExecuteReaderAsync();
+            if (await r.ReadAsync()) { empno = r.GetString(0).Trim(); note = r.IsDBNull(1) ? null : r.GetString(1); }
+        }
+        if (empno == null) return Results.NotFound(new { message = "這個管理者不存在或已被移除" });
+        if (string.Equals(StripDomain(empno, authStripPrefix), me, StringComparison.OrdinalIgnoreCase))
+            return Results.BadRequest(new { message = "不能移除自己。請由另一位管理者操作" });
+        // 剩下的人（DB 其餘 + 設定檔後備）至少要有一個
+        var remaining = ConfigAdmins();
+        using (var rest = new SqlCommand("SELECT Empno FROM dbo.AccessAdmins WHERE Id <> @Id", conn, tx))
+        {
+            rest.Parameters.AddWithValue("@Id", id);
+            using var r = await rest.ExecuteReaderAsync();
+            while (await r.ReadAsync()) { var e = StripDomain(r.GetString(0), authStripPrefix); if (e != "") remaining.Add(e); }
+        }
+        if (remaining.Count == 0)
+            return Results.BadRequest(new { message = "不能移除最後一位管理者，否則沒有人能再進這個面板" });
+        using (var del = new SqlCommand("DELETE FROM dbo.AccessAdmins WHERE Id = @Id", conn, tx))
+        {
+            del.Parameters.AddWithValue("@Id", id);
+            await del.ExecuteNonQueryAsync();
+        }
+        await WriteAccessLogAsync(conn, tx, "DELETE_ADMIN", "工號=" + empno + (note != null ? $"（{note}）" : ""), me!);
+        await tx.CommitAsync();
+        return Results.Ok(new { success = true, empno });
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(ex, "access-admins 刪除失敗");
+        return Results.Problem("移除管理者失敗", statusCode: 500);
+    }
+}).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
+
+static async Task WriteAccessLogAsync(SqlConnection conn, SqlTransaction tx, string action, string? detail, string actor)
+{
+    using var cmd = new SqlCommand("INSERT INTO dbo.AccessLog (Action, Detail, Actor) VALUES (@A, @D, @Who)", conn, tx);
+    cmd.Parameters.AddWithValue("@A", action);
+    cmd.Parameters.AddWithValue("@D", (object?)(detail != null && detail.Length > 400 ? detail[..400] : detail) ?? DBNull.Value);
+    cmd.Parameters.AddWithValue("@Who", actor);
+    await cmd.ExecuteNonQueryAsync();
+}
 
 // 某筆需求（或全部）的時程異動軌跡
 // ⚠️ 已軟刪除的需求，它的軌跡也不該再回傳。統計報表的「時程異動」KPI 直接數這包的筆數
@@ -4134,6 +4734,30 @@ static async Task WriteAuditAsync(SqlConnection conn, int reqId, Requirement req
 
 app.Run();
 // Models
+// ─── 頁面瀏覽權限（第 74 批）───
+// 名冊上的一個人。JSON 欄名對齊 Gantt 的 person 物件（empno / name / ename / deptname / dept1~3）
+public record AccessPerson(string empno, string? name, string? ename, string? deptname, string? dept1, string? dept2, string? dept3);
+// EvaluateAccessAsync() 的結果。rosterError = 名冊查詢炸掉（不是「查不到這個人」）
+public record AccessVerdict(bool allowed, string reason, AccessPerson? person, bool rosterError);
+public class AccessRuleRequest
+{
+    public string? empno { get; set; }
+    public string? deptName { get; set; }
+    public string? dept1 { get; set; }
+    public string? dept2 { get; set; }
+    public string? dept3 { get; set; }
+    public string? note { get; set; }
+}
+public class AccessToggleRequest
+{
+    public bool enabled { get; set; }
+}
+public class AccessAdminRequest
+{
+    public string? empno { get; set; }
+    public string? note { get; set; }
+}
+
 // 指派人員（dbo.Assignee）。JSON 欄名為 id / empNo / name / dept / email / isActive。
 // DB 欄名刻意用使用者指定的 EMPO / NAME / DEPT / EMAIL（他會直接進 SSMS 維護），
 // C# 這邊沿用專案的 PascalCase。

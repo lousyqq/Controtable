@@ -1337,6 +1337,448 @@ const { useState, useMemo, Fragment, useEffect } = React;
             return <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" strokeWidth="2.5" aria-hidden="true"><path d="m19 12-7 7-7-7"/><path d="M12 5v14"/></svg>;
         };
 
+        // ─── 頁面瀏覽權限卡控（第 74 批，2026-09-21）───
+        // 做法對齊 C:\Gantt：載入時先打 /api/access-check，檢查完成前整頁只有載入畫面；
+        // 卡控開著且沒過 → AccessDeniedScreen 取代整個 App（不抓資料、不畫任何一列）。
+        // ⚠️ 工號由**後端**從 Windows 帳號讀（Negotiate），前端不送任何身分參數 ——
+        //    Gantt 那版收 ?empId=，改網址就能冒名；這裡的模擬帳號（AllowSimulation）
+        //    也因此不能拿來過門，它只存在前端 state。
+        // ⚠️ 逾時／4xx／5xx 一律是「錯誤畫面＋重試」，**不放行**（fail-closed）：未知狀態下自動放行
+        //    等於把閘門做成裝飾。只有 fetch 自己丟 TypeError（連不上）才放行 —— 那時 fetchReqs 也連不上，
+        //    畫面會另行顯示讀取失敗，這裡擋不擋沒差。
+        // ⚠️ 401 是「拿不到 Windows 工號」（非網域環境），不是錯誤：改問匿名的 /api/access-status，
+        //    開關沒開就放行、開著就擋（與 Gantt 的 empId 空字串走到同一個結果）。
+        const ACCESS_CHECK_TIMEOUT_MS = 15000;
+        async function checkAccess() {
+            const ctl = new AbortController();
+            const fuse = setTimeout(() => ctl.abort(), ACCESS_CHECK_TIMEOUT_MS);
+            try {
+                const res = await fetch(api('/api/access-check'), { signal: ctl.signal });
+                if (res.ok) return await res.json();
+                if (res.status === 401) {
+                    const st = await fetch(api('/api/access-status'), { signal: ctl.signal });
+                    if (!st.ok) throw new Error(`伺服器回應 ${st.status}`);
+                    const { enabled } = await st.json();
+                    return { enabled: !!enabled, allowed: !enabled, empId: null, isAdmin: false, person: null,
+                             reason: enabled ? '無法取得您的 Windows 登入工號（非網域環境），無法驗證瀏覽權限' : null };
+                }
+                let msg = `伺服器回應 ${res.status}`;
+                try { const j = await res.json(); if (j && (j.message || j.title)) msg = j.message || j.title; } catch (e) { /* 不是 JSON */ }
+                throw new Error(msg);
+            } finally { clearTimeout(fuse); }
+        }
+
+        // 檢查中／檢查失敗的整頁畫面。沒有任何資料、沒有頁首 —— 這時候還不知道能不能給他看
+        const AccessGateScreen = ({ error, onRetry }) => (
+            <div className="min-h-screen flex items-center justify-center p-6" style={{background:'var(--bg-body)', color:'var(--text-secondary)'}}>
+                <div className="rounded-xl shadow-lg w-full max-w-md p-8 text-center border" style={{background:'var(--bg-card)', borderColor:'var(--border-card)'}}>
+                    <div className="w-10 h-10 rounded-lg flex items-center justify-center text-white text-sm font-black mx-auto mb-4"
+                         style={{background:'var(--brand)'}}>M</div>
+                    {error ? (
+                        <>
+                            <h2 className="text-base font-bold mb-2" style={{color:'var(--text-primary)'}}>瀏覽權限檢查失敗</h2>
+                            <p className="text-sm mb-5 whitespace-pre-wrap" style={{color:'var(--tone-alert)'}}>{error}</p>
+                            <button onClick={onRetry} className="px-5 py-2 rounded-lg text-sm font-bold bg-indigo-500 text-white hover:bg-indigo-600 shadow-md transition-colors">重試</button>
+                        </>
+                    ) : (
+                        <p className="text-sm" style={{color:'var(--text-muted)'}}>正在確認瀏覽權限…</p>
+                    )}
+                </div>
+            </div>
+        );
+
+        // 卡控開著且沒過。工號、名冊上的姓名／部門、被擋的原因都印出來 ——
+        // 使用者要拿這一頁去找管理員，缺一項就得再截一次圖
+        const AccessDeniedScreen = ({ check }) => {
+            const p = check.person;
+            const deptText = p ? (p.deptname || [p.dept1, p.dept2, p.dept3].filter(Boolean).join(' / ') || '無部門資料') : null;
+            return (
+                <div className="min-h-screen flex items-center justify-center p-6" style={{background:'var(--bg-body)', color:'var(--text-secondary)'}}>
+                    <div className="rounded-xl shadow-lg w-full max-w-md p-8 border" style={{background:'var(--bg-card)', borderColor:'var(--tone-alert-border)'}}>
+                        <div className="w-12 h-12 rounded-xl flex items-center justify-center text-2xl mx-auto mb-4"
+                             style={{background:'var(--tone-alert-bg)', color:'var(--tone-alert)'}}>🚫</div>
+                        <h2 className="text-lg font-black text-center mb-1" style={{color:'var(--text-primary)'}}>無權限瀏覽此頁面</h2>
+                        <p className="text-xs text-center mb-5" style={{color:'var(--text-muted)'}}>您的帳號未被授權瀏覽 MSD 需求管控表。</p>
+                        <div className="rounded-lg border p-3.5 text-sm space-y-1.5 mb-4" style={{background:'var(--bg-detail-card)', borderColor:'var(--border-table)'}}>
+                            <div><span className="font-bold mr-2" style={{color:'var(--text-muted)'}}>登入工號</span>
+                                 <span className="font-mono font-bold" style={{color:'var(--text-primary)'}}>{check.empId || '（無法取得）'}</span></div>
+                            {p && (
+                                <div><span className="font-bold mr-2" style={{color:'var(--text-muted)'}}>人員名冊</span>
+                                     <span style={{color:'var(--text-secondary)'}}>{p.name || ''}{p.ename ? `（${p.ename}）` : ''} · {deptText}</span></div>
+                            )}
+                        </div>
+                        {check.reason && (
+                            <div className="rounded-lg border p-3 text-xs mb-5 whitespace-pre-wrap"
+                                 style={{background:'var(--tone-alert-bg)', borderColor:'var(--tone-alert-border)', color:'var(--tone-alert)'}}>{check.reason}</div>
+                        )}
+                        <p className="text-xs" style={{color:'var(--text-muted)'}}>若需要瀏覽權限，請聯絡系統管理員將您的部門或工號加入允許清單。</p>
+                    </div>
+                </div>
+            );
+        };
+
+        // 規則的五個條件欄位。同一條規則內有填的欄位**全部符合**才通過（AND）；多條規則之間任一符合即放行（OR）。
+        // key 對齊後端 AccessRuleRequest 與 /api/access-rules 回傳的欄名
+        const RULE_FIELDS = [
+            { key: 'empno',    label: '工號',     ph: '如 00058897',        hint: 'notes_person.EMPNO。只填這一欄＝白名單，不查名冊也放行' },
+            { key: 'deptName', label: 'DEPTNAME', ph: '如 12A_PTI/ESI/MSD', hint: '名冊上的完整部門路徑' },
+            { key: 'dept1',    label: 'DEPT_1',   ph: '如 12A_PTI',         hint: '第一層部門' },
+            { key: 'dept2',    label: 'DEPT_2',   ph: '如 ESI',             hint: '第二層部門' },
+            { key: 'dept3',    label: 'DEPT_3',   ph: '如 MSD',             hint: '第三層部門（最常用：MSD 全員＝DEPT_3=MSD）' }
+        ];
+        const ruleDesc = (r) => RULE_FIELDS.filter(f => r[f.key]).map(f => `${f.label}=${r[f.key]}`).join(' 且 ');
+        const ACCESS_LOG_LABEL = { ADD_RULE: '新增規則', DELETE_RULE: '刪除規則', ENABLE: '開啟卡控', DISABLE: '關閉卡控', ADD_ADMIN: '新增管理者', DELETE_ADMIN: '移除管理者' };
+
+        // 管理者的「瀏覽權限」面板：①總開關 ②新增規則 ③規則清單 ④工號測試 ⑤最近異動。
+        // ⚠️ 模組層元件（不是寫在 App 裡的函式）—— 寫在 App 裡會每次 render 重新掛載，
+        //    打到一半的工號會消失（第 25 批 renderAssigneeModal 那個坑的另一種解法）。
+        //    它自己管自己的 state，App 只給 onClose / showToast / 開窗當下的 check 結果。
+        const AccessPanel = ({ myCheck, showToast, onClose, onChanged }) => {
+            const [loading, setLoading] = useState(true);
+            const [loadError, setLoadError] = useState('');
+            const [enabled, setEnabled] = useState(false);
+            const [rules, setRules] = useState([]);
+            const [log, setLog] = useState([]);
+            // 管理者（第 75 批）：DB 那份逐筆（{id, empno, note, createdBy, createdAt, isSelf}），設定檔那份只有工號（後備）
+            const [admins, setAdmins] = useState([]);
+            const [configAdmins, setConfigAdmins] = useState([]);
+            const [adminForm, setAdminForm] = useState({ empno: '', note: '' });
+            const [personView, setPersonView] = useState('');
+            const [form, setForm] = useState({ empno: '', deptName: '', dept1: '', dept2: '', dept3: '', note: '' });
+            const [saving, setSaving] = useState(false);
+            const [toggling, setToggling] = useState(false);
+            const [testId, setTestId] = useState('');
+            const [testResult, setTestResult] = useState(null);
+            const [testing, setTesting] = useState(false);
+            const [logOpen, setLogOpen] = useState(false);
+
+            const load = async () => {
+                setLoading(true); setLoadError('');
+                try {
+                    const res = await fetch(api('/api/access-rules'));
+                    if (!res.ok) { const j = await res.json().catch(() => ({})); throw new Error(j.message || j.title || `伺服器回應 ${res.status}`); }
+                    const d = await res.json();
+                    setEnabled(!!d.enabled); setRules(d.rules || []); setLog(d.log || []);
+                    setAdmins(d.admins || []); setConfigAdmins(d.configAdmins || []); setPersonView(d.personView || '');
+                } catch (e) { setLoadError(e.message || '載入失敗'); }
+                finally { setLoading(false); }
+            };
+            useEffect(() => { load(); }, []);
+
+            const jsonReq = async (url, method, body) => {
+                const res = await fetch(api(url), { method, headers: body ? {'Content-Type': 'application/json'} : undefined, body: body ? JSON.stringify(body) : undefined });
+                const j = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(j.message || j.title || `伺服器回應 ${res.status}`);
+                return j;
+            };
+
+            const addRule = async () => {
+                if (saving) return;
+                const cond = {};
+                RULE_FIELDS.forEach(f => { const v = (form[f.key] || '').trim(); if (v) cond[f.key] = v; });
+                if (Object.keys(cond).length === 0) { showToast('至少填寫一個條件欄位（工號或部門）', 'error'); return; }
+                setSaving(true);
+                try {
+                    const r = await jsonReq('/api/access-rules', 'POST', { ...cond, note: form.note.trim() || null });
+                    setForm({ empno: '', deptName: '', dept1: '', dept2: '', dept3: '', note: '' });
+                    showToast(`已新增允許規則：${r.desc || ruleDesc(cond)}`);
+                    await load(); onChanged && onChanged();
+                } catch (e) { showToast('新增失敗：' + e.message, 'error'); }
+                finally { setSaving(false); }
+            };
+            const deleteRule = async (r) => {
+                if (saving) return;
+                setSaving(true);
+                try {
+                    await jsonReq(`/api/access-rules/${r.id}`, 'DELETE');
+                    showToast(`已刪除規則：${ruleDesc(r)}`, 'warn');
+                    await load(); onChanged && onChanged();
+                } catch (e) { showToast('刪除失敗：' + e.message, 'error'); }
+                finally { setSaving(false); }
+            };
+            const addAdmin = async () => {
+                if (saving) return;
+                const empno = adminForm.empno.trim();
+                if (!empno) { showToast('請填寫工號', 'error'); return; }
+                setSaving(true);
+                try {
+                    const r = await jsonReq('/api/access-admins', 'POST', { empno, note: adminForm.note.trim() || null });
+                    setAdminForm({ empno: '', note: '' });
+                    showToast(`已新增管理者：${r.empno || empno}`);
+                    await load(); onChanged && onChanged();
+                } catch (e) { showToast('新增失敗：' + e.message, 'error'); }
+                finally { setSaving(false); }
+            };
+            // 後端另外擋「刪自己」與「刪最後一個」；這裡把按鈕 disabled 只是少一次白按，訊息以後端的為準
+            const deleteAdmin = async (a) => {
+                if (saving) return;
+                setSaving(true);
+                try {
+                    await jsonReq(`/api/access-admins/${a.id}`, 'DELETE');
+                    showToast(`已移除管理者：${a.empno}`, 'warn');
+                    await load(); onChanged && onChanged();
+                } catch (e) { showToast('移除失敗：' + e.message, 'error'); }
+                finally { setSaving(false); }
+            };
+            const toggle = async () => {
+                if (toggling) return;
+                setToggling(true);
+                try {
+                    const r = await jsonReq('/api/access-control', 'PUT', { enabled: !enabled });
+                    setEnabled(!!r.enabled);
+                    if (r.warning) showToast(r.warning, 'warn');
+                    else showToast(r.enabled ? '已開啟瀏覽權限卡控：之後進站／重新整理的人會依規則驗證' : '已關閉瀏覽權限卡控：所有人皆可瀏覽', r.enabled ? 'warn' : 'success');
+                    await load(); onChanged && onChanged();
+                } catch (e) { showToast('切換失敗：' + e.message, 'error'); }
+                finally { setToggling(false); }
+            };
+            const runTest = async () => {
+                if (testing) return;
+                const id = testId.trim();
+                if (!id) { showToast('請輸入要測試的工號', 'error'); return; }
+                setTesting(true); setTestResult(null);
+                try {
+                    const res = await fetch(api(`/api/access-check?testEmpId=${encodeURIComponent(id)}`));
+                    const j = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(j.message || j.title || `伺服器回應 ${res.status}`);
+                    setTestResult(j);
+                } catch (e) { showToast('測試失敗：' + e.message, 'error'); }
+                finally { setTesting(false); }
+            };
+
+            const inputCls = 'w-full px-2.5 py-1.5 rounded-lg text-sm border outline-none focus:ring-2 ring-indigo-500/50';
+            const inputStyle = { background:'var(--bg-main)', borderColor:'var(--border-table)', color:'var(--text-primary)' };
+            const secTitle = (t) => <div className="text-[11px] font-black uppercase tracking-wider mb-2" style={{color:'var(--text-muted)'}}>{t}</div>;
+            const personLine = (p) => p ? `${p.name || ''}${p.ename ? `（${p.ename}）` : ''} · ${p.deptname || [p.dept1, p.dept2, p.dept3].filter(Boolean).join(' / ') || '無部門資料'}` : null;
+
+            return (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4"
+                     data-ct-modal role="dialog" aria-modal="true" aria-label="瀏覽權限" tabIndex={-1}
+                     onClick={onClose}>
+                    <div className="rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col" style={{background:'var(--bg-card)', color:'var(--text-primary)'}} onClick={e=>e.stopPropagation()}>
+                        <div className="p-4 border-b flex items-start justify-between gap-3" style={{borderColor:'var(--border-table)'}}>
+                            <div className="min-w-0">
+                                <h3 className="text-base font-bold">🔐 瀏覽權限</h3>
+                                <p className="text-[11px] mt-1" style={{color:'var(--text-muted)'}}>
+                                    依人員名冊的部門（DEPT_1 / 2 / 3）或工號白名單卡控，任一規則符合即可瀏覽。
+                                    名冊來源：<span className="font-mono">{personView || '—'}</span>
+                                </p>
+                            </div>
+                            <button onClick={onClose} className="shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-sm hover:bg-black/10" aria-label="關閉" title="關閉（Esc）" style={{color:'var(--text-tertiary)'}}>✕</button>
+                        </div>
+
+                        <div className="p-4 space-y-5 overflow-y-auto">
+                            {loading ? (
+                                <div className="text-center text-sm py-10" style={{color:'var(--text-muted)'}}>載入中…</div>
+                            ) : loadError ? (
+                                <div className="rounded-lg border p-3 text-sm font-bold" style={{background:'var(--tone-alert-bg)', borderColor:'var(--tone-alert-border)', color:'var(--tone-alert)'}}>
+                                    載入失敗：{loadError}
+                                    <button onClick={load} className="ml-2 underline">重試</button>
+                                </div>
+                            ) : (
+                                <>
+                                    {/* ① 總開關 */}
+                                    <div className="rounded-xl border p-4"
+                                         style={enabled
+                                             ? {background:'var(--tone-alert-bg)', borderColor:'var(--tone-alert-border)'}
+                                             : {background:'var(--bg-detail-card)', borderColor:'var(--border-table)'}}>
+                                        <div className="flex items-center justify-between gap-3">
+                                            <div className="min-w-0">
+                                                <div className="text-sm font-black" style={{color: enabled ? 'var(--tone-alert)' : 'var(--text-primary)'}}>{enabled ? '🔒 卡控啟用中' : '🔓 目前未卡控'}</div>
+                                                <div className="text-xs mt-1" style={{color:'var(--text-muted)'}}>
+                                                    {enabled ? '不符合規則的人進站會看到「無權限瀏覽」畫面。' : '所有人皆可瀏覽；先設好規則、用下方的工號測試確認過再開啟。'}
+                                                </div>
+                                            </div>
+                                            <button onClick={toggle} disabled={toggling}
+                                                    className={`shrink-0 px-4 py-2 rounded-lg text-xs font-bold text-white shadow-sm transition-colors disabled:opacity-60 ${enabled ? 'bg-slate-500 hover:bg-slate-600' : 'bg-red-600 hover:bg-red-700'}`}>
+                                                {toggling ? '切換中…' : enabled ? '關閉卡控' : '開啟卡控'}
+                                            </button>
+                                        </div>
+                                        <div className="mt-2.5 text-[11px] leading-snug space-y-0.5" style={{color:'var(--text-tertiary)'}}>
+                                            <div>· 規則與開關的變更於下一次進站／重新整理時生效，已在瀏覽中的人不會被中途踢出。</div>
+                                            <div>· 管理者（下方「管理者」區塊，共 {admins.length + configAdmins.filter(c => !admins.some(a => a.empno.toLowerCase() === c.toLowerCase())).length} 位）一律可瀏覽、不受規則限制。</div>
+                                            <div>· 只擋畫面：API 端點維持匿名（與 Gantt 相同）。</div>
+                                        </div>
+                                    </div>
+
+                                    {/* ② 新增規則 */}
+                                    <div>
+                                        {secTitle('➕ 新增允許規則')}
+                                        <div className="rounded-xl border p-3.5 space-y-2.5" style={{borderColor:'var(--border-table)'}}>
+                                            <div className="grid grid-cols-3 gap-2">
+                                                {RULE_FIELDS.map(f => (
+                                                    <label key={f.key} title={f.hint}>
+                                                        <span className="block text-[10px] font-bold mb-0.5" style={{color:'var(--text-muted)'}}>{f.label}</span>
+                                                        <input type="text" value={form[f.key]} className={inputCls} style={inputStyle} placeholder={f.ph}
+                                                               onChange={e => setForm(prev => ({ ...prev, [f.key]: e.target.value }))}
+                                                               onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) addRule(); }} />
+                                                    </label>
+                                                ))}
+                                                <label>
+                                                    <span className="block text-[10px] font-bold mb-0.5" style={{color:'var(--text-muted)'}}>備註（選填）</span>
+                                                    <input type="text" value={form.note} className={inputCls} style={inputStyle} placeholder="如：MSD 全員"
+                                                           onChange={e => setForm(prev => ({ ...prev, note: e.target.value }))}
+                                                           onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) addRule(); }} />
+                                                </label>
+                                            </div>
+                                            <div className="flex items-center gap-3">
+                                                <div className="flex-1 text-[11px] leading-snug" style={{color:'var(--text-muted)'}}>
+                                                    任填一欄以上；<span className="font-bold" style={{color:'var(--text-secondary)'}}>同一條規則內填多個欄位＝全部符合才通過（且）</span>，
+                                                    多條規則之間任一符合即放行（或）。只填工號＝白名單直接放行（不查名冊）。
+                                                </div>
+                                                <button onClick={addRule} disabled={saving}
+                                                        className="shrink-0 px-4 py-1.5 rounded-lg text-xs font-bold bg-indigo-500 text-white hover:bg-indigo-600 shadow-sm transition-colors disabled:opacity-60">
+                                                    {saving ? '儲存中…' : '新增'}
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* ③ 規則清單 */}
+                                    <div>
+                                        {secTitle(`📜 目前允許規則（${rules.length} 條，任一符合即放行）`)}
+                                        {rules.length === 0 ? (
+                                            <div className="rounded-xl border p-3.5 text-xs font-bold" style={{background:'var(--tone-warn-bg)', borderColor:'var(--tone-warn-border)', color:'var(--tone-warn)'}}>
+                                                尚未設定任何規則。{enabled ? '⚠ 卡控啟用中且沒有規則＝只有管理者看得到這個網頁！' : '請先新增規則再開啟卡控。'}
+                                            </div>
+                                        ) : (
+                                            <div className="space-y-1.5">
+                                                {rules.map(r => (
+                                                    <div key={r.id} className="rounded-lg border px-3 py-2" style={{borderColor:'var(--border-table)', background:'var(--bg-detail-card)'}}>
+                                                        <div className="flex items-center gap-2">
+                                                            <div className="flex items-center gap-1 flex-wrap min-w-0">
+                                                                {RULE_FIELDS.filter(f => r[f.key]).map((f, i) => (
+                                                                    <React.Fragment key={f.key}>
+                                                                        {i > 0 && <span className="text-[10px] font-black" style={{color:'var(--text-muted)'}}>且</span>}
+                                                                        <span className="px-2 py-0.5 rounded text-[10px] font-bold border whitespace-nowrap"
+                                                                              style={{background:'var(--brand-soft)', color:'var(--seg-on-text)', borderColor:'var(--bg-card-hover-border)'}}>
+                                                                            {f.label}＝{r[f.key]}
+                                                                        </span>
+                                                                    </React.Fragment>
+                                                                ))}
+                                                            </div>
+                                                            <span className="ml-auto shrink-0 text-[10px] tabular-nums" style={{color:'var(--text-muted)'}} title={`建立者 ${r.createdBy || '-'}`}>{r.createdAt}</span>
+                                                            <button onClick={() => deleteRule(r)} disabled={saving}
+                                                                    className="shrink-0 w-6 h-6 rounded flex items-center justify-center text-xs border border-transparent transition-colors disabled:opacity-40"
+                                                                    style={{color:'var(--tone-alert)'}} title="刪除此規則" aria-label={`刪除規則 ${ruleDesc(r)}`}>🗑</button>
+                                                        </div>
+                                                        {r.note && <div className="text-[11px] mt-1" style={{color:'var(--text-muted)'}}>📝 {r.note}</div>}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {/* ④ 工號測試（不看總開關） */}
+                                    <div>
+                                        {secTitle('🧪 以工號測試規則（不受總開關影響）')}
+                                        <div className="rounded-xl border p-3.5 space-y-2.5" style={{borderColor:'var(--border-table)', background:'var(--bg-detail-card)'}}>
+                                            <div className="flex gap-2">
+                                                <input type="text" value={testId} className={`${inputCls} font-mono flex-1 min-w-0`} style={inputStyle}
+                                                       placeholder={`輸入工號，如 ${myCheck?.empId || '00058897'}`}
+                                                       onChange={e => { setTestId(e.target.value); setTestResult(null); }}
+                                                       onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) runTest(); }} />
+                                                <button onClick={runTest} disabled={testing}
+                                                        className="shrink-0 px-4 py-1.5 rounded-lg text-xs font-bold border transition-colors disabled:opacity-60"
+                                                        style={{background:'var(--bg-input)', color:'var(--text-secondary)', borderColor:'var(--bg-input-border)'}}>
+                                                    {testing ? '測試中…' : '測試'}
+                                                </button>
+                                            </div>
+                                            {testResult && (
+                                                <div className="rounded-lg border p-3 text-xs"
+                                                     style={testResult.allowed
+                                                         ? {background:'rgba(15,118,110,0.08)', borderColor:'rgba(15,118,110,0.3)', color:'var(--tone-good)'}
+                                                         : {background:'var(--tone-alert-bg)', borderColor:'var(--tone-alert-border)', color:'var(--tone-alert)'}}>
+                                                    <div className="text-sm font-black">{testResult.allowed ? '✓ 可以瀏覽' : '🚫 會被擋下'}<span className="ml-2 font-mono font-normal">{testResult.empId}</span></div>
+                                                    {testResult.person && <div className="mt-1" style={{color:'var(--text-secondary)'}}>{personLine(testResult.person)}</div>}
+                                                    {testResult.reason && <div className="mt-1">{testResult.reason}</div>}
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    {/* ⑤ 管理者（第 75 批，dbo.AccessAdmins ∪ appsettings 後備）。
+                                        「誰能開這個面板」本來就該與規則放在同一個地方維護 —— 在 appsettings 裡
+                                        的那版當天就踩到設定檔陣列依索引覆寫的坑（見 Program.cs ConfigAdmins() 的說明） */}
+                                    <div>
+                                        {secTitle(`👑 管理者（${admins.length} 位${configAdmins.length ? `，另有 ${configAdmins.length} 位來自設定檔` : ''}）`)}
+                                        <div className="rounded-xl border p-3.5 space-y-2.5" style={{borderColor:'var(--border-table)'}}>
+                                            <div className="text-[11px] leading-snug" style={{color:'var(--text-muted)'}}>
+                                                管理者可以開這個面板、增刪規則、切總開關，而且<span className="font-bold" style={{color:'var(--text-secondary)'}}>一律可瀏覽、不受規則限制</span>。
+                                                不能移除自己、也不能移除最後一位。
+                                            </div>
+                                            {admins.length === 0 && configAdmins.length === 0 ? null : (
+                                                <div className="space-y-1.5">
+                                                    {admins.map(a => (
+                                                        <div key={a.id} className="rounded-lg border px-3 py-1.5 flex items-center gap-2" style={{borderColor:'var(--border-table)', background:'var(--bg-detail-card)'}}>
+                                                            <span className="font-mono text-sm font-bold" style={{color:'var(--text-primary)'}}>{a.empno}</span>
+                                                            {a.isSelf && <span className="px-1.5 py-0.5 rounded text-[10px] font-bold" style={{background:'var(--brand-soft)', color:'var(--seg-on-text)'}}>你</span>}
+                                                            {a.note && <span className="text-[11px] truncate" style={{color:'var(--text-muted)'}} title={a.note}>📝 {a.note}</span>}
+                                                            <span className="ml-auto shrink-0 text-[10px] tabular-nums" style={{color:'var(--text-muted)'}} title={`建立者 ${a.createdBy || '-'}`}>{a.createdAt}</span>
+                                                            <button onClick={() => deleteAdmin(a)} disabled={saving || a.isSelf}
+                                                                    className="shrink-0 w-6 h-6 rounded flex items-center justify-center text-xs border border-transparent transition-colors disabled:opacity-30"
+                                                                    style={{color:'var(--tone-alert)'}} title={a.isSelf ? '不能移除自己' : '移除這位管理者'} aria-label={`移除管理者 ${a.empno}`}>🗑</button>
+                                                        </div>
+                                                    ))}
+                                                    {configAdmins.filter(c => !admins.some(a => a.empno.toLowerCase() === c.toLowerCase())).map(c => (
+                                                        <div key={'cfg-' + c} className="rounded-lg border border-dashed px-3 py-1.5 flex items-center gap-2" style={{borderColor:'var(--border-table)'}}
+                                                             title="來自伺服器 appsettings.json 的 Access:Admins（後備用），這裡不能移除，要改請改設定檔">
+                                                            <span className="font-mono text-sm font-bold" style={{color:'var(--text-tertiary)'}}>{c}</span>
+                                                            <span className="text-[10px]" style={{color:'var(--text-muted)'}}>設定檔後備</span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+                                            <div className="flex gap-2">
+                                                <input type="text" value={adminForm.empno} className={`${inputCls} font-mono w-40 shrink-0`} style={inputStyle} placeholder="工號，如 00058897"
+                                                       onChange={e => setAdminForm(p => ({ ...p, empno: e.target.value }))}
+                                                       onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) addAdmin(); }} />
+                                                <input type="text" value={adminForm.note} className={`${inputCls} flex-1 min-w-0`} style={inputStyle} placeholder="備註（選填），如：MSD 主管"
+                                                       onChange={e => setAdminForm(p => ({ ...p, note: e.target.value }))}
+                                                       onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) addAdmin(); }} />
+                                                <button onClick={addAdmin} disabled={saving}
+                                                        className="shrink-0 px-4 py-1.5 rounded-lg text-xs font-bold bg-indigo-500 text-white hover:bg-indigo-600 shadow-sm transition-colors disabled:opacity-60">
+                                                    {saving ? '儲存中…' : '新增管理者'}
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* ⑥ 最近異動（dbo.AccessLog，最近 30 筆） */}
+                                    <div>
+                                        <button onClick={() => setLogOpen(o => !o)} className="text-[11px] font-black uppercase tracking-wider mb-2 flex items-center gap-1" style={{color:'var(--text-muted)'}}
+                                                aria-expanded={logOpen}>
+                                            <span style={{display:'inline-block', transform: logOpen ? 'rotate(90deg)' : 'none', transition:'transform 0.15s'}}>▸</span>
+                                            🕘 最近異動（{log.length} 筆）
+                                        </button>
+                                        {logOpen && (
+                                            log.length === 0
+                                                ? <div className="text-xs" style={{color:'var(--text-muted)'}}>還沒有任何異動紀錄。</div>
+                                                : <div className="rounded-lg border divide-y text-[11px]" style={{borderColor:'var(--border-table)'}}>
+                                                    {log.map(l => (
+                                                        <div key={l.id} className="px-3 py-1.5 flex items-start gap-2" style={{borderColor:'var(--border-table)'}}>
+                                                            <span className="shrink-0 tabular-nums" style={{color:'var(--text-muted)'}}>{l.at}</span>
+                                                            <span className="shrink-0 font-bold" style={{color: l.action === 'ENABLE' || l.action === 'DELETE_RULE' || l.action === 'DELETE_ADMIN' ? 'var(--tone-alert)' : 'var(--text-secondary)'}}>{ACCESS_LOG_LABEL[l.action] || l.action}</span>
+                                                            <span className="min-w-0 break-words" style={{color:'var(--text-tertiary)', overflowWrap:'anywhere'}}>{l.detail}</span>
+                                                            <span className="ml-auto shrink-0 font-mono" style={{color:'var(--text-muted)'}}>{l.actor}</span>
+                                                        </div>
+                                                    ))}
+                                                  </div>
+                                        )}
+                                    </div>
+                                </>
+                            )}
+                        </div>
+
+                        <div className="p-3 border-t flex justify-end" style={{borderColor:'var(--border-table)'}}>
+                            <button onClick={onClose} className="px-4 py-1.5 rounded-lg text-[11px] font-bold border"
+                                    style={{background:'var(--bg-input)', color:'var(--text-secondary)', borderColor:'var(--bg-input-border)'}}>關閉</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
         // ─── Main App ───
         function App() {
             // 「今天」每次 render 重算（第 67 批）—— 見模組層 refreshToday() 的說明。
@@ -1484,6 +1926,13 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // 操作者：Windows 帳號（/api/whoami）與模擬帳號
             const [actor, setActor] = useState({ empId: null, source: 'unknown', allowSimulation: false });
             const [isActorModalOpen, setIsActorModalOpen] = useState(false);
+            // 頁面瀏覽權限（第 74 批）：null＝檢查中；{enabled, allowed, reason, empId, isAdmin, person}＝結果。
+            // accessError＝逾時／伺服器錯誤（錯誤畫面＋重試，不放行）。見模組層 checkAccess() 的說明
+            const [accessCheck, setAccessCheck] = useState(null);
+            const [accessError, setAccessError] = useState('');
+            const [accessRetry, setAccessRetry] = useState(0);
+            const [isAccessPanelOpen, setIsAccessPanelOpen] = useState(false);
+            const accessPassed = !!accessCheck && (!accessCheck.enabled || accessCheck.allowed);
             // 阻擋型提示視窗（NID 重複、必填未完成）——比 toast 更難被忽略
             const [alertModal, setAlertModal] = useState(null);
             // 確認型視窗（刪除需求、刪除人員），取代原生 confirm()
@@ -2061,7 +2510,29 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 setActor({ empId: null, source: 'unknown', allowSimulation: allow });
             };
 
-            useEffect(() => { fetchReqs(); fetchAssignees(); fetchHistory(); detectActor(); }, []);
+            // ─── 瀏覽權限閘門（第 74 批）───
+            // 先問能不能看，通過了才抓資料。⚠️ 資料抓取**不可以**搬回「一載入就抓」：
+            // 被擋的人雖然畫面上看不到列，但 65 筆需求已經整包到了他的瀏覽器裡（Network 面板打開就是）。
+            // API 本身維持匿名是使用者選的邊界，但前端至少不要主動把資料送過去。
+            useEffect(() => {
+                let cancelled = false;
+                setAccessError('');
+                checkAccess().then(r => { if (!cancelled) setAccessCheck(r); })
+                    .catch(e => {
+                        if (cancelled) return;
+                        if (e && e.name === 'AbortError') { setAccessError('伺服器沒有在時間內回應權限檢查（可能正在重啟）。'); return; }
+                        // 只有「連不上」才放行（fetch 自己丟 TypeError）——那時 fetchReqs 也連不上，會另行顯示讀取失敗
+                        if (e instanceof TypeError) { setAccessCheck({ enabled: false, allowed: true, empId: null, isAdmin: false, person: null, reason: null }); return; }
+                        setAccessError('權限檢查失敗：' + (e.message || '伺服器回應錯誤'));
+                    });
+                return () => { cancelled = true; };
+            }, [accessRetry]);
+            const dataStartedRef = React.useRef(false);
+            useEffect(() => {
+                if (!accessPassed || dataStartedRef.current) return;
+                dataStartedRef.current = true;
+                fetchReqs(); fetchAssignees(); fetchHistory(); detectActor();
+            }, [accessPassed]);
 
             // ─── 手動重新整理（2026-08-24 / 第 27 批）───
             // 在此之前想看別人剛存的資料只能按 F5，而 F5 會把篩選、排序、展開的列
@@ -3245,6 +3716,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 if (undoModal)           { setUndoModal(null); return; }
                 if (histModal)           { setHistModal(null); return; }
                 if (isActorModalOpen)    { setIsActorModalOpen(false); return; }
+                if (isAccessPanelOpen)   { setIsAccessPanelOpen(false); return; }
                 if (isAssigneeModalOpen) { setIsAssigneeModalOpen(false); return; }
                 if (editingData)         { closeEdit(); return; }
             };
@@ -3260,7 +3732,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // 只用鍵盤的人要從頭 Tab 一遍才回得到剛剛那顆鈕。
             // 只寫一份共用的（每個視窗各自寫一次遲早會漂移成「有的有、有的沒有」）：
             // 視窗的最外層都標了 data-ct-modal，DOM 裡的最後一個就是疊在最上面的那個。
-            const openModalCount = [isAssigneeModalOpen, !!editingData, isActorModalOpen,
+            const openModalCount = [isAssigneeModalOpen, !!editingData, isActorModalOpen, isAccessPanelOpen,
                                     !!alertModal, !!rollbackModal, !!confirmModal,
                                     !!doneModal, !!undoModal, !!histModal].filter(Boolean).length;
             const topModalEl = () => {
@@ -4388,6 +4860,12 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // ⚠️ 同一層還掛著 `page-shell`（第 46 批第三段，見 input.css）：框架跟著內容
             // 一起變寬。表格比視窗寬時，頁首與工具列卡片會跟著長到同一個寬度 ——
             // 橫捲時整頁一起平移，不會再出現「表格還在延伸、卡片卻切在半空中」
+            // ─── 瀏覽權限閘門（第 74 批）：檢查完成前只有載入畫面；卡控開著且沒過 → 整頁封鎖 ───
+            // ⚠️ 一定要放在**所有 hooks 之後**（就是這裡，主 return 的正前面）——
+            //    提早 return 會讓後面的 hooks 在下一次 render 才被呼叫，React 直接報錯
+            if (accessError) return <AccessGateScreen error={accessError} onRetry={() => setAccessRetry(n => n + 1)} />;
+            if (!accessCheck) return <AccessGateScreen />;
+            if (accessCheck.enabled && !accessCheck.allowed) return <AccessDeniedScreen check={accessCheck} />;
             return (
                 <div className={`min-h-screen page-shell${present ? ' present' : ''}`}
                      style={{color:'var(--text-secondary)', '--present-zoom': presentZoom}}>
@@ -4395,6 +4873,14 @@ const { useState, useMemo, Fragment, useEffect } = React;
                         見 renderAssigneeModal 上方的說明）。改回元件寫法會讓它每次
                         render 都重新掛載，輸入到一半的工號／姓名全部消失 */}
                     {renderAssigneeModal()}
+                    {/* 瀏覽權限面板（第 74 批）。只有 appsettings Access:Admins 裡的人看得到入口（頁首 🔐），
+                        後端每一支端點也各自再驗一次 —— 入口藏起來不是安全邊界，403 才是。
+                        onChanged：規則或開關動過之後重問一次自己的 check，讓頁首那顆的 tooltip 跟上 */}
+                    {isAccessPanelOpen && (
+                        <AccessPanel myCheck={accessCheck} showToast={showToast}
+                                     onClose={() => setIsAccessPanelOpen(false)}
+                                     onChanged={() => { checkAccess().then(r => setAccessCheck(r)).catch(() => { /* 保留舊值 */ }); }} />
+                    )}
                     {/* ═══ 操作回饋 Toast ═══
                         第 29 批三件事：
                         1. `present-zoom`：投影模式下它以前**不會跟著放大**（zoom 只掛在
@@ -4469,6 +4955,19 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                 {/* 異動人員。Windows 帳號由 /api/whoami 自動偵測；
                                     開發環境（Auth:AllowSimulation=true）可切換成模擬帳號，
                                     模擬寫入的稽核列會標成「模擬」，不會冒充真實登入者 */}
+                                {/* 瀏覽權限（第 74 批）。只給 appsettings Access:Admins 裡的人看；投影模式收起
+                                    （與 🖥️ 同一條：台下不需要看到管理入口）。卡控開著時套 ctl-on —— 這顆同時是
+                                    「目前有沒有在卡控」的唯一畫面訊號，管理者不必開面板就看得出來 */}
+                                {!present && accessCheck && accessCheck.isAdmin && (
+                                <button onClick={()=>setIsAccessPanelOpen(true)}
+                                        className={`ctl-sm flex-shrink-0${accessCheck.enabled ? ' ctl-on' : ''}`}
+                                        aria-label="瀏覽權限設定"
+                                        title={accessCheck.enabled
+                                            ? '瀏覽權限：卡控啟用中（不符合規則的人看不到這個網頁）\n點擊管理允許規則'
+                                            : '瀏覽權限：目前未卡控（所有人皆可瀏覽）\n點擊設定允許規則與開關'}>
+                                    🔐{accessCheck.enabled ? ' 卡控中' : ''}
+                                </button>
+                                )}
                                 {!present && (
                                 <button onClick={()=>actor.allowSimulation && setIsActorModalOpen(true)}
                                         className="ctl-sm"
@@ -4534,6 +5033,16 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                  + '用橫向捲動看完整的 16 欄 —— 欄位不會被自動收起來。'}>
                                         Ａ {Math.round(uiScale*100)}%
                                     </button>
+                                )}
+                                {/* 使用者手冊（第 76 批）。後端 GET /manual 直接讀 docs/使用者手冊.html 回傳，
+                                    走 api() 是為了子路徑部署。新分頁開：手冊是拿來對照著操作的，
+                                    蓋掉正在編輯的畫面就本末倒置。投影模式收起（台下不需要看到它） */}
+                                {!present && (
+                                    <a href={api('/manual')} target="_blank" rel="noopener"
+                                       className="ctl-sm flex-shrink-0 no-underline"
+                                       title="使用者手冊（另開分頁）：第一部依 EMS／MSD／主管的角度講「輪到我時要按哪裡」，第二部是逐一功能的完整參考">
+                                        📖 手冊
+                                    </a>
                                 )}
                                 <ThemeToggle dark={dark} onToggle={()=>setDark(!dark)} />
                                 {/* H：原本只顯示今天日期 —— 主管看不出資料新不新。

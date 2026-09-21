@@ -17,8 +17,9 @@
 |---|---|
 | 本機 DB 資料 | `dbo.Controltable` **62 筆** active（16 進行中 / 46 已完成；使用者 2026-09-12 21:40 重灌過一次，稽核列與計數欄當時全部歸零）；`dbo.Assignee` **13 筆**，`EMPO` 與 `EMAIL` 使用者已全部補齊（EMS 8 / MSD 5，例：明翰 `Macgyver_Ho@UMCG`、宸詳 `Sw_Lee@UMCG`） |
 | 未壓日期 | **4 筆**：NID 6、20（皆 stage 4）、99（stage 2）、111（stage 1）。需關注 13 件（逾期 9 + 未壓 4 + 7 日內 0） |
-| 已執行腳本 | `01`~`15`、`17` 已執行（`17` 於 2026-09-11 第 66 批：StageCode NOT NULL + CHECK，回填 0 筆）。**`16_grant_dbmail_permission.sql` 尚未執行**（見第 4 節） |
-| `?v=` | **`20260913005`**（第 73 批；第 62~64 批的結論記在 `CLAUDE.md`，這裡沒有另寫一份） |
+| 已執行腳本 | `01`~`15`、`17`、`18`、`19` 已執行（`18`/`19` 於 2026-09-21 第 74/75 批：瀏覽權限四張表）。**`16_grant_dbmail_permission.sql` 尚未執行**（見第 4 節） |
+| `?v=` | **`20260921002`**（第 75 批；第 62~64 批的結論記在 `CLAUDE.md`，這裡沒有另寫一份） |
+| 瀏覽權限 | 本機：開關 **false**、規則 **1 筆**（使用者自己加的 `DEPT_3=IMD`）、`dbo.AccessAdmins` **3 筆**（`00002732`／`00041817`／`yu-tinglin`，由 `19` 種入）、`AccessLog` 7 筆。`appsettings.json` 的 `Access:Admins` 已改回 **空清單**（後備用），Development.json **不放**。⚠️ 模擬名冊 `[WEB].[dbo].[notes_person]`（34 筆）**裡面有 `EMPNO = 'yu-tinglin'`（林玉婷，DEPT_3=MSD）** —— 拿這台機器測「不在名冊」那條路會過不了，要用 `?testEmpId=` 拿別的工號測 |
 | 伺服器 | `dotnet run` → `http://localhost:5146`（`.claude/launch.json` 的 `controltable`，用 `preview_start` 啟動）。使用者自己那台可能開在 **7127**，兩邊資料不同 —— 找不到某筆測試資料時先確認是哪一台 |
 | DB 連線 | `sqlcmd -S Sariel -d Controltable -U testuser -P test -C -f 65001` |
 | 寄信 | **`Mail:Mode = "smtp"` + relay `10.13.2.221:25`，`From` 刻意留空**，已由使用者在公司 IIS（p58esiap12）實測通過。⚠️ 見 `CLAUDE.md` 那條「未經指示不要動」 |
@@ -66,7 +67,8 @@ EMS 也可以先壓預設的驗收時間，或等開發完再填。
 | `MpSaving` | 自由文字，**可能不是數字**（「3人天」「待評估」） |
 | Excel 最後一欄 `Status` | 存的是**階段代號** `(1)`~`(5)`，不是 Init/Ongoing/Done |
 | `MsdConfirm` | 拆成 `MsdConfirm DATE` + `MsdConfirmNote NVARCHAR(500)` |
-| 角色權限 (EMS/MSD/主管) | **暫不實作** |
+| 角色權限 (EMS/MSD/主管) | **暫不實作**（誰能改哪筆需求仍然沒有模型）。⚠️ 與「頁面瀏覽權限」（第 74 批，誰**看得到**這個網頁）是兩件事，不要混 |
+| 頁面瀏覽權限（第 74 批，2026-09-21） | 做法對齊 `C:\Gantt`：`[WEB].[dbo].[notes_person]` 名冊 + `dbo.AccessRules`（AND／OR 規則）+ 開關預設 false。四個決定（都選了我建議的那一個）：①管理者一律可瀏覽（**第 75 批起清單在 `dbo.AccessAdmins`、面板維護；`appsettings` 的 `Access:Admins` 降為後備**）；②**工號後端自己讀**（不收 `?empId`）；③**只擋畫面**、API 維持匿名；④稽核另開 `dbo.AccessLog`。不要「對齊回」Gantt 的自選主管登入與前端帶工號 |
 | `OverallStatus` | **三種**：`Init` / `Ongoing` / `Done`。⚠️ `Pending` 於 2026-08-22 依使用者要求移除（「暫時不需要此狀態」）。**他對這欄改過主意兩次（三種→四種→2026-08-22 又拿掉），不要自作主張加回來。** 舊值收斂成 `Ongoing` 不是 `Init`。**`Done ⇔ StatusID 5`（第 67 批 H5）**：兩欄不合併，但不可互相矛盾 |
 | `StatusID` (`StageCode`) | 純數字 `1`~`5`，**不含括號**，顯示在資料列上 |
 | 刪除需求 | **軟刪除**（`IsDeleted = 1`）。已刪除的 NID 可以再被使用 |
@@ -128,6 +130,10 @@ EMS 也可以先壓預設的驗收時間，或等開發完再填。
 ## 4. 還沒做的事
 
 ### 需要使用者／DBA 動手的
+- [ ] **瀏覽權限上 IIS 的三步**（第 74/75 批，2026-09-21）：①在正式 DB 跑 `18_add_access_control.sql` 與 `19_add_access_admins.sql`（`19` 會種入 `00002732`／`00041817`／`yu-tinglin`，**正式 DB 建議先把 `yu-tinglin` 那一列拿掉**）；
+      ②`appsettings.json` 的 `Access:Admins` 維持空清單 —— 管理者已經在 DB 裡，之後在面板的「管理者」區塊加人；只有 DB 那份被刪光時才臨時填一個工號進設定檔救回；
+      ③確認 `[WEB].[dbo].[notes_person]` 從 Controltable 用的連線帳號查得到（Gantt 同一台 DB 已經在用，通常沒問題）。
+      然後進網頁 → 🔐 → 先加規則（例：`DEPT_3 = MSD`）→ 用「工號測試」拿幾個工號驗過 → 再開卡控。**開關預設 false，部署當下不會鎖任何人。**
 - [ ] **`16_grant_dbmail_permission.sql` 尚未執行**（要 DBA 在 DB 主機以 sysadmin 執行）。
       ⚠️ 腳本裡 `@LoginName` 預設 `testuser`，**正式環境要先改**。已用 `SET PARSEONLY ON` 驗過語法。
       只有切到 `Mail:Mode = "dbmail"` 才需要它 —— 目前生效的是 `smtp`，**不執行也不影響現況**。
@@ -221,6 +227,31 @@ EMS 也可以先壓預設的驗收時間，或等開發完再填。
 ---
 
 ## 7. 批次紀錄（新 → 舊，只留結論與坑）
+
+### 第 76 批（2026-09-21）使用者手冊改成「第一部依角色、第二部功能參考」
+- 起因：使用者說「可以依照 EMS、MSD 登入者的角度去指導它們怎麼操作嗎？目前的設計好像很難懂」。舊手冊是 16 章的**功能參考**（依畫面與功能排），一個 EMS 打開找不到「一筆需求落到我頭上，我要按哪裡」這條路。
+- 做了什麼：**只有 `docs/使用者手冊.html`**，沒動程式。在原 16 章前面插入第一部（A 先看這一頁／B EMS 負責人／C MSD 負責人／D 主管），原 16 章成為第二部、**編號與 `#c1`~`#c16` 錨點一個都沒改**（全部交叉引用仍有效，實測 `brokenAnchors: []`）。A 章的核心是「每個階段只有兩個動作：壓結束日、標記完成…」＋「我想要…」對照表；B／C 是從頭到尾的手順（`ol.steps`），每步附「詳見第 N 章」。
+- ⚠️ 手冊裡兩句**刻意照實寫**的行為，日後改程式時要回來對：①「**標記完成之後系統不會自動問要不要寄信**」（`askNotifyUnset` 只掛在 `handleSave`，`/done` 那條路沒有）—— 那正是最自然的交棒時刻，已向使用者提出但未做；②「EMS 自己建需求、① 沒壓日期時，存完會問要不要通知**自己**」（`UnsetPhaseOf` ① 的收件者是 EMS）—— 手冊教他按取消。
+- 沒動 `index.html` 版本號（只改手冊），抬頭仍對齊 `20260921002`。Artifact 那份（`751c4197…`）**沒有重新發佈**，等使用者說。
+
+### 第 75 批（2026-09-21）管理者清單從 appsettings 搬進 DB
+- 起因：使用者在 `appsettings.json` 填了 `["00002732","yu-tinglin"]`，面板測 `00002732` 卻「會被擋下」。查 `/api/access-rules` 回的 `admins` 只有 `["yu-tinglin"]` —— **.NET 設定檔的 JSON 陣列跨檔是依索引覆寫不是合併**，我放在 `appsettings.Development.json` 的 `["yu-tinglin"]` 蓋掉了他的第 0 筆。兩個檔看起來都沒錯，這種坑不該留給業務資料。使用者問「改成寫在 DB 端是否會比較好」→ 我建議搬、他說做。
+- 做了什麼：`19_add_access_admins.sql`（`dbo.AccessAdmins`、種入三個工號、`CK_AccessLog_Action` 多 `ADD_ADMIN`/`DELETE_ADMIN`）；`Program.cs` 的 `AccessAdminsAsync(conn)` ＝ DB ∪ `ConfigAdmins()`、`IsAccessAdminAsync()` 給寫入端點當門、`POST/DELETE /api/access-admins`；面板多「👑 管理者」區塊（DB 那份逐筆可刪、設定檔那份虛線框標「設定檔後備」、自己那列 disabled）。`appsettings.json` 的 `Admins` 改回空清單、Development.json 整段拿掉只留說明。
+- ⚠️ **設定檔那份刻意保留當後備**，不是忘了刪：第一個管理者從哪來、DB 那份被刪光了怎麼辦，都靠它。「不能刪自己」「不能刪最後一位（含設定檔的）」兩道後端都擋（實測 400：「不能移除自己。請由另一位管理者操作」）。
+- ⚠️ `ConfigAdmins()` 另接受字串 `"a, b"` —— 字串是整個值覆寫，跨檔不會合出奇怪的結果。
+- 實測（本機）：`00002732` 測試 → 可以瀏覽·管理者；新增 `UMC\00099999` → 剝網域存成 `00099999`、重複 409；刪自己 400；刪新加的 200；`AccessLog` 多 `ADD_ADMIN`/`DELETE_ADMIN` 兩筆；`19` 重跑種入 0 筆。版本 `20260921002`。
+
+### 第 74 批（2026-09-21）頁面瀏覽權限卡控（對齊 `C:\Gantt`，四個差異點由使用者拍板）
+- 使用者原話：「限制特定人員才能瀏覽此網頁」「做法會跟 C:\Gantt 專案的相同、一樣是透過 `[WEB].[dbo].[notes_person]` 資料表來控管」「請先參考 C:\Gantt 專案…確認後再跟我說一聲」。
+  先看完 Gantt 的 `11`/`12` 腳本、`Program.cs:1602-1786`、`app.jsx` 的 `AccessPanel`／`AccessDeniedScreen`／載入閘門，整理成一份對照後**用四個選項問過再動手**，他四個都選了建議項。
+- 做了什麼：`18_add_access_control.sql`（`AccessRules` / `AppSettings` / `AccessLog`）＋ `Program.cs` 六支端點（`access-status` 匿名、其餘 Negotiate；規則與開關的寫入包交易、寫 `AccessLog`）＋ `app.jsx` 模組層 `checkAccess()` / `AccessGateScreen` / `AccessDeniedScreen` / `AccessPanel` ＋ App 的閘門與頁首 🔐。
+- ⚠️ **與 Gantt 的三個刻意差異**（`CLAUDE.md` 有完整版）：工號後端自己讀、管理者走 `Access:Admins`（一律可瀏覽）、沒有 SP。**只擋畫面**這一點與 Gantt 相同。
+- ⚠️ **通過檢查之後才 `fetchReqs()`**：原本 `useEffect(() => { fetchReqs(); … }, [])` 一載入就抓。被擋的人畫面上沒有列，但 65 筆早就在他的 Network 面板裡 —— 改成 `accessPassed` 為 true 才起第一次抓取（`dataStartedRef` 保證只起一次）。實測被擋時 `performance.getEntries()` 裡只有 `/api/access-check`。
+- ⚠️ **401 與錯誤要分開**：`/api/access-check` 掛 Negotiate，非網域瀏覽器拿到 401 → 不是錯誤、是「沒有工號」→ 改問匿名的 `/api/access-status` 決定放不放行。其餘非 2xx 與 15 秒逾時一律錯誤畫面＋重試、**不放行**（Gantt 註解裡那段「fail-open 等於把閘門做成裝飾」照搬）。
+- ⚠️ **`Access:Admins` 即時讀取**（`app.Configuration` 每次呼叫時 `Get<string[]>()`），實測改 `appsettings.Development.json` 不重啟 2 秒內 `isAdmin` 翻過來。加一個管理者不必重啟 IIS。
+- ⚠️ **本機模擬名冊裡有 `EMPNO = 'yu-tinglin'`**（Gantt 的 sim 腳本放進去的），所以這台機器的帳號在 `DEPT_3=MSD` 規則下會**過**，測「不在名冊」要用 `?testEmpId=` 拿別的工號（例：`00040704` IMD → 擋、`00034018` EMS2 → 擋）。
+- 實測（本機，全部還原）：加規則 `DEPT_3=MSD（MSD 全員）` → 開卡控 → 重整仍可看（管理者）→ 清空 `Admins` → 重整仍可看（規則過，🔐 消失、四支管理端點全 403）→ 把規則改成 IMD → 重整 → **整頁 🚫 無權限**（工號／名冊姓名部門／原因三段都印出來，沒有頁首、沒有資料）→ 還原 Admins → 刪規則、關卡控。`AccessLog` 留下 4 筆。頁首 1280 寬仍 65px 單行、🔐 37px。
+- 版本 `20260921001`。使用者手冊新增「瀏覽權限」一節。
 
 ### 第 73 批（2026-09-13）全面體檢（rule ＋ 版面）→ 七項全做
 - 使用者：「幫我檢查一下，目前的rule跟版面還有哪些需要修正或建議優化的項目」→ 列了 L1～L3／R1～R4，他說「都做掉」。
