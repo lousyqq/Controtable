@@ -1078,6 +1078,46 @@ const { useState, useMemo, Fragment, useEffect } = React;
             );
         };
 
+        // 視窗右上角的「?」：直接開到使用者手冊對應的那一章（第 77 批，2026-09-22）。
+        // 在此之前手冊只有頁首那一顆入口、而且固定開在最上面 —— 卡在「規格回退」視窗裡的人
+        // 要自己翻到第 06 章，實際上不會有人去翻。
+        // ⚠️ 網址一律走 api('/manual')（子路徑部署），並帶三樣東西：
+        //    · #錨點     → 開到那一章（錨點落在被身分篩掉的章節時，手冊自己會切回「全部」）
+        //    · ?role=    → 依目前登入者無從判斷，所以**不帶**；由手冊記住使用者自己選的身分
+        //    · ?theme=   → 跟系統當下的深淺色一致（深色系統跳出一頁白底很刺眼）
+        // ⚠️ 一律 target="_blank"：手冊蓋掉正在編輯的視窗等於把他的輸入丟掉。
+        // 訊息視窗的「?」要連到手冊第 17 章的哪一節（第 78 批）。
+        // ⚠️ 依「標題」推而不是依訊息內容：標題是我們自己設的固定字串（「無法儲存」「無法標記完成」…），
+        //    訊息則是後端回來的自由文字，拿它比對會隨著文案微調而靜靜失準。
+        // ⚠️ 推不出來一律退回整章 `c17` —— 那一章本來就依情境分節，
+        //    落在章首仍然找得到，比連到錯的一節好。
+        // ⚠️⚠️ 順序有意義，而且**先排除**再比對：實測「必填欄位<b>未完成</b>」會被 /完成/
+        //    命中而連到「標記完成」那一節 —— 錯的錨點比沒有錨點更糟（使用者以為手冊沒寫）。
+        //    所以「未完成／未儲存」這類先攔掉，再做關鍵字比對。
+        const manualAnchorFor = (title) => {
+            const t = String(title || '');
+            if (/未完成|尚未儲存|未儲存/.test(t))            return 'm-save';
+            if (/回退|撤銷/.test(t))                          return 'm-rollback';
+            if (/寄信|寄出|通知|送出|郵件|副本/.test(t))      return 'm-mail';
+            if (/完成日|標記完成|補記|一併記錄/.test(t))      return 'm-done';
+            if (/刪除|匯入|停用|人員/.test(t))                return 'm-misc';
+            if (/儲存|NID|Status|日期|階段|必填|異動原因|其他人修改/.test(t)) return 'm-save';
+            return 'c17';
+        };
+
+        // ⚠️ 深淺色讀 DOM 不讀 state：這個元件定義在 App 外面，`dark` 不在作用域裡，
+        //    而為了一顆 ? 把它一路傳進六個視窗並不值得（`.dark` 就掛在 document.body 上）。
+        const ManualLink = ({ anchor, label }) => (
+            <a href={api('/manual') + '?theme='
+                     + (document.body.classList.contains('dark') ? 'dark' : 'light') + '#' + anchor}
+               target="_blank" rel="noopener"
+               className="icon-btn no-underline text-[13px] font-bold leading-none"
+               style={{width:'22px', height:'22px', display:'inline-flex',
+                       alignItems:'center', justifyContent:'center'}}
+               title={`使用者手冊：${label}（另開分頁）`}
+               aria-label={`開啟使用者手冊的「${label}」說明`}>?</a>
+        );
+
         // 「已有值防誤改」的解鎖鈕（2026-08-22 由純圖示改為圖示 + 文字）。
         // 原本只有一顆 14px 的鎖頭圖示、說明全在 title 裡 —— 第一次用的人根本不知道
         // 「日期是灰的」是因為要先點這裡，只會以為系統壞了或沒有權限。
@@ -1558,7 +1598,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     <div className="rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col" style={{background:'var(--bg-card)', color:'var(--text-primary)'}} onClick={e=>e.stopPropagation()}>
                         <div className="p-4 border-b flex items-start justify-between gap-3" style={{borderColor:'var(--border-table)'}}>
                             <div className="min-w-0">
-                                <h3 className="text-base font-bold">🔐 瀏覽權限</h3>
+                                <div className="flex items-center gap-1.5"><h3 className="text-base font-bold">🔐 瀏覽權限</h3><ManualLink anchor="c14" label="瀏覽權限（管理者）" /></div>
                                 <p className="text-[11px] mt-1" style={{color:'var(--text-muted)'}}>
                                     依人員名冊的部門（DEPT_1 / 2 / 3）或工號白名單卡控，任一規則符合即可瀏覽。
                                     名冊來源：<span className="font-mono">{personView || '—'}</span>
@@ -6559,7 +6599,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                     <main> 的 zoom 會把 vh 一起放大，字級 115% 時底部那排儲存／取消會落在螢幕外（第 62 批） */}
                                 <div className="rounded-xl shadow-2xl w-full max-w-4xl modal-card-tall flex flex-col" style={{background:'var(--bg-card)', color:'var(--text-primary)'}}>
                                     <div className="p-4 border-b flex justify-between items-center" style={{borderColor:'var(--border-table)'}}>
-                                        <h3 className="text-lg font-bold">{editingData.isNew ? '新增資料列' : '編輯資料列'}</h3>
+                                        <div className="flex items-center gap-1.5"><h3 className="text-lg font-bold">{editingData.isNew ? '新增資料列' : '編輯資料列'}</h3><ManualLink anchor="c4" label="編輯需求與壓日期" /></div>
                                         <button onClick={closeEdit} className="icon-btn transition-colors" title="關閉（Esc）" aria-label="關閉編輯視窗">
                                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
                                         </button>
@@ -7015,8 +7055,16 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                 <div className="rounded-xl shadow-2xl w-full max-w-md" style={{background:'var(--bg-card)', color:'var(--text-primary)'}} onClick={e=>e.stopPropagation()}>
                                     <div className="p-4 flex items-start gap-3 border-b" style={{borderColor:'var(--border-table)'}}>
                                         <span className="flex items-center justify-center w-8 h-8 rounded-full shrink-0 text-lg" style={{background:'var(--tone-alert-bg)', color:'var(--tone-alert)'}}>!</span>
-                                        <div className="min-w-0">
-                                            <h3 className="text-base font-bold">{alertModal.title}</h3>
+                                        <div className="min-w-0 flex-1">
+                                            {/* 被擋下來的那一刻正是最需要手冊的時候（第 78 批）。
+                                                ⚠️ 錨點**依標題自動推**，不必改三十幾個 setAlertModal 呼叫點 ——
+                                                推不出來就退回第 17 章整章（那一章本來就是依情境分節的）。
+                                                呼叫端要指定就傳 alertModal.anchor 覆寫。 */}
+                                            <div className="flex items-start gap-1.5">
+                                                <h3 className="text-base font-bold flex-1">{alertModal.title}</h3>
+                                                <ManualLink anchor={alertModal.anchor || manualAnchorFor(alertModal.title)}
+                                                            label="被擋下來時看到的訊息" />
+                                            </div>
                                             <p className="mt-1 text-sm whitespace-pre-wrap" style={{color:'var(--text-secondary)'}}>{alertModal.message}</p>
                                         </div>
                                     </div>
@@ -7055,7 +7103,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                  aria-label={`${m.backfill ? '補記' : '標記'}「${m.label}」完成`} tabIndex={-1}>
                                 <div className="rounded-xl shadow-2xl w-full max-w-lg" style={{background:'var(--bg-card)', color:'var(--text-primary)'}} onClick={e=>e.stopPropagation()}>
                                     <div className="p-4 border-b" style={{borderColor:'var(--border-table)'}}>
-                                        <h3 className="text-base font-bold">{m.backfill ? '補記' : '✓ 標記'}「{m.label}」完成</h3>
+                                        <div className="flex items-center gap-1.5"><h3 className="text-base font-bold">{m.backfill ? '補記' : '✓ 標記'}「{m.label}」完成</h3><ManualLink anchor="c5" label="標記完成" /></div>
                                         <p className="mt-1 text-[11px]" style={{color:'var(--text-muted)'}}>
                                             {/* 補記（第 70 批）：這個階段早就走過了，先講清楚這一次不會動 StatusID */}
                                             {m.backfill && <>目前 StatusID 已在 <span className="font-bold">{STAGE_CODES[String(m.curStage)]?.label || m.curStage}</span>，這個階段早就走過但沒有完成紀錄。補記<span className="font-bold">不會改變 StatusID</span>，只補一筆完成紀錄並依日期計提早／延期。　</>}
@@ -7218,7 +7266,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                  aria-label={`規格回退 NID ${rollbackModal.nid}`} tabIndex={-1}>
                                 <div className="rounded-xl shadow-2xl w-full max-w-lg" style={{background:'var(--bg-card)', color:'var(--text-primary)'}} onClick={e=>e.stopPropagation()}>
                                     <div className="p-4 border-b" style={{borderColor:'var(--border-table)'}}>
-                                        <h3 className="text-base font-bold">🔄 規格回退（NID {rollbackModal.nid}）</h3>
+                                        <div className="flex items-center gap-1.5"><h3 className="text-base font-bold">🔄 規格回退（NID {rollbackModal.nid}）</h3><ManualLink anchor="c6" label="規格回退" /></div>
                                         <p className="mt-1 text-[11px]" style={{color:'var(--text-muted)'}}>
                                             目前 StatusID 為 {STAGE_CODES[String(rollbackModal.curStage)]?.label || rollbackModal.curStage}。
                                             回退後<span className="font-bold">目標階段（含）以後的日期會全部清空</span>，需要重新填寫；
@@ -7317,7 +7365,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                  aria-label={`撤銷標記完成 NID ${undoModal.nid}`} tabIndex={-1}>
                                 <div className="rounded-xl shadow-2xl w-full max-w-lg" style={{background:'var(--bg-card)', color:'var(--text-primary)'}} onClick={e=>e.stopPropagation()}>
                                     <div className="p-4 border-b" style={{borderColor:'var(--border-table)'}}>
-                                        <h3 className="text-base font-bold">撤銷「{ph.label}」的標記完成（NID {undoModal.nid}）</h3>
+                                        <div className="flex items-center gap-1.5"><h3 className="text-base font-bold">撤銷「{ph.label}」的標記完成（NID {undoModal.nid}）</h3><ManualLink anchor="h-undo" label="誤按了標記完成：用撤銷" /></div>
                                         <p className="mt-1 text-[11px]" style={{color:'var(--text-muted)'}}>
                                             要撤銷的是 {d.changedAt}{d.changedBy ? ` · ${d.changedBy}` : ''} 記下的「{entryLabelOf(d)}」
                                             {isDateVal(doneDate) && <>（完成日 {doneDate}）</>}。
@@ -7470,7 +7518,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                 <div className="rounded-xl shadow-2xl w-full max-w-3xl modal-card-tall flex flex-col"
                                      style={{background:'var(--bg-card)', color:'var(--text-primary)'}} onClick={e => e.stopPropagation()}>
                                     <div className="p-4 border-b flex items-center gap-2 flex-wrap" style={{borderColor:'var(--border-table)'}}>
-                                        <h3 className="text-base font-bold">時程變更軌跡 · NID {hm.nid || hm.id}</h3>
+                                        <div className="flex items-center gap-1.5"><h3 className="text-base font-bold">時程變更軌跡 · NID {hm.nid || hm.id}</h3><ManualLink anchor="h-timeline" label="時程變更軌跡怎麼讀" /></div>
                                         {dateChangeN > 0 && (
                                             <span className="text-[10px] font-bold px-1.5 py-0.5 rounded cursor-help"
                                                   style={{color:'var(--tone-warn)', background:'var(--tone-warn-bg)', border:'1px solid var(--tone-warn-border)'}}
