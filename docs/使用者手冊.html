@@ -386,7 +386,6 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
       <span><b>版本</b> 20260928003</span>
       <span><b>適用</b> 需求列表 · 統計報表</span>
       <span><b>對象</b> EMS／MSD 負責人、主管</span>
-      <span><b>權威規格</b> FIELD_SPEC.md</span>
     </p>
   </header>
 
@@ -1025,7 +1024,7 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
         <tr><td><span class="ui">＋ 新增需求</span></td><td>開啟新增視窗。</td></tr>
       </tbody>
     </table></div>
-    <p><b>正在過濾的下拉會變成藍色實心</b>（例如「進度：進行中 (19)」），沒有在過濾的維持一般樣式 —— 掃一眼就知道目前有幾條件在過濾，不用一顆一顆看。</p>
+    <p><b>正在過濾的下拉會變成藍色實心</b>（例如「進度：進行中 (N)」，括號裡是符合的筆數），沒有在過濾的維持一般樣式 —— 掃一眼就知道目前有幾條件在過濾，不用一顆一顆看。</p>
     <p>工具列下方是 <span class="ui">ALL</span> 與五個階段的統計鈕，點一下就篩出那一階段（ALL 代表<b>顯示全部</b> —— 清空已選的階段，並取消預設的「只看進行中」）。<b>預設是單選</b>：點另一顆就換過去，再點同一顆就取消。要<b>同時看好幾個階段</b>時，按 <span class="ui">5 結案</span> 右邊那顆<b>清單圖示的開關</b>切成複選（亮起＝複選中），1~5 就可以疊著選；切回單選時只會留下最後選的那一個。<b>每次開啟網頁都會回到單選</b>（不會記住上次的選擇）；別人分享給你的連結若本來就帶著兩個以上的階段，會自動以複選開啟。上面的數字是「套用其他篩選後」的分佈，所以選了 EMS 之後這排數字會跟著變；但<b>「進度」這一條不算在內</b>，所以 <span class="ui">5 結案</span> 上面永遠是真實的筆數（詳見第 9 章「預設只看進行中」）。</p>
 
     <h3>資料列與明細</h3>
@@ -1439,14 +1438,14 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
     </div>
 
     <h3>預設只看進行中</h3>
-    <p>一打開需求列表，畫面<b>預設只顯示尚未結案的需求</b>（<span class="ui">進度：進行中</span>）。已結案的那些沒有消失，只是不在預設畫面上 —— 目前 63 筆裡有 45 筆已結案，全部攤開的話，你今天真正要處理的那十幾筆會被埋在裡面。</p>
+    <p>一打開需求列表，畫面<b>預設只顯示尚未結案的需求</b>（<span class="ui">進度：進行中</span>）。已結案的那些沒有消失，只是不在預設畫面上 —— 累積下來的資料裡有一大半是已結案的，全部攤開的話，你今天真正要處理的那十幾筆會被埋在裡面。</p>
     <p>要看到全部，任選一種：</p>
     <ul>
-      <li>工具列的 <span class="ui">進度</span> 下拉（就是那顆藍色的「進度：進行中 (19)」）改成「不限進度」。</li>
+      <li>工具列的 <span class="ui">進度</span> 下拉（就是那顆藍色的「進度：進行中 (N)」）改成「不限進度」。</li>
       <li>按階段統計鈕最左邊的 <span class="ui">ALL</span> —— 它同時清掉已選的階段<b>與</b>「只看進行中」。</li>
       <li>直接按 <span class="ui">5 結案</span>（或任何被「進行中」整群擋掉的階段）—— 系統會自動幫你取消「只看進行中」，不會讓你點到一個必然 0 筆的組合。</li>
     </ul>
-    <p>階段統計鈕上的<b>五個數字一律不受「進度」影響</b>（<span class="ui">5 結案</span> 永遠寫著真實的 45），每個數字就是「按下去會看到幾筆」。</p>
+    <p>階段統計鈕上的<b>五個數字一律不受「進度」影響</b>（<span class="ui">5 結案</span> 永遠寫著結案的真實筆數），每個數字就是「按下去會看到幾筆」。</p>
     <p>那一排的右邊還有 <span class="ui">需關注 N</span>（只印總件數；未壓／逾期／7 日內各幾件在它的滑鼠提示與「逾期」下拉裡）、<span class="ui">顯示 N / M 筆</span>、<span class="ui">ⓘ</span>（圖例）、<span class="ui">精簡模式</span>、<span class="ui">排序</span>。<b>圖例預設是收起來的</b> —— 那條符號說明只有第一次需要，按 <span class="ui">ⓘ</span> 就展開（會記住你的選擇）。<b>列印時無論收合與否都一定會印出來</b>，因為紙上沒有滑鼠提示，⏰／🔄／⚠ 只剩圖例解釋得了。</p>
     <div class="note">
       <span class="lb">搜尋時不會漏掉已結案的</span>
@@ -1515,7 +1514,7 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
     <div class="note warn">
       <span class="lb">⚠ 未壓日期＝已經到那一階段，卻還沒排日期</span>
       <p>最常見的產生方式：按了「③ 完成」，StatusID 推進到 4，但 ④ 的驗收日還是空的。這種列<b>不受 7 日窗限制</b>，一定會被列入需關注，並排在「逾期優先」的最上面。資料列上那一格會同步標紅色的「⚠ 未壓日期」徽章 —— <b>每一件被算進去的，畫面上都看得見原因</b>。</p>
-      <p>StatusID 空白或超出 1~5 的資料一律不推斷（空白代表「不知道走到哪」，硬猜會冤枉一批舊資料）。</p>
+      <p>StatusID 不是 <code>1</code>~<code>5</code> 的資料一律不推斷 —— 不知道走到哪一階段，就不會硬猜出一件「未壓日期」來冤枉它。（StatusID 是必填的，正常不會出現這種資料。）</p>
     </div>
 
     <div class="note">
@@ -1607,9 +1606,9 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
     <h3>什麼情況不預警</h3>
     <ul>
       <li>Status = <code>Done</code>，或 StatusID = <code>5</code>（結案）—— 整筆不預警。</li>
-      <li>階段已被下一階段接手 —— 也就是 <b>StatusID 已經走到它後面</b>（例如 StatusID 是 3，① ② 就算走完了）。那不是風險。<br><span style="color:var(--muted,#94a3b8)">⚠ 「走完了沒」只看 StatusID，<b>不會</b>因為你先把後面的日期壓好就當成前面走完了。StatusID 還在 1、卻把 ①②③ 三個日期一次先填好時，① 照樣會標逾期 —— 要讓它不再亮，請用「標記完成…」把 ① 記成完成。（只有 StatusID 空白的舊資料才會用「② 有日期」去推 ① 已完成。）</span></li>
+      <li>階段已被下一階段接手 —— 也就是 <b>StatusID 已經走到它後面</b>（例如 StatusID 是 3，① ② 就算走完了）。那不是風險。<br><span style="color:var(--muted,#94a3b8)">⚠ 「走完了沒」<b>只看 StatusID</b>，<b>不會</b>因為你先把後面的日期壓好就當成前面走完了。StatusID 還在 1、卻把 ①②③ 三個日期一次先填好時，① 照樣會標逾期 —— 要讓它不再亮，請用「標記完成…」把 ① 記成完成。</span></li>
       <li>該階段有「實際完成日」—— 已經走完了。</li>
-      <li>未走完的階段全都還沒壓日期、而且 StatusID 也推不出當前階段 —— 沒有可盯的到期日就不預警，精簡模式那一欄會顯示「未排定」。</li>
+      <li>沒有任何一個未走完的階段有到期日可盯（也不屬於上面那個「⚠ 未壓日期」）—— 沒有日期就不預警，精簡模式那一欄會顯示「未排定」。</li>
     </ul>
 
     <h3>「逾期」下拉的四個選項</h3>
@@ -1689,7 +1688,7 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
     <details class="adv"><summary>放大之後右邊放不下，會怎麼樣？</summary>
       <div class="note">
       
-      <p><b>可用寬度 = 視窗寬 ÷ 放大倍率</b>（瀏覽器的 Ctrl＋滾輪縮放也一樣）。16 欄的表格壓縮到極限是 <b>約 1256px</b>（整頁需要 1281px），低於這個數字就需要<b>橫向捲動</b>才看得到最右邊那幾欄。</p>
+      <p><b>可用寬度 = 視窗寬 ÷ 放大倍率</b>（瀏覽器的 Ctrl＋滾輪縮放也一樣）。16 欄的表格壓縮到極限是 <b>約 1218px</b>（加上左右留白，整頁大約需要 1270px），低於這個數字就需要<b>橫向捲動</b>才看得到最右邊那幾欄。</p>
       <p><b>這時整個版面會跟著一起變寬</b> —— 頁首、工具列、統計卡、圖例列都會長到和表格一樣寬，往右捲時整頁一起平移。所以<b>不會再出現「表格還在延伸、上面的卡片卻切在半空中」那種破圖</b>，也<b>不會</b>因為放大就自動把欄位收起來（16 欄永遠是 16 欄，除非你自己開精簡模式）。</p>
       <p>需要橫捲時<b>不會跳任何提示</b> —— 瀏覽器下方的橫向捲軸本來就在告訴你右邊還有內容，再多一顆紅色警告只會擋到畫面（<span class="badge a">⚠ 右邊被切掉</span> 那顆現在<b>只保留給投影模式</b>，因為台上的人看自己的螢幕，不會發現布幕右邊少了幾欄）。</p>
       <p>不想橫捲的話，隨時可以自己降字級、把瀏覽器縮放調回 100%（<b>Ctrl + 0</b>）、切精簡模式，或把視窗拉寬。系統<b>不會自動幫你改設定</b>。</p>
@@ -1739,12 +1738,13 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
       <p>匯入<b>不是</b>以 NID 比對更新，而是<b>清空整張表後以檔案內容重建</b>。這是測試階段的刻意做法。會跳確認視窗，請確認你選的是正確的檔案。</p>
       <p><b>檔案裡沒有的東西不會回來</b>：全部的變更軌跡（⚠N、明細的軌跡、完整軌跡）、四個階段的實際完成日、延期／提早／規格回退的次數（⏰、🔄）、通知寄送的紀錄，匯入後全部歸零。匯出檔雖然帶著實際完成日與次數欄，匯入時也<b>刻意不讀</b>（那些是稽核表的快取，稽核表清了它們就不該留著）。確認視窗會把這幾條列出來。</p>
     </div>
-    <p>清空之前系統會先做四道檢查，任何一道沒過就<b>整個中止、資料不動</b>：</p>
+    <p>清空之前系統會先做五道檢查，任何一道沒過就<b>整個中止、資料不動</b>（這幾道全部排在動資料庫之前，所以連清空都不會發生）：</p>
     <ul>
       <li>檔案打不開</li>
       <li>找不到表頭列，或關鍵欄位都對應不到</li>
       <li>一列資料都讀不出來</li>
       <li>檔案內有重複的 NID</li>
+      <li><b>有格子超過欄位的長度上限</b> —— 訊息會逐條寫出「第幾列（NID 幾）的哪一欄：上限幾字、目前幾字」（最多列 20 處），不必自己在整張表裡找</li>
     </ul>
     <p>匯入成功後會顯示匯入了幾筆。若有欄位對應不到，訊息會列出<b>對應不到的欄名清單</b> —— 那串字值得抄下來，Toast 的停留時間會依字數自動加長（最多 12 秒），也可以按 ✕ 手動關掉。</p>
     <p>四個「實際完成日」欄位與三個計數欄<b>會匯出但不會被匯入吃回去</b>，避免重灌時撞欄。</p>
@@ -1880,14 +1880,16 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
         <tr><td><code>3_MSDEnd</code></td><td>MSD 開發</td><td>③ 的結束日</td></tr>
         <tr><td><code>4_EMSStart</code></td><td>④ 開始日</td><td>—</td></tr>
         <tr><td><code>4_EMSEnd</code></td><td>EMS 驗收</td><td>④ 的結束日</td></tr>
-        <tr><td><code>1~4_*History</code></td><td>異動軌跡</td><td>各階段的變更歷史（明細才顯示）</td></tr>
+        <tr><td><code>YearMonth</code></td><td>—</td><td>由註冊日期反推的年月（<code>YYYY/MM</code>），統計報表用它分組。畫面上沒有這個欄位</td></tr>
+        <tr><td><code>2_MSDNote</code></td><td>Next Check 說明</td><td>② 的舊備註欄，明細仍會顯示既有內容，<b>畫面上不提供編輯</b></td></tr>
+        <tr><td><code>1~4_*History</code></td><td>—</td><td><b>早期版本留下的空欄位</b>，匯出時一律是空的、匯入時一律清空。真正的變更軌跡存在系統裡（展開明細的「變更軌跡」與「完整軌跡 ↗」），<b>不會跟著 Excel 走</b></td></tr>
         <tr><td><code>StatusDesc</code></td><td>現況描述</td><td>明細顯示；<b>精簡模式的最後一欄</b>會完整顯示</td></tr>
         <tr><td><code>MP Saving</code></td><td>MP Saving</td><td>完成後的 Benefit，自由文字（例：<code>0.5 人/月</code>）</td></tr>
       </tbody>
     </table></div>
 
     <h3>異動類型與計數的關係</h3>
-    <p>軌跡裡有七種異動類型，但<b>只有「日期異動」會讓 <span class="badge a">⚠ N</span> 與統計報表的「時程異動」加一</b>：</p>
+    <p>軌跡裡有十二種紀錄類型，但<b>只有「日期異動」會讓 <span class="badge a">⚠ N</span> 與統計報表的「時程異動」加一</b>：</p>
     <div class="tw"><table>
       <thead><tr><th style="width:120px">類型</th><th style="width:90px">計入 ⚠</th><th>什麼時候寫入</th></tr></thead>
       <tbody>
@@ -1900,8 +1902,12 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
         <tr><td><code>重新排程</code></td><td>否</td><td>結束日之前有過值、被清掉（回退或手動清空）之後重新填上</td></tr>
         <tr><td><code>手動調整</code></td><td>否</td><td>「✎ 手動修正 StatusID」或改 Status —— 那不是日期</td></tr>
         <tr><td><code>撤銷完成</code></td><td>否</td><td>按了「撤銷」把上一次的標記完成作廢（第 5 章）。軌跡上寫「還原為」，原本那筆完成紀錄仍在</td></tr>
+        <tr><td><code>欄位異動</code></td><td>否</td><td>日期以外的欄位被改掉（NID、註冊日期、Main Cat、Sub Cat、EMS／MSD 負責人、MP Saving、需求補充、Notes Link、現況描述、Next Check 說明）。改這些<b>不必填理由</b>，逐筆的「舊值 → 新值」在「完整軌跡 ↗」裡</td></tr>
+        <tr><td><code>通知寄送</code></td><td>否</td><td>按 <span class="ui">✉</span> 寄出通知（或存檔後的詢問按了確認）。<b>不進時間軸</b>，收在軌跡卡片上方的「✉ 已通知 N 次」那一行（第 10 章）</td></tr>
+        <tr><td><code>建立</code></td><td>否</td><td>這筆需求被建立。它是軌跡的<b>起點</b>不是一次變更，所以不算在「共 N 筆變更」裡 —— 印在明細的「建立時間」底下（建立者）與完整軌跡視窗的最底一行</td></tr>
       </tbody>
     </table></div>
+    <p><code>init</code>、<code>通知寄送</code>、<code>建立</code> 這三種<b>不算「變更」</b>：它們不會出現在「共 N 筆變更」的計數與時間軸裡，各自有自己的位置（初始時程那一行／「✉ 已通知 N 次」／「建立者」）。</p>
     <p><b>完成與回退的紀錄仍完整列在展開明細的軌跡裡</b>，只是不計入次數。</p>
     <p>資料列上的 <span class="badge a">⚠ N</span> <b>只掛在有日期的格子旁邊</b>：某階段的日期被清空（回退或自己解鎖清掉）之後，那一格只顯示「-」，不再帶著次數。紀錄並沒有少 —— 展開明細的軌跡、「N 次」徽章與統計報表照舊，日期重新壓上去之後這顆也會回來。</p>
 
@@ -2007,7 +2013,7 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
 
   <footer>
     <span>MSD 需求管控表 · 使用者手冊</span>
-    <span>規則的權威來源：<code>FIELD_SPEC.md</code>／<code>CLAUDE.md</code></span>
+    <span>本手冊隨系統功能同步更新</span>
   </footer>
 
   </main>
