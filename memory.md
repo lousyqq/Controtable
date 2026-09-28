@@ -16,12 +16,13 @@
 | 項目 | 值（2026-09-05 第 55 批當天實測） |
 |---|---|
 | 本機 DB 資料 | `dbo.Controltable` **62 筆** active（16 進行中 / 46 已完成；使用者 2026-09-12 21:40 重灌過一次，稽核列與計數欄當時全部歸零）；`dbo.Assignee` **13 筆**，`EMPO` 與 `EMAIL` 使用者已全部補齊（EMS 8 / MSD 5，例：明翰 `Macgyver_Ho@UMCG`、宸詳 `Sw_Lee@UMCG`） |
-| 未壓日期 | **4 筆**：NID 6、20（皆 stage 4）、99（stage 2）、111（stage 1）。需關注 13 件（逾期 9 + 未壓 4 + 7 日內 0） |
-| 已執行腳本 | `01`~`15`、`17`、`18`、`19` 已執行（`18`/`19` 於 2026-09-21 第 74/75 批：瀏覽權限四張表）。**`16_grant_dbmail_permission.sql` 尚未執行**（見第 4 節） |
-| `?v=` | **`20260921002`**（第 75 批；第 62~64 批的結論記在 `CLAUDE.md`，這裡沒有另寫一份） |
+| 未壓日期 | **2 筆**：NID 61、62（皆 stage 4）。需關注 **11 件**（逾期 9 + 未壓 2 + 7 日內 0）。⚠️ 2026-09-05 那一版寫的 4 筆（NID 6/20/99/111）已過期 —— 使用者 2026-09-12 重灌過資料 |
+| 已執行腳本 | `01`~`15`、`17`~`20` 已執行（`18`/`19` 於 2026-09-21 第 74/75 批：瀏覽權限四張表；`20_add_applog.sql` 於 2026-09-25 第 82 批：`dbo.AppLog`，本機已建、目前 0 筆）。**`16_grant_dbmail_permission.sql` 尚未執行**（見第 4 節） |
+| `?v=` | **`20260928003`**（第 85 批；兩處 ＋ 手冊抬頭一致。第 62~64 批的結論記在 `CLAUDE.md`，這裡沒有另寫一份） |
 | 瀏覽權限 | 本機：開關 **false**、規則 **1 筆**（使用者自己加的 `DEPT_3=IMD`）、`dbo.AccessAdmins` **3 筆**（`00002732`／`00041817`／`yu-tinglin`，由 `19` 種入）、`AccessLog` 7 筆。`appsettings.json` 的 `Access:Admins` 已改回 **空清單**（後備用），Development.json **不放**。⚠️ 模擬名冊 `[WEB].[dbo].[notes_person]`（34 筆）**裡面有 `EMPNO = 'yu-tinglin'`（林玉婷，DEPT_3=MSD）** —— 拿這台機器測「不在名冊」那條路會過不了，要用 `?testEmpId=` 拿別的工號測 |
 | 伺服器 | `dotnet run` → `http://localhost:5146`（`.claude/launch.json` 的 `controltable`，用 `preview_start` 啟動）。使用者自己那台可能開在 **7127**，兩邊資料不同 —— 找不到某筆測試資料時先確認是哪一台 |
 | DB 連線 | `sqlcmd -S Sariel -d Controltable -U testuser -P test -C -f 65001` |
+| 前端相依 | **完全沒有對外相依了**（第 83 批實測 `performance` 的外部請求 **0 支**）。React 18.3.1 在 `wwwroot/vendor/`（第 82 批，production.min）；字型於**第 83 批**改成系統字堆疊，上一版那句「字型仍走 Google Fonts CDN、要處理是另一件事」已經做掉 |
 | 寄信 | **`Mail:Mode = "smtp"` + relay `10.13.2.221:25`，`From` 刻意留空**，已由使用者在公司 IIS（p58esiap12）實測通過。⚠️ 見 `CLAUDE.md` 那條「未經指示不要動」 |
 
 ⚠️ **「需關注」的件數會自己變** —— 預警窗是 `DUE_WINDOW_DEFAULT = 7` 天，日期往前滾一天就會有需求進窗。
@@ -135,6 +136,9 @@ EMS 也可以先壓預設的驗收時間，或等開發完再填。
       ②`appsettings.json` 的 `Access:Admins` 維持空清單 —— 管理者已經在 DB 裡，之後在面板的「管理者」區塊加人；只有 DB 那份被刪光時才臨時填一個工號進設定檔救回；
       ③確認 `[WEB].[dbo].[notes_person]` 從 Controltable 用的連線帳號查得到（Gantt 同一台 DB 已經在用，通常沒問題）。
       然後進網頁 → 🔐 → 先加規則（例：`DEPT_3 = MSD`）→ 用「工號測試」拿幾個工號驗過 → 再開卡控。**開關預設 false，部署當下不會鎖任何人。**
+- [ ] **`21_add_history_field_audit.sql` 要在正式 DB 跑一次**（第 84 批，2026-09-28）。⚠️ 與 `20` 不同，**這一支不跑會讓 `PUT` 整筆失敗**（`INSERT` 會找不到 `FieldKey`／`OldValue`／`NewValue` 三欄）—— 不過 `Program.cs` 的啟動 bootstrap 也補得到同樣三欄，所以正常啟動一次就會自己好；腳本是給「bootstrap 因為權限或 DB 暫時不通而跳過」的情況用的。本機已執行並以 `sys.columns` 複驗。
+- [ ] **`20_add_applog.sql` 要在正式 DB 跑一次**（第 82 批，2026-09-25）。⚠️ **不跑也不影響任何功能**（`AppDiag` 寫不進去一律靜靜跳過），但不跑就查不到錯誤紀錄。連線帳號需要那張表的 `INSERT` 權限。
+- [ ] **IIS 上要讓 `logs` 資料夾可寫**（第 82 批）：`web.config` 的 `stdoutLogEnabled="true"` 會寫到 `.\logs\stdout_<pid>_<時間>.log`，**應用程式集區身分（通常是 `IIS AppPool\<集區名>`）要有寫入權限**。⚠️ 資料夾不存在或不可寫時 log 是**靜靜不產生**的，不會報錯。`logs\.gitkeep` ＋ csproj 的 `<Content>` 已經讓 publish 帶出那個資料夾。⚠️ ANCM 不輪替也不清理，集區大約一天回收一次 → 一年幾百個小檔，要清就直接刪舊檔。
 - [ ] **`16_grant_dbmail_permission.sql` 尚未執行**（要 DBA 在 DB 主機以 sysadmin 執行）。
       ⚠️ 腳本裡 `@LoginName` 預設 `testuser`，**正式環境要先改**。已用 `SET PARSEONLY ON` 驗過語法。
       只有切到 `Mail:Mode = "dbmail"` 才需要它 —— 目前生效的是 `smtp`，**不執行也不影響現況**。
@@ -154,7 +158,8 @@ EMS 也可以先壓預設的驗收時間，或等開發完再填。
       匯入 H4/H5 他決定**不做**（見第 3 節）。**這一輪的規則檢查清單已經清空。**
 - [ ] **C8：把 EMS／MSD／逾期／進度／警示五個下拉收進一顆「篩選 (N)」面板** ——
       會犧牲可發現性，且動到已寫進 `FIELD_SPEC.md` 的工具列規格。
-- [ ] **A10：新增視窗沒有註冊日期欄**（`openAdd` 有帶今天當預設，只是不能改）。
+- [ ] **A10：新增視窗沒有註冊日期欄**（`openAdd` 有帶今天當預設，只是不能改；編輯視窗那一格也是 `readOnly`）。
+      ⚠️ **第 85 批（2026-09-28）已經問過了**：列在體檢清單的 A2，他只挑了 A1 —— 所以這一條現在是「問過、他沒選」，不是「還沒問」。
 
 ### 長期想法（尚未與使用者確認優先序，依投報率排序）
 1. **迷你甘特條**：三個時程欄改成視覺化長條 + 今日紅線，主管掃一眼就知道卡在哪
@@ -214,8 +219,8 @@ EMS 也可以先壓預設的驗收時間，或等開發完再填。
 
 | 量的東西 | 值 | 出處 |
 |---|---|---|
-| 16 欄表格 min-content | **1256px**（整頁需求 1281px） | 第 46 批實測 |
-| ↑ 舊紀錄 1237 / 1254px | **已過期，改讀 1256** | 第 31 批 → 第 39 批 → 第 46 批 |
+| 16 欄表格 min-content | **1218px**（1280 寬、`page-shell` 1267.7、整頁橫捲 2px） | **第 83 批實測（換系統字之後）** |
+| ↑ 舊紀錄 1237 / 1254 / 1256px | **全部過期，改讀 1218** —— 第 83 批拿掉 Google Fonts 之後版面預算**變鬆**：1280 寬、16 欄的 A/B（把舊的 CDN 字型暫時載回來比）是 `page-shell` **1299.1 → 1267.7**、橫捲 **34 → 2px**、表格 min-content **1249 → 1218** | 第 31 → 39 → 46 → **83** 批 |
 | 9 欄（精簡模式） | **901px** | 第 31 批 |
 | 工具列（1217px）算式 | `搜尋 220 + 漏斗 34 + 分隔 1 + 140×5 + 動作 168 + gap 8×8 = 1187`，**只剩 30px** | 第 36 批 |
 | 階段那一排（1440 螢幕、可用 1425px） | 左 `ALL`+五顆 **725px**、右 `需關注 170 + 顯示 N/M 81 + 精簡＋排序 168`；目前 need **1224px** | 第 51 批 |
@@ -228,6 +233,138 @@ EMS 也可以先壓預設的驗收時間，或等開發完再填。
 ---
 
 ## 7. 批次紀錄（新 → 舊，只留結論與坑）
+
+### 第 85 批（2026-09-28）體檢 → 他只挑了 A1（建立紀錄）
+
+- 起因：「目前專案的邏輯跟功能還有問題需要修正的嗎?」。**重新分析**（沒照抄第 84 批那張表），量完給他六項，他回「**先修 A1**」。
+- ⚠️ **沒挑的五項**（下一輪要提請重新量，不要照抄）：**A2** 註冊日期完全改不到（新增視窗帶今天、編輯視窗 `readOnly`，`app.jsx` 那個 `<input>`）—— 補建上個月的需求時年月永遠是今天，而統計報表的交叉表與趨勢圖是按註冊年月分組；實測本機 62 筆橫跨 **18 個註冊月份**，後端 `PUT` 本來就會寫 `RegDate`。**這就是第 4 節掛著、標「要先問過使用者」的 A10，這一輪等於問過了、他沒挑。**；**B3** 卡控「開著但 0 條規則」的警告只是 5 秒 toast（後端有回 `warning`，前端 `showToast(..., 'warn')`）—— 那句話的意思是「現在除了管理者所有人都看不到這個網頁」，與第 82 批「寫入失敗要用要按掉的彈窗」是同一條界線的另一面（成功但後果嚴重）；**B4** `/api/history` 每次載入與每次寫入都整包重抓（實測 **237 列 / 80,403 B**，壓縮後 **3,762 B**，現在完全撐得住；`?requirementId=` 早就做好了）—— 我自己在清單上就標了「現在不用做」；**C5** `CLAUDE.md` 的「重要業務邏輯 1」第三點還在描述第 13 批就移除的 `parseHistoryString` 與 History 字串欄位（實測 `app.jsx` 只剩一行「已於第 13 批移除」的註解、`PUT` 的 `UPDATE` 也不寫那四欄）；**C6** `AuditFields` 裡的 `regDate` 與 `msd.confirmNote` 在 UI 上沒有編輯入口（只有直接打 API 產得出那兩種稽核列，`regDate` 那半與 A2 是同一件事）。
+- ⚠️ 這一輪**量完確認風險比想像低、主動說不要做的**：貼上超長文字被 `maxLength` 靜靜截掉（第 84 批的 B6）—— 本機最長 `Remark` **180 字**、`CurrentStatus` **122 字**，離 500 還很遠。
+- ⚠️ 這一輪抽驗過、**確認沒壞**的：`isPhasePassed`／`unsetDuePhase`／`resolveDuePhase`／`resolveFocusPhase` 四支、`prevPhaseEndOf`↔`PrevPhaseEndOf`／`nextPhaseEndOf`↔`NextPhaseEndOf`／`backfillMax`↔`backfillCap`／`doneExtraBounds`↔`alsoStages`／`AuditFields`↔`FIELD_AUDIT_LABELS` 五組鏡像、`isDateChange` 是白名單（`=== '日期異動'`）、`MsdConfirmNote` 沒帶就保留（而且那一段排在 `WriteFieldAuditAsync` 之前，所以不會產生幽靈的「Next Check 說明」稽核列）、`YearMonth` 由 `RegDate` 反推（`AddSqlParameters`）、瀏覽權限的規則比對（含名冊查不到時含部門條件的規則不成立）、壓縮仍生效（`/api/requirements` 6,003／`/api/history` 3,762／`app.js` 153,713）。
+
+**A1 · 建立紀錄（`ChangeType='建立'`）**
+- ⚠️⚠️ 實測起點（建 `ZZ85-A`，只填必填、不填任何日期）：`dbo.Controltable_History` **0 筆**。`dbo.Controltable` 查 `sys.columns` **沒有 `CreatedBy`**。匯入那批的 `init` 有 **12 筆 `ChangedBy` 是空的**。
+- 改動：`POST` 與匯入各補一筆 `建立`／`Phase='stage'`；前端 `NON_CHANGE_TYPES`（`init`／`通知寄送`／`建立`）＋ `isChangeEntry()` **一份定義三處共用**（原本三處各寫一次）；明細「建立時間」底下印建立者、完整軌跡視窗壓最底一行；查不到印「無紀錄」不留白；順手刪掉已經沒人讀的 `hasHist`（`建立` 會讓它對每一筆都是 true）。
+- 端到端實測：建 `ZZ85-A` → 稽核只有 1 筆（`stage`／`建立`／`zztester`／`windows`／`建立需求`）→ 明細印「建立者：zztester」而「變更軌跡」是**無變更紀錄**（沒有多出「狀態調整 · 建立」的卡）→ `PUT` 補一個日期與 `remark` 後：完整軌跡視窗由上而下是「共 1 筆變更／欄位異動／初始時程／**建立**」→ 既有需求（NID 61）印「建立者：無紀錄」→ 統計報表「時程異動 2 · 涉及 1 件」**沒有被灌到**。測完硬刪，複驗 **62 active / 265 history / 0 leftover / 0 筆 `建立`**。
+- ⚠️ `dotnet build` 0 錯誤，既有的 3 個 `CS8604` 警告仍在（第 75 批留下的）。**沒有動 DB 綱要**（`建立` 只是既有欄位的新值，不必新腳本）。
+
+### 第 84 批（2026-09-28）體檢 → 他挑了 A1／A3／A2／B5 四項
+
+- 起因：「重新檢查，目前專案是否還有邏輯不符需修正或是建議優化 UX 的地方」。我**重新分析**（沒照抄第 83 批那張表、第 3 節否決過的一項都沒列），量完給他分十項，他回「**A1 → A3 → A2 → B5**」。
+- ⚠️ **沒挑的六項**（下一輪要提再重新量，不要照抄）：**B4** `appsettings.json` 同時裝著開發用連線字串（`Sariel`／`testuser`／`test`）與主機專屬的 `Mail:Host`（正式是 `10.13.2.221`，檔案裡是空字串）—— 資料夾整包複製部署就蓋掉；⚠️ 這是**這台主機最可能發生的部署事故**，而它的症狀正好就是 A1 修掉的那一頁。（寄信那一半不算靜默：按 ✉ 會回 400「尚未設定郵件伺服器」。連線字串那一半才是地雷。）**B6** `maxLength` 讓「貼上」靜靜被截掉（貼 600 字進需求補充只吃前 500，`LenHint` 只轉紅顯示 `500 / 500`，不等於「你剛貼的被截掉了」）；**C7** 匯出 Excel 每一格都寫成**文字**（三個計數欄與 MP Saving 在 Excel 裡不能 SUM、排序會變文字排序）＋檔名固定 `Requirements_Export.xlsx`；**C8** `/manual` 是 `no-store` 且沒有 ETag，每次點都重抓（壓縮後仍 64,341 B）；**C9** 瀏覽權限面板的 `Clean(s,max)` 是 `t[..max]`，直接靜靜截斷（只有管理者打超長部門名才碰到）；**C10** 多人同時用時畫面靜靜過期（頁首「資料更新」印的是手上這份的 `UpdatedAt`，別人存檔它不會動）。
+- ⚠️ 這一輪抽驗過、**確認沒壞**的：`FieldLimits`↔`FIELD_LIMITS`↔DB 三份一致、`sixMonthsAgoIso()`↔`AddMonths(-6)` 的月底夾值一致、`/api/history` 有濾掉軟刪除的需求、`POST /api/requirements` 那八道驗證鏈齊全、`WriteAuditAsync` 的 `重新排程` 判定走 `PhasesWithEndEverSetAsync`。**核心流程的邏輯沒有找到壞掉的地方**，找到的全部偏「畫面上的數字／訊息與事實不符」。
+
+**A1 · 後端診斷到不了畫面（12 支端點）**
+- 根因一句話：`Results.Problem(x)` 把 x 放進 **`detail`**、`title` 一律是英文預設句，而前端讀的是 `j.message || j.title` —— **`j.detail` 在 `app.jsx` 出現 0 次**。
+- ⚠️ 實測起點（另起一個 instance、連線字串指到連不到的主機）：body 是完整中文，畫面上整頁只有 **「權限檢查失敗：An error occurred while processing your request.」**。改完同一個情境印的是「瀏覽權限檢查失敗：建立連接至 SQL Server 時…（若訊息是 Invalid object name，代表 18／19 這兩支腳本還沒執行）」。
+- ⚠️ 三支讀取端點是**另一種**症狀：body 整包被丟掉（`throw new Error('HTTP ' + status)`），畫面永遠是同一句「請確認後端服務與資料庫連線是否正常」。實測 patch `fetch` 回 500 + `{message}`：`無法讀取需求資料。\n讀取需求清單失敗：Invalid column name 'DelayCount'.（…累加腳本還沒全部執行）`、`時程異動軌跡讀取失敗…\n讀取時程異動軌跡失敗：Invalid object name 'dbo.Controltable_History'.`
+- ⚠️⚠️ **`fromServer` 旗標**：再 patch 成 `fetch` reject（`TypeError: Failed to fetch`）→ 畫面回到原本那句中文，**沒有印出英文**。有沒有收到伺服器的回覆是兩件事（與 `writeFailText` 同一條界線）。
+- ⚠️ `GET /manual` 的 404 刻意維持 `Results.Problem`（直接開分頁看 raw JSON，title 本來就是中文）。
+
+**A3 · 統計報表上半部「另有 N 件不在此區間」**
+- ⚠️ 實測就是證據本身：KPI 62／16／46 vs 交叉表合計 **50**、`5 結案` **37**；SQL 查出被擋掉的 3 件進行中是 **NID 7／8／9**（全在 ③、2025-09 註冊），而 **NID 7 同一頁的風險預警卡上寫著「逾期 13 天」**。
+- `ymRange` 預設 `{from:'',to:''}` → 近 12 個有資料的年月，**不寫 localStorage、不進網址** —— 每次打開都是它。
+- 實測 1280：近 12 月「另有 12 件（含 3 件進行中）」、近 6 月「另有 41 件（含 6 件進行中）」、全部不出現；三種 `docX` 都是 **0**。點下去 → 「共 62 件」、提示消失、「全部 (18)」變成實心。
+
+**A2 · 非日期欄位的稽核**
+- 11 欄在此之前改掉**一列紀錄都不會留**。實測本機 62 筆裡 **52 筆有現況描述**（`NVARCHAR(MAX)`、最常被改的那一欄）。
+- 端到端實測（建暫時需求 ZZ84-A → PUT 改 6 欄 → 原樣再存一次 → 清空一欄）：6 筆 `欄位異動` 依 `AuditFields` 順序寫入；`currentStatus` 的 `NewValue` **長度 88，完整沒有截斷**；原樣再存 **0 筆新增**；三個計數欄全 0；清空欄位時 `NewValue` 是 NULL。**測完連稽核列一起硬刪，複驗 62 active / 265 history / 0 leftover / 0 欄位異動。**
+- ⚠️ 踩到兩個小坑：①`AuditFields` 一開始寫成 top-level 的 `static readonly` → `CS0106`（top-level statements 裡不能宣告欄位，`FieldLimits` 的註解早就寫著）；②明細列頁尾印成 **「欄位異動 欄位異動」**（phase 名與 changeType 撞名）→ 改印「是哪一欄」。
+- ⚠️ 面板／視窗標題改名為「**變更軌跡**」（原「時程變更軌跡」），`app.jsx` 9 處與手冊 10 處一起改 —— 它現在同時涵蓋兩種，沿用舊名就是畫面上的假話。
+
+**B5 · 未存變更時的 `beforeunload`**
+- 全專案原本 `beforeunload` **grep 0 處**：Esc 與關閉鈕會問，F5／關分頁／上一頁一個字都不問。
+- 實測（自己 `dispatchEvent` 一個 cancelable 的 `beforeunload`）：沒開視窗 → `prevented:false`；開了沒改 → `false`；改過一欄 → **`true`**。
+
+**收尾**
+- 版本 `20260928002`（`index.html` 兩處 ＋ 手冊抬頭）。手冊：第 02 章加「欄位異動」一條＋一段 note、「影響 N 個階段」補上「改了 N 個欄位」、第 04 章加 `beforeunload` 一段、第 11 章加「另有 N 件不在此區間」一段＋note、第 17 章 `m-misc` 加 **2 列**（瀏覽權限檢查失敗／無法讀取需求資料），`<tr>` 234/234、`<td>` 525/525、22 個 section、七個固定錨點都在。
+- ⚠️ `manualAnchorFor()` **沒有動**：這一批沒有新增任何 `alertModal` 標題。
+- DB：新增 `21_add_history_field_audit.sql`（本機已執行）。`dotnet build` 0 錯誤，既有的 3 個 `CS8604` 警告仍在（第 75 批留下的，不是這批造成的）。
+
+### 第 83 批（2026-09-28）體檢 → 他挑了 A1／A3／B4／A2 四項
+- 起因：「重新檢查目前專案的邏輯跟功能還有需要修正或優化的地方嗎?」。我**重新分析**（沒照抄第 82 批那張表、第 3 節否決過的一項都沒列），量完給他分級的九項，他回「**A1 → A3 → B4 → A2（A2 挑 (a) 系統字）**」。
+- ⚠️ **沒挑的五項**（下一輪要提再重新量，不要照抄）：**B5** `/manual` 每次點都重新下載（`no-store` ＋ 沒有 ETag，202,546 B；**第 83 批的壓縮已經把它降到 64,341 B**，但「每次都重抓」還在）；**B6** 非日期欄位完全沒有稽核（`WriteAuditAsync()` 只掃四個階段的日期 —— `MainCat`／`SubCat`／`Remark`／現況描述／**EMS 與 MSD 負責人**／`MpSaving`／`NotesLink`／`NID` 改掉之後一列都不會寫，全系統只有 `UpdatedAt` 會動；這是第 4 節「長期想法」第 3 項，**沒有被否決過**）；**C7** 匯出檔名固定 `Requirements_Export.xlsx` ＋ 三個計數欄與 `MP Saving` 一律寫成**文字**（Excel 裡不能直接加總、排序會變文字排序）；**C8** `appsettings.json` 的部署覆寫風險（連線字串密碼 ＋ 主機專屬的 `Mail:Host`，複製資料夾就蓋掉）；**C9** 瀏覽權限面板那幾支是**靜靜截斷**（`Clean(s,max)` 直接 `t[..max]`），與第 82 批立的「不可以靜靜截斷」相反。
+- ⚠️ 另外順手看到、但**沒有動**（不在他挑的範圍裡）：`/api/access-check` 失敗時畫面上那句是**英文**的 `An error occurred while processing your request.`（那支的 catch 回 `Results.Problem` 沒帶中文 detail），而同一個情境 `/api/requirements` 是講得出原因的中文。
+- ⚠️ **這一輪的結論是「邏輯本身沒有找到壞掉的地方」** —— 逐條驗過的鏡像函式（`StagePassed`↔`isPhasePassed`、`UnsetPhaseOf`↔`unsetDuePhase`、`FieldLimits`↔`FIELD_LIMITS`↔DB 三份）、H1~H3／H5、`StatusIs()`、樂觀鎖、六支寫入端點的交易與 `tx`、匯入五道前置檢查全部都在。找到的六項全部偏向「**失敗時的樣子**」與「**重複的代價**」。
+- ⚠️ **順手排除掉一個假議題**：搜尋框打字（16→42→4→62 列）實測 **0 個 long task** —— 渲染效能不是問題，不需要分頁或虛擬捲動（第 4 節那條「64 筆還不需要」再次成立）。
+
+**A1 · `AppErrorBoundary`**
+- 根因一句話：第 82 批只防了「React 沒載進來」，**沒防「React 載進來了、資料讓它炸了」**，而後者的畫面一模一樣（整頁空白 ＋ 一句英文）。
+- ⚠️ 實測分兩次做。**先在獨立容器裡證明沒有 boundary 的後果**：讓一個子元件在 render 丟 `TypeError`，容器 `childNodes` **變成 0**，連旁邊那個已經正常渲染的 `<span>` 也一起不見，`#error-log` 只有 `Uncaught TypeError … react-dom-18.3.1.production.min.js:198`（**行號指 react-dom 自己**）。**再在真的那棵樹上驗**（把 `React.createElement('tbody')` patch 成丟例外，然後在搜尋框打字逼 re-render）：`#root` 仍有 1 個子節點、出現中文卡、堆疊第一行變成 **`at App (…/app.js:1749)`**。測完 `createElement` 還原、重新整理，畫面正常（16 列、`#error-log` 空）。
+- ⚠️ 兩顆鈕的第二顆（「清掉網址上的篩選條件再重新整理」）只在有 query 時出現 —— 篩選／排序全在網址上（第 28 批），壞掉的若正好是某個條件值，直接重新整理會用同一條網址**再炸一次**，那個書籤等於永久壞掉。實測當時網址是 `?prog=ongoing`，鈕正確出現。
+- ⚠️ 樣式走 inline、不吃 CSS 變數與 Tailwind：走到這裡畫面已經不可信。
+
+**A3 · 啟動 bootstrap 改 best-effort**
+- ⚠️ **改之前先實測過症狀**（故意指一個連不到的主機）：`Unhandled exception … at Program.<Main>$ … Program.cs:line 136` —— App 根本起不來。改完同一個情境：首頁 **200**、`/manual` **200**、`/api/requirements` 回中文的 500、瀏覽器上是 fail-closed 的「瀏覽權限檢查失敗 ＋ 重試」。
+- ⚠️ 四段共用一條連線，連不上整批跳過、只記一筆（實測 log 裡確實只有一行 `bootstrap:` ＋ 一次 `[AppDiag] … 60 秒內不再嘗試`）。分四條會是 4 × 15 秒的啟動延遲。
+- ⚠️ **踩到一個測試環境的坑**：`dotnet run` 會用 `launchSettings.json` 的 `applicationUrl` **蓋掉 `ASPNETCORE_URLS` 環境變數** —— 第一次測時它去搶 5146（preview 正開著）而 bind 失敗，看起來像「App 還是起不來」。要指定埠請用 **`dotnet run --urls http://localhost:5302`**（命令列參數才贏得過 launchSettings）。
+
+**B4 · 回應壓縮**
+- ⚠️⚠️ **最大的坑是預設壓縮等級**：兩個 provider 預設 `Fastest`（Brotli 品質 1），第一版掛上去之後 `Content-Encoding: br` 有了、看起來成功，但 `app.js` 只壓到 **223,989 B**（比 `gzip -9` 的 153,701 還差）、`/api/requirements` **13,047 B**。設成 `Optimal` 之後是 **149,672 / 6,003**。**只量標頭量不出來，一定要量 bytes。**
+- 實測（`Optimal`，br）：`/api/requirements` 48,141 → **6,003**、`/api/history` 70,449 → **3,682**、`app.js` 496,580 → **149,672**、`app.css` 72,082 → **22,850**、`/manual` 202,546 → **64,341**。瀏覽器實際 transferSize：requirements **48,441 → 6,303**、history **70,749 → 3,982**。
+- ⚠️ `text/javascript` 要自己補進 `MimeTypes`（.NET 靜態檔用這個型別、預設清單裡沒有）—— 少了它最大的 `app.js` 剛好是唯一沒壓到的。
+- ⚠️ 不選 `SmallestSize`：中介軟體**每次回應都重壓、沒有快取**。`Optimal` 下 `app.js` 16~56 ms，而且平常是 304（實測帶 `If-None-Match` 仍回 304 空 body，壓縮沒有把 ETag 弄壞）。
+
+**A2 · 字型改系統字（他挑 (a)）**
+- 實測那支 CSS **166,952 B / 230 ms**，比 react-dom 還大；`document.fonts.size` **567**（實際用到 96 個子集）。改完：**外部請求 0 支**、`fontFaceCount` **0**、`loadEventEnd` **330 → 119 ms**。
+- ⚠️⚠️ **版面預算是變鬆不是變緊**，而且是用 A/B 量出來的（把舊的 CDN 字型暫時 `appendChild` 回去再比）：1280 寬 16 欄 `page-shell` **1299.1 → 1267.7**、橫捲 **34 → 2px**、表格 min-content **1249 → 1218**。1366／1440 橫捲都是 **0**，頁首 65／工具列 60／階段那排 60 三條全部仍是單行。**第 6 節那個 1256px 已改成 1218px。**
+- ⚠️ 剩下的那 2px 不是字型造成的：`.page-shell` 是 `width:fit-content; min-width:100%`，用 monospace 量是 0、用 Arial Black 量是 79 —— 它跟著內容走，而 1268 vs clientWidth 1265 這 3px 差是捲軸的關係，舊版在同一個位置是 34px。
+- ⚠️ `docs/使用者手冊.html` 本來就只列本機字型、沒有任何 CDN，這一批只是讓 App 跟它一致。
+
+**收尾**
+- 版本 `20260928001`（`index.html` 兩處 ＋ 手冊抬頭）。手冊第 17 章 `m-misc` 加 **2 列**（「畫面發生錯誤，沒有辦法顯示」與「整頁空白只有一段英文」），38 → **40 列**；`<tr>`／`<td>` 開合驗過都是平衡的（232/232、519/519），五個 `m-*` 錨點都在。
+- ⚠️ `manualAnchorFor()` **沒有動**：ErrorBoundary 那張卡不是 `alertModal`，不經過那支。
+- ⚠️ 既有的 3 個 `CS8604` 警告（`WriteAccessLogAsync` 的 `actor`，第 75 批留下的）**還在，不是這批造成的**。上一批寫「0 個警告」是因為那次 build 是 up-to-date 沒重新編譯 —— 要確認警告數一定要看真的有重新編譯的那一次。
+- **沒有動 DB**（沒有新腳本，`DB_table.md` 不變）、**沒有動欄位語意**（`FIELD_SPEC.md` 不變）。
+
+### 第 82 批（2026-09-25/26）體檢 → 他挑了 A1／A3／A2／B4 四項
+- 起因：「重新檢查此專案是否還有功能需要修正或是 UIUX 可以再優化的地方」。我**重新分析**（沒照抄舊表、第 3 節否決過的一項都沒列），量完給他分級的九項，他回「**A1 → A3 → A2 → B4 都做**」。
+  ⚠️ **沒挑的五項**（下一輪要提再重新量，不要照抄）：**B5** 搜尋命中在 `remark`／`currentStatus` 時資料列上看不出原因（一般模式那兩欄一個在展開明細、一個只有精簡模式才有；62 筆裡 36 筆有 Remark）；**B6** 多人同時用時畫面靜靜過期（全專案只有跨午夜那一個 `setInterval`，而頁首「資料更新」印的是**手上這份**的 `UpdatedAt`，所以它也不會動）；**C7** 匯出檔名固定 `Requirements_Export.xlsx`；**C8** 靜態資源沒壓縮（實測 gzip：app.js 482,599 → **149,807**、app.css 71,155 → **21,612**）；**C9** `appsettings.json` 同時裝著連線字串密碼與主機專屬的 `Mail:Host`，**部署整包複製會把 relay 位址蓋回空字串、寄信靜靜停掉**。
+
+**A1 · React 從 unpkg 搬進 `wwwroot/vendor/`**
+- 實測大小：dev build **1,190,158 B**（react 109,931 ＋ react-dom **1,080,227**）→ prod.min **142,586 B**。省 1.05 MB，而且**從此不需要對外網路**。
+- ⚠️⚠️ 真正的理由不是大小是**全站單點失效**：unpkg 連不到 → `app.js` 第一行 `const { useState … } = React` 立刻 ReferenceError → 整頁空白，而畫面上唯一的線索是那句英文 `React is not defined`。這個 App 跑在工廠內網。
+- ⚠️ 檔名自帶版本 ＝ 自己就是 cache buster，**刻意不帶 `?v=`**；`react@18` 那種寫法等於版本沒鎖（會解析成當下最新的 18.x）。另補一段 guard：React 真的沒載進來時 `#error-log` 印**看得懂的中文**（含該告訴管理員哪個檔載不進來）。
+- 實測：`window.React.version === "18.3.1"`、`scripts` 只有 vendor 兩支 ＋ app.js、16 列正常、`#error-log` 空的。
+
+**A3 · 寫入失敗一律彈窗（14 處）**
+- 根因一句話：**同一件事（沒存成功）有兩種強度，而比較嚴重的那一種比較安靜** —— 400／409 是要按掉的彈窗，500／連線中斷／逾時是 `TOAST_MS` 算出來的 **5 秒** toast。
+- ⚠️ 這條原則**早就寫在匯入那一支的註解裡**（「一個會自己消失的 toast 不足以讓他確定資料到底還在不在」），卻只套在 400/403 上，**同一支 handler 的 `catch` 仍是 toast**。找既有註解比自己發明理由快得多。
+- ⚠️⚠️ **有 HTTP status 與沒有 status 的措辭不可以混用**：有 ＝ 伺服器回話了、交易一律回捲 → 可以講「資料庫沒有變動」；沒有 ＝ `fetch` 自己失敗，請求**可能已經送達並 commit** → 只能講「無法確認」。與 dbmail／smtp 逾時標「未確認送出」同一條界線。`httpErr(res)` 就是為了把 status 掛上去。
+- ⚠️ 我自己在這批踩了一次「**純文字彈窗不可以寫 `**`**」（實測畫面上原樣多出兩個星號）—— 那條坑在寄信逾時那段註解裡就記著。
+- 實測：patch `fetch` 讓 PUT reject → 出現 `role="alertdialog"`、文案是「沒有收到伺服器的回覆…無法確認」、**沒有 toast**、編輯視窗仍開著、DB 一個字都沒動。
+- ⚠️ `AccessPanel` 是模組層元件，靠新的 `onError` prop 拿同一支；`alertModal` 與它同 z-index 但 DOM 在後面 → 疊在上面，Esc 順序與焦點管理本來就已經對（不必改）。純表單驗證（「請填寫工號」）**維持 toast**。
+
+**A2 · `AppDiag` → `dbo.AppLog` ＋ IIS stdout log**
+- 根因：13 處 `Console.WriteLine($"... failed: {ex}")` 在 IIS 上**等於不存在**（ANCM 預設 `stdoutLogEnabled="false"`，而專案沒有 web.config、沒有任何檔案／DB 日誌）。最傷的是 `notify-audit`（「信寄出去了但稽核列沒寫進去」）—— 那之後會被 `phaseNotifiedEntry()` 判成「還沒通知」再問一次。
+- ⚠️⚠️ **兩條路互補不是二選一**：`AppLog` 要「App 活著 ＋ 連得到 DB」才寫得進去，而最難查的兩種失敗剛好都不滿足 ——「**App 根本起不來**」（`EmptyBodyBehavior` 那次，`dotnet build` 不報錯）與「**DB 掛了**」。stdout 是那兩種唯一留得下堆疊的地方。
+- ⚠️⚠️ **最有價值的是那個 `ILoggerProvider`**（收框架自己記的 Error／Critical），因為它涵蓋「**沒有人寫 catch**」的失敗。**實測就是這樣抓到的**：`YearMonth` 超長 → 500 → `dbo.AppLog` 裡一筆 `DeveloperExceptionPageMiddleware`、`Detail` **2885 字**堆疊，而那條路上一行 `Console.WriteLine` 都沒有。
+- ⚠️ 全程 best-effort：寫不進去（**含資料表不存在**）靜靜跳過／獨立連線（不吃正在回捲的交易）／`Connect Timeout=3` ＋ 指令 5 秒／**失敗後 60 秒斷路器**（DB 掛掉時每個請求都會產生錯誤紀錄）／重入防護。**刻意沒有做啟動時 bootstrap**（同 `13_nid_unique.sql`：啟動時多做一件可能失敗的事，代價是 App 起不來）。
+- ⚠️ `logs\.gitkeep` ＋ csproj 的 `<Content>` 不可拿掉 —— **ANCM 不會自己建那個資料夾，不存在時 stdout log 是靜靜不產生的**。
+
+**B4 · 欄位長度上限**
+- 實測起點：需求補充 600 字 → **HTTP 500**，body 是一整串 SqlException；Production 連那句都沒有，畫面只剩「儲存失敗：HTTP 500」。庫裡目前最長 Remark 180／CurrentStatus 122／NotesLink 98／SubCat 34 —— **還沒咬到人，但一定會**。
+- ⚠️ 前端 `maxLength` ＋ **達 80% 才出現**的字數（`405 / 500` 警示色、`500 / 500` 紅）＋ `validateEdit()` 就地標紅；後端 `FieldLimits` 一律再驗一次。**不可以靜靜截斷。**
+- ⚠️ `History.Note`（1000）那邊**原本就有一道「夾到 997 + ...」** —— 也就是說超長的**理由**在此之前是被**靜靜截短**的（不是 500）。理由上限開 500（一半留給系統組的前綴），兩道都留。
+- ⚠️ 匯入補成**第五道前置檢查**（`BeginTransaction` 之前）。交易本來就會回捲，所以**這一道的價值全在訊息上**：原本是一句 SQL 英文，使用者要在 64 列 × 22 欄裡自己找。
+- ⚠️ 順手抓到兩個沒人料到的 500 路徑：`yearMonth`（`RegDate` 空時寫入 `FormatYearMonth()` 的原樣輸出，那支「認不出來就原樣留著」）與 `changeMeta.category`（`ReasonCategory` 只有 20 字）。
+- ⚠️ 數字有**三份**（DB → `Program.cs` 的 `FieldLimits` → `app.jsx` 的 `FIELD_LIMITS`／`NOTE_MAX`），`currentStatus` **刻意沒有上限**且是所有「太長」訊息指過去的出路。
+- 實測 8 個情境全過（remark 600／mainCat+subCat 一次兩個／changeMeta 理由+分類／剛好 500 字存得進去／刪除・回退・撤銷說明 600／人員姓名 150），yearMonth 從 500 變 400；**測試動到的資料全部還原並複驗**（62 筆／265 稽核列／13 人員／`UpdatedAt` 回寫成 `2026-09-13 16:54:57`／AppLog 清空）。
+
+**收尾**
+- ⚠️ `manualAnchorFor()` 新增 19 個標題，**跑過 63 個標題的對照驗證（scratchpad `anchor82.js`）**：0 個不符、**0 個退回整章**。修掉三處：新增 `c14` 規則（瀏覽權限面板那六個，**必須排在 `/刪除/` 前面**否則「刪除規則失敗」會掉到 m-misc）、`等太久` → m-mail（原本退回 c17）、`長度|字數|需要修正` → m-save（⚠️ 只有一組問題時 **`validateEdit` 的 group title 會直接變成彈窗標題**）。
+- 版本 `20260926001`（`index.html` 兩處 ＋ 手冊抬頭）。手冊：第 04 章加「文字欄位有字數上限」一節與上限表、第 17 章加 5 列（欄位長度／回退撤銷說明太長／匯入格子超長／人員姓名工號太長／**寫入失敗的兩種措辭差在哪**），共 38 列。
+- ⚠️ 既有的 3 個 `CS8604` 警告（`WriteAccessLogAsync` 的 `actor`）**不是這批造成的**，是第 75 批留下的；第一次 build 沒顯示只是因為它 up-to-date 沒重新編譯。
+
+### 第 81 批（2026-09-25）字級：頁首與內容同一個倍率
+- 起因：使用者附截圖說「第一列的版面好像跑掉了」。⚠️ **我一開始追錯方向** —— 以為是資料列第一列那顆「⚠ 未壓日期 ＋ ✉」，量了半天（16 格全是 60.2px、徽章與 ✉ 左緣都在 x=1193.1、沒有任何溢出）什麼都沒壞。他再講一次才清楚：**「MSD 需求管控表那一列」＝ 頁首**，跟底下的畫面比例不對。
+- 根因：`.ui-zoom`（字級 1／1.15／1.3）**只掛在 `<main>`**，`input.css` 的註解還寫著「要放大的是資料列，不是頁首與標題」。實測 130%：頁首標題 15px 實際就是 15px，而表格裡 12px 的輸入框放大後是 **15.6px** —— **頁首比它底下的內文還小**，整條看起來像縮水了。⚠️ 投影模式（`present-zoom`）**一直都是頁首與 main 一起放大**，字級是唯一漏掉的那一個 —— 這一批只是把它補回同一套，不是新發明。
+- ⚠️⚠️ **那句「要放大的是資料列，不是頁首與標題」只有在「頁首與內容互不相干」時才成立**，而它們在同一個畫面上、還共用同一個 `pageWidth` 對齊右緣。**一個畫面上只放大一半，剩下那一半就變成了視覺上的錯誤。**
+- 做了什麼：`<header>` 改成與 `<main>` 同一條式子（`present ? present-zoom : (uiScale !== 1 ? ui-zoom : "")`）＋ 帶 `--ui-zoom`。兩個 zoom class 仍然互斥（疊上去 1.3×1.5=1.95）。
+- ⚠️ **`measure()` 一行都沒改也不可以改**：它早在第 47 批就是「頁首 rect 高度 ÷ 倍率」，兩邊倍率相同時走的正是投影模式那條路。實測 130% 捲動後：頁首底緣與群組表頭 **−0.5px**（刻意疊的那半格還在）、兩層表頭 **0 縫**、縫上取到的是 `TH` 不是資料列 —— 第 47 批那個 9.75／19.5px 的漏縫沒有回來。
+- ⚠️ **A/B 實測零版面代價**（同一個畫面上拿掉／加回 header 的 `ui-zoom`）：1280 + 130% 一般模式 橫捲量 **417 → 417**、整頁寬 **1682 → 1682**；1280 + 130% 精簡模式 **0 → 0**、**1265 → 1265**。原因是頁首是可壓縮的 flex 列（`gap-4` + 標題 `min-w-0`），它的 max-content 1318px 不是硬下限，而整頁寬一律由表格決定。頁首右緣與 `<main>` 右緣在每一種組合都仍然切齊。
+- ⚠️ 100%（`uiScale === 1`）時兩邊都**不掛任何 class**，與改動前一模一樣（實測 header 65px、`docX` 0）。三個倍率下 `headerZoom === mainZoom` 恆成立。
+- 順手記一筆教訓：**使用者說「版面跑掉」時，先確認他指的是哪一塊再量**。我用「第一列」＝資料列第一列的讀法燒掉了一整輪，而正確的讀法（頁首那一列）其實一句話就能問。
+- 版本 `20260925001`（`index.html` 兩處 ＋ 手冊抬頭）。手冊第 02、12 章已改：字級那兩處都補上「頁首與底下的內容一起放大」。
 
 ### 第 80 批（2026-09-22）右欄在 1366／1440 工作機上看得見
 - 起因：使用者問「可以參考 C:\Gantt 的版型、在版面右邊新增小節嗎? 比較符合 UX」——**那個功能第 79 批就做好了**，但斷點 1500px ＋ 直接 `display:none`，而 1366／1440 筆電是主要工作機 → **他從來沒看見過**。⚠️⚠️ **看不到 ＝ 沒有做**（同第 57 批「刻意的限制沒講出來，在使用者眼裡就等於壞掉」）。順帶一提：Gantt 的手冊其實**沒有**右欄（只有左側側欄含子目錄），這一份是它沒有的。

@@ -10,6 +10,10 @@
     <!-- 使用者手冊由 GET /manual 直接讀 docs/ 底下的檔案回傳（見 Program.cs）。
          docs/ 不在 wwwroot 底下，dotnet publish 預設不會帶出去，這裡明列讓它跟著發佈。 -->
     <Content Include="docs\使用者手冊.html" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <!-- IIS 的 stdout log 資料夾（第 82 批，見 web.config）。
+         ⚠️ ANCM 不會自己建這個資料夾，不存在時 log 是**靜靜不產生**的 ——
+         所以要靠這個 .gitkeep 讓 dotnet publish 把 logs\ 一起帶出去。 -->
+    <Content Include="logs\.gitkeep" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

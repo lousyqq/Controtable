@@ -19,6 +19,7 @@
 | `dbo.AppSettings` | 開關類設定（目前只有 `AccessControlEnabled`） | `18_add_access_control.sql`（同上） |
 | `dbo.AccessLog` | 瀏覽權限規則增刪／開關切換／管理者增刪的稽核 | `18_add_access_control.sql`（同上；`19` 擴充 CHECK） |
 | `dbo.AccessAdmins` | **瀏覽權限的管理者清單**（第 75 批） | `19_add_access_admins.sql`（`Program.cs` 啟動時另有 idempotent bootstrap，只建空表） |
+| `dbo.AppLog` | **後端錯誤日誌**（第 82 批）。⚠️ **不是稽核表**，可以定期清 | `20_add_applog.sql`（**刻意沒有 bootstrap**：沒建也不影響任何功能，見下方說明） |
 | `[WEB].[dbo].[notes_person]` | **人員名冊（唯讀、不屬於本專案）**：`EMPNO / NAME / ENAME / DEPTNAME / DEPT_1~4 / EMAIL …`。瀏覽權限拿登入工號來查部門 | 遠端是跨 server 的 VIEW；本機是 `C:\Gantt\sim_create_WEB_notes_person.sql` 建的模擬表。**本專案不建立、不修改它**，名稱由 `appsettings` 的 `Access:PersonView` 指定 |
 > ⚠️ 2026-08-21 起人員名單改用 `dbo.Assignee`。舊的 `dbo.Personnel` 已由 `12_drop_personnel.sql` **刪除**，
 > 內容留檔在下方「已刪除的 dbo.Personnel」一節。
@@ -253,8 +254,8 @@
 | `Id` | INT IDENTITY PK | |
 | `RequirementId` | INT NOT NULL | 對應 `dbo.Controltable.Id` |
 | `NID` | NVARCHAR(50) | 當下的 NID 快照，查詢時不必 join |
-| `Phase` | NVARCHAR(20) NOT NULL | `spec` / `confirm` / `msd` / `uat`（與 `app.jsx` 的 `PHASES` key 一致）＋ **`stage`**（2026-08-22，手動調整 StatusID／Status 用；它不屬於任何一個階段，但這一欄是 NOT NULL） |
-| `ChangeType` | NVARCHAR(20) NOT NULL | `init` / `日期異動` / `提早完成` / `延期完成` / `規格回退` / **`手動調整`** / **`起日調整`**（2026-08-22 新增） / **`刪除`**（2026-08-23 新增，軟刪除時寫入，`Phase='stage'`） / **`重新排程`**（2026-08-27 / 第 35 批） / **`通知寄送`**（2026-08-31 / 第 39 批，`/notify-unset` 寄出「請來壓日期」的通知信之後寫入，`Phase` 是那個未壓日期的階段，日期欄全空、`ReasonCategory` 不帶，`Note` 記收件者與副本的姓名＋信箱） |
+| `Phase` | NVARCHAR(20) NOT NULL | `spec` / `confirm` / `msd` / `uat`（與 `app.jsx` 的 `PHASES` key 一致）＋ **`stage`**（2026-08-22，手動調整 StatusID／Status 用；它不屬於任何一個階段，但這一欄是 NOT NULL）＋ **`field`**（2026-09-28 / 第 84 批，非日期欄位的異動） |
+| `ChangeType` | NVARCHAR(20) NOT NULL | `init` / `日期異動` / `提早完成` / `延期完成` / `規格回退` / **`手動調整`** / **`起日調整`**（2026-08-22 新增） / **`刪除`**（2026-08-23 新增，軟刪除時寫入，`Phase='stage'`） / **`重新排程`**（2026-08-27 / 第 35 批） / **`通知寄送`**（2026-08-31 / 第 39 批，`/notify-unset` 寄出「請來壓日期」的通知信之後寫入，`Phase` 是那個未壓日期的階段，日期欄全空、`ReasonCategory` 不帶，`Note` 記收件者與副本的姓名＋信箱） / **`欄位異動`**（2026-09-28 / 第 84 批，日期以外的欄位被 `PUT` 改掉，`Phase='field'`、日期欄全空，前後值在 `OldValue` / `NewValue`；**不計入「時程異動次數」**） / **`建立`**（2026-09-28 / 第 85 批，需求被建立時寫一筆，`Phase='stage'`、日期欄全空、`Note` 是「建立需求」或「由 Excel 匯入建立」；`ChangedBy` 就是建立者 —— `dbo.Controltable` 沒有 `CreatedBy` 欄，這一列是唯一的出處；**不計入「時程異動次數」**，前端也不把它畫進「變更軌跡」） |
 | `ReasonCategory` | NVARCHAR(20) | `規格變更` / `優先級調整` / `技術問題` / `其他` |
 | `OldStart` `OldEnd` `OldConfirm` | DATE | 異動前的值 |
 | `NewStart` `NewEnd` `NewConfirm` | DATE | 異動後的值 |
@@ -262,6 +263,8 @@
 | `ChangedBy` | NVARCHAR(100) | Windows 帳號，已剝網域前綴 |
 | `ChangedBySource` | NVARCHAR(20) | `windows` / `simulated` / `import` / `unknown` |
 | `ChangedAt` | DATETIME2(0) NOT NULL | `DEFAULT SYSDATETIME()` |
+| `FieldKey` | NVARCHAR(50) | **只有 `欄位異動` 的列會帶**（第 84 批，`21_add_history_field_audit.sql`）。值是 `Program.cs` 檔尾 `AuditFields` 的 Key：`nid` / `regDate` / `mainCat` / `subCat` / `emsOwner` / `msdOwner` / `mpSaving` / `remark` / `notesLink` / `currentStatus` / `msd.confirmNote`。⚠️ 前端的 `FIELD_AUDIT_LABELS` 是這份清單的**鏡像，改了要兩邊一起改** |
+| `OldValue` `NewValue` | NVARCHAR(MAX) | 異動前後的**完整**值（空值存 NULL）。⚠️ **刻意用 MAX 而不是塞進 `Note`（1000）** —— `CurrentStatus` 是 NVARCHAR(MAX)，塞進去必然要截斷，而第 82 批立的界線是「不可以靜靜截斷」。要截的是**顯示**（前端 48 字＋tooltip 全文），不是紀錄 |
 
 ### 九條不可違反的規則
 
@@ -282,6 +285,7 @@
      （`changeEntries` = 非 `init`），畫成「開始 未填 → 2026-09-01」。不影響計次，但分類是錯的。
    - 適用：資料列 `⚠N`、明細與編輯視窗的次數徽章、統計報表「時程異動」KPI、
      警示下拉「有時程異動」。**完成／回退／手動調整的紀錄仍完整列在軌跡裡**，只是不計次。
+   - ⚠️ **`欄位異動` 同樣不計次**（2026-09-28 / 第 84 批）：它記的是**日期以外**的欄位（Main Cat／Sub Cat／負責人／需求補充／現況描述…），而 `⚠N`、⏰、🔄 與統計報表的「時程異動」問的都是「**日期**被改過幾次」。混進去會讓一次錯字修正與一次延期一週變成同一個數字。它也**不強制填理由**（第 14 批：只有 End 真的被改掉才強制）。
    - ⚠️ **`通知寄送` 同樣不計次**（2026-08-31 / 第 39 批）：沒有任何日期被改動，計進 ⚠N 會讓「這筆被改過幾次」變成「被改過或被催過幾次」，兩件事混進同一個數字。但它一定要**留在軌跡上** —— 「這件事到底催過沒有、什麼時候、催了誰」是追進度時第一個會問的問題，而寄出去的信在系統裡查不到。
 2. **模擬帳號一定要標記**（`ChangedBySource = 'simulated'`）。
    讓假身分靜靜混進稽核紀錄，正是稽核表存在要防的事。
@@ -521,6 +525,56 @@
 
 ---
 
+## dbo.AppLog（後端錯誤日誌，第 82 批 / 2026-09-25，`20_add_applog.sql`）
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| `Id` | INT IDENTITY PK | |
+| `LoggedAt` | DATETIME2(0) NOT NULL DEFAULT SYSDATETIME() | `IX_AppLog_LoggedAt` DESC |
+| `Source` | NVARCHAR(100) NOT NULL | 哪一支：`import` / `export` / `history` / `requirements` / `assignees` / `notify-probe` / `notify-smtp` / `notify-dbmail` / `notify-audit`，或框架自己的類別短名（如 `DeveloperExceptionPageMiddleware`） |
+| `Message` | NVARCHAR(400) NULL | 一句話的情境（給人看的） |
+| `Detail` | NVARCHAR(MAX) NULL | `ex.ToString()`，含堆疊 |
+| `Actor` | NVARCHAR(100) NULL | 當下操作者工號（查得到時） |
+| `RequirementId` | INT NULL | 關聯需求。⚠️ **刻意不做外鍵** —— 需求被刪掉之後那筆錯誤紀錄仍然要留著 |
+
+- 為什麼會有它：13 處 `Console.WriteLine($"... failed: {ex}")` 在 IIS 上**等於不存在**（ANCM 預設 `stdoutLogEnabled="false"`）。使用者回報「按了沒反應」時現場什麼都查不到。
+- 寫入走 `AppDiag`（`Program.cs` 檔尾）。**包含框架自己記的 Error／Critical**（`AppDiag.DbLoggerProvider`）—— 那才是「沒有人寫 catch」的那些 500 的唯一線索。
+- ⚠️⚠️ **整支 best-effort**：寫不進去（**含這張表還不存在**）一律靜靜跳過。所以 `20_add_applog.sql` 沒跑的環境，行為與加這段之前**完全相同** —— 它是查問題的工具，不可以反過來變成故障源。這也是**刻意沒有做啟動時 bootstrap** 的原因（與 `13_nid_unique.sql` 同一個判斷：啟動時多做一件可能失敗的事，代價是 App 起不來）。
+- ⚠️ 另有獨立連線（不吃呼叫端正在回捲的交易）、`Connect Timeout=3` ＋ 指令 5 秒、**寫失敗後 60 秒斷路器**、重入防護。
+- ⚠️ **與 `Controltable_History` 的分工**：那張記「業務上發生了什麼」（要保留、要對帳、⚠N 與計數欄都靠它）；這張記「程式出了什麼錯」。**不要混用。**
+- **沒有自動清理。** 要清就自己下：
+  ```sql
+  DELETE FROM dbo.AppLog WHERE LoggedAt < DATEADD(MONTH, -6, SYSDATETIME());
+  ```
+- 常用查詢：
+  ```sql
+  SELECT TOP 50 * FROM dbo.AppLog ORDER BY Id DESC;
+  -- 「信寄出去了但稽核列沒寫進去」（那一筆之後會被判成沒通知過、再問一次）
+  SELECT * FROM dbo.AppLog WHERE Source = N'notify-audit' ORDER BY Id DESC;
+  ```
+
+---
+
+## 欄位長度上限（第 82 批 / 2026-09-25）
+
+在此之前前後端都**沒有任何長度檢查**，超過欄位長度時 SQL Server 丟「字串或二進位資料將會截斷」→ 沒有人接 → **HTTP 500**（實測需求補充 600 字即觸發）。現在一律回 400 並講明哪一欄、上限幾字、目前幾字。
+
+| 欄位 | DB 型別 | 生效的上限 |
+|---|---|---|
+| `NID` / `YearMonth` / `Status` / `EmsOwner` / `MsdOwner` / `MpSaving` | NVARCHAR(50) | 50 |
+| `MainCat` / `SubCat` | NVARCHAR(100) | 100 |
+| `Remark` / `NotesLink` / `MsdConfirmNote` | NVARCHAR(500) | 500 |
+| `CurrentStatus` | NVARCHAR(**MAX**) | **刻意沒有上限** |
+| `StageCode` | NVARCHAR(10) | 走白名單 1~5，不必量長度 |
+| `Controltable_History.Note` | NVARCHAR(1000) | 使用者打的理由**只開 500**（另一半留給系統組的前綴）；`InsertHistoryAsync()` 另有「夾到 1000」的保險 |
+| `Controltable_History.ReasonCategory` | NVARCHAR(20) | 20 |
+| `Assignee.NAME` / `Assignee.EMPO` | NVARCHAR(100) / (20) | 100 / 20（`EMAIL` 不驗 —— 唯讀，SQL 根本不寫它） |
+
+⚠️⚠️ 這組數字有**三份**：這張表 → `Program.cs` 檔尾的 `FieldLimits` → `app.jsx` 的 `FIELD_LIMITS`／`NOTE_MAX`。**動 DB 欄位長度時三邊一起改。**
+⚠️ 匯入另有一道「第五道前置檢查」（排在 `BeginTransaction` 之前）會逐格量，並印出「第 N 列（NID x）的 Remark：上限 500，目前 600」。
+
+---
+
 ## 變更歷史
 
 | 腳本 | 日期 | 狀態 | 內容 |
@@ -544,6 +598,8 @@
 | `17_stagecode_not_null.sql` | 2026-09-11 | **已執行** | `StageCode` 改為 **NOT NULL** 並加 `CK_Controltable_StageCode CHECK (StageCode IN ('1'..'5'))`。先印現況（含 `IsDeleted = 1` 的列 —— NOT NULL 是整張表的約束）、去括號正規化、仍為空白／壞值的依日期推一次（`Done`→5、`MsdEnd`/`MsdStart`→3、`MsdConfirm`→2、否則 1；`UatEnd` 不推 4，驗收日可以先壓），再 ALTER + CHECK。實際執行：65 active + 20 deleted **全部已是 1~5，回填 0 筆**，欄位改 NOT NULL、約束建立成功；重跑確認 idempotent（兩段都走「已是／已存在，跳過」）。⚠️ 執行後 `INSERT`/`UPDATE` 送空值會直接被 DB 拒絕（Msg 515 / 547），所以 `POST`/`PUT` 在程式端先擋成 400 |
 | `18_add_access_control.sql` | 2026-09-21 | **已執行**（本機） | 頁面瀏覽權限卡控（第 74 批，做法對齊 `C:\Gantt`）：建立 `dbo.AccessRules`（允許規則，五個條件欄位皆可空、`CK_AccessRules_AnyField` 至少一欄）、`dbo.AppSettings`（開關存放處，本專案首次有這張表；初始化 `AccessControlEnabled = 'false'`）、`dbo.AccessLog`（規則增刪與開關切換的稽核）。**不建立、不修改 `[WEB].[dbo].[notes_person]`**（遠端是跨 server 的 VIEW；本機用 `C:\Gantt\sim_create_WEB_notes_person.sql` 的模擬表，34 筆）。實際執行：三張表建立成功、開關初始化 false、規則 0 筆；重跑確認 idempotent（三段都走「已存在，跳過」）。`Program.cs` 啟動時另有同內容的 bootstrap |
 | `19_add_access_admins.sql` | 2026-09-21 | **已執行**（本機） | 瀏覽權限的管理者清單搬進 DB（第 75 批）：建立 `dbo.AccessAdmins`（`Empno` UNIQUE）、種入 `00002732` / `00041817` / `yu-tinglin`、`CK_AccessLog_Action` 擴充 `ADD_ADMIN` / `DELETE_ADMIN`。實際執行：表建立、種入 3 筆、CHECK 重建成功；重跑確認 idempotent（種入 0 筆、CHECK 走「已含，跳過」）。⚠️ 正式 DB 執行前可先把 `yu-tinglin` 那一列從 VALUES 拿掉（開發機本機帳號） |
+| `21_add_history_field_audit.sql` | 2026-09-28 | **已執行**（本機） | 非日期欄位的稽核（第 84 批）：`dbo.Controltable_History` 新增 `FieldKey NVARCHAR(50)` / `OldValue NVARCHAR(MAX)` / `NewValue NVARCHAR(MAX)`，三欄皆可為 NULL、不建索引。實際執行：三欄新增成功，另以 `sys.columns` 複驗（`max_length` 100 / −1 / −1）。⚠️ **純新增欄位，Program.cs 的啟動 bootstrap 補得到** —— 沒跑這支也不會讓 App 壞掉，但「欄位異動」那幾列會寫不進去（整筆 `PUT` 會失敗）。正式主機請執行。
+| `20_add_applog.sql` | 2026-09-25 | **已執行**（本機） | 後端錯誤日誌落地（第 82 批）：建立 `dbo.AppLog` ＋ `IX_AppLog_LoggedAt`。實際執行：表建立成功、重跑走「已存在，跳過」。⚠️ **刻意沒有啟動時 bootstrap**，而且沒跑這支也不影響任何功能（`AppDiag` 寫不進去一律靜靜跳過）。⚠️ 正式主機要跑它才查得到錯誤紀錄；連線帳號需要對這張表的 `INSERT` 權限 |
 | `15_add_assignee_email.sql` | 2026-08-31 | **已執行** | `dbo.Assignee` 新增 `EMAIL NVARCHAR(255) NULL`，並回填「玉婷／MSD」＝`Sariel_Lin@UMCG`。回填比對 `(DEPT, NAME)`（＝`UX_Assignee_Dept_Name` 的鍵，**不用 `Id`** —— IDENTITY 各環境不保證一致），且只在 `EMAIL IS NULL` 時才寫，重跑不會蓋掉人工改過的值。實際執行：欄位已新增、回填 **1 筆**（`Id 9`），13 筆中僅該筆有值。⚠️ 本檔含中文，`sqlcmd` 要加 **`-f 65001`**，否則 `N'玉婷'` 會被當 ANSI 讀進去、比對不到任何一列，而且**不報錯只回填 0 筆** |
 
 > 📌 **第 14 批（階段順序 gating）沒有 DB 變更**，純前端 + 後端驗證，所以沒有它專屬的腳本。
@@ -560,7 +616,7 @@
 
 | | 內容 |
 |---|---|
-| ✅ bootstrap **補得到** | 純新增欄位：`StageCode`、`CreatedAt`、`UpdatedAt`、`MsdConfirmNote`、`NotesLink`、`RegDate`、`Remark`、`IsDeleted`、`DeletedAt`、`MsdConfirmHistory`、四個 `*ActualEnd`、`DelayCount` / `EarlyCount` / `RollbackCount`；`dbo.Assignee.EMAIL`；以及 `dbo.Controltable_History` 與 `dbo.Assignee` 兩張表 |
+| ✅ bootstrap **補得到** | 純新增欄位：`StageCode`、`CreatedAt`、`UpdatedAt`、`MsdConfirmNote`、`NotesLink`、`RegDate`、`Remark`、`IsDeleted`、`DeletedAt`、`MsdConfirmHistory`、四個 `*ActualEnd`、`DelayCount` / `EarlyCount` / `RollbackCount`；`dbo.Assignee.EMAIL`；`dbo.Controltable_History.FieldKey` / `OldValue` / `NewValue`（第 84 批）；以及 `dbo.Controltable_History` 與 `dbo.Assignee` 兩張表 |
 | ❌ bootstrap **做不到**（一定要跑腳本） | ① 型別遷移：六個日期欄 `NVARCHAR(50)` → `DATE`、`MpSaving` `INT` → `NVARCHAR`（`01`/`02`/`03`）<br>② 既有資料正規化：`Status` 大小寫、`StageCode` 去括號、`YearMonth`、`RegDate` 回填（`04`~`07`）<br>③ `08` 的 `sp_rename`（舊 `NotesLink` 欄裝的其實是 `Remark` 的文字）與 `13` 的唯一索引 |
 
 > **刻意不碰 ❌ 那三類** —— 猜錯一次就是整表資料損毀，而腳本是可以先看過再執行的

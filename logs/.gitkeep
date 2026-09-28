@@ -1,0 +1,3 @@
+這個資料夾是給 IIS 的 stdout log 用的（見專案根目錄的 web.config）。
+ANCM 會在這裡產生 stdout_<pid>_<時間>.log；資料夾不存在時它是靜靜不產生的。
+檔案本身不進版控（.gitignore），這個 .gitkeep 只是讓資料夾跟著 publish 出去。

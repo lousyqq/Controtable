@@ -24,7 +24,61 @@ builder.Services.AddAuthorization();
 // 拿掉之後 JSON 寫入會因為 preflight 被瀏覽器擋在外面。
 // 日後若真的要讓別的站台呼叫，請明列來源（WithOrigins(...)），不要再用 AllowAnyOrigin。
 
+// ─── 後端錯誤日誌寫進 dbo.AppLog（第 82 批，2026-09-25）───
+// ⚠️ Provider 一定要在 builder.Build() **之前**掛上（之後掛不進 LoggerFactory）。
+//    連線字串它是在 log 發生的那一刻才讀（AppDiag.Init 在下面幾行才呼叫），
+//    所以這裡不必把 connectionString 的讀取搬上來。
+// ⚠️ 它只收 Error / Critical，而且整支 best-effort（寫不進去一律靜靜跳過）——
+//    20_add_applog.sql 沒跑的環境行為與加這段之前完全相同。詳見 AppDiag 的說明。
+builder.Logging.AddProvider(new AppDiag.DbLoggerProvider());
+
+// ─── 回應壓縮（第 83 批，2026-09-28）───
+// 在此之前全站**完全沒有壓縮**（實測帶 `Accept-Encoding: gzip` 進去，回應沒有 Content-Encoding）。
+// 實測 gzip 之後的大小：
+//   · /api/requirements   48,141 → 5,691 B（11.8%）
+//   · /api/history        70,449 → 3,780 B（5.4%）
+//     → 兩支合計 118,590 → 9,471 B，而**每次載入、每次存檔／完成／回退／刪除之後的重抓
+//       都會再送一次這兩支**（見 系統架構.md「任何會動到需求的操作兩支都要一起重抓」），
+//       所以這是整個 App 重複次數最多的一筆流量
+//   · app.js  491,810 → 153,701 B、app.css 71,155 → 21,612 B、react-dom 131,835 → 42,828 B
+//     （靜態檔本來就有 ETag，第二次是 304；這三支只在第一次載入與換版本時才付這個成本）
+//   · /manual 202,546 → 63,416 B
+// ⚠️ 內建在 shared framework 裡，**沒有引入新的 NuGet 套件**（與寄信走 System.Net.Mail 同一條）。
+// ⚠️ 中介軟體要掛在 UseStaticFiles() 與那段 index.html 中介軟體**之前**，否則那些回應
+//    早就寫出去了，壓縮器碰不到。
+builder.Services.AddResponseCompression(options =>
+{
+    // ⚠️ 預設是 false，而預設值在這裡等於「靜靜不生效」：站台哪天換成 https，
+    //    這一整段就什麼都不做，而畫面上沒有任何地方看得出來。
+    //    這個 App 的安全前提允許打開：BREACH 那類攻擊要「回應裡有祕密（CSRF token、
+    //    session token）＋攻擊者控制得了回應裡的另一段內容」，而這裡的回應是需求清單與
+    //    稽核列，沒有任何 token，身分驗證走 Negotiate 標頭、不在 body 裡。
+    // ⚠️ 日後若真的在回應裡放了 token（例如加上 CSRF 防護），請回來把這行改回 false。
+    options.EnableForHttps = true;
+    // 預設清單已含 application/json / text/html / text/css / application/javascript，
+    // 但 .NET 的靜態檔中介軟體把 .js 送成 **text/javascript**（不在預設清單裡）——
+    // 少了這一行，最大的那個 app.js（491 KB）剛好是唯一沒被壓到的（實測過）
+    options.MimeTypes = Microsoft.AspNetCore.ResponseCompression.ResponseCompressionDefaults
+        .MimeTypes.Concat(new[] { "text/javascript", "image/svg+xml", "application/manifest+json" });
+});
+// ⚠️⚠️ 壓縮等級一定要自己設。兩個 provider 的預設都是 `CompressionLevel.Fastest`
+//    （Brotli 的 Fastest ＝ 品質 1），實測那等於**大部分的效益都沒拿到**：
+//      app.js            Fastest br 223,989 B → Optimal br 130,383 B
+//      /api/requirements Fastest br  13,047 B → Optimal br   4,742 B
+//    ⚠️ 這是那種「看起來有生效（Content-Encoding 真的有）、其實只做了一半」的設定，
+//       只量標頭量不出來 —— 一定要量 bytes。
+// ⚠️ 選 `Optimal` 不選 `SmallestSize`：後者是 Brotli 品質 11，對 496 KB 的 app.js 要幾百 ms
+//    的 CPU，而這個中介軟體**每一次回應都重壓一次**（沒有壓縮結果的快取）。
+//    Optimal 在 .NET 7 之後是品質 4，實測整支請求仍在個位數毫秒。
+builder.Services.Configure<Microsoft.AspNetCore.ResponseCompression.BrotliCompressionProviderOptions>(
+    o => o.Level = System.IO.Compression.CompressionLevel.Optimal);
+builder.Services.Configure<Microsoft.AspNetCore.ResponseCompression.GzipCompressionProviderOptions>(
+    o => o.Level = System.IO.Compression.CompressionLevel.Optimal);
+
 var app = builder.Build();
+
+// ⚠️ 位置有意義：要在下面那段 index.html 中介軟體與 UseStaticFiles() 之前（見上面的說明）
+app.UseResponseCompression();
 
 // ─── 子應用程式路徑 (IIS Virtual Application) 支援 ───
 // 掛在 IIS 子路徑（例如 http://host/Controltable/）時，ANCM 會把 /Controltable 放進
@@ -58,6 +112,10 @@ app.UseAuthorization();
 
 var connectionString = builder.Configuration.GetConnectionString("Controltable")
     ?? "Server=localhost;Database=Controltable;Trusted_Connection=True;Encrypt=False;";
+
+// 錯誤日誌要用的連線（第 82 批）。⚠️ 它會自己加上 Connect Timeout=3 並用**獨立連線**，
+// 不吃任何正在回捲的交易 —— 見 AppDiag 的說明
+AppDiag.Init(connectionString);
 
 // ─── 郵件通知設定（2026-08-31 / 第 39 批）───
 // 用途只有一個：「已到階段卻沒壓日期」時，通知下一棒進系統把日期壓上去。
@@ -115,14 +173,59 @@ var mailTimeout  = (builder.Configuration.GetValue<int?>("Mail:TimeoutSeconds") 
 // smtp 模式則一定要有 Host
 var mailReady    = useDbMail || mailHost != "";
 
+// ─── 啟動時的 bootstrap 一律 best-effort（第 83 批，2026-09-28）───
+// ⚠️⚠️ 在此之前底下四段各自 `new SqlConnection(...).Open()`，而且**完全沒有保護** ——
+//    它們跑在 app.Run() 之前，所以「SQL Server 沒起來／連線字串錯／權限被改」的結果
+//    不是某一支端點失敗，是**整個 App 啟動失敗**（實測：
+//    `Unhandled exception. Microsoft.Data.SqlClient.SqlException … at Program.<Main>$ … Program.cs:line 136`）。
+//    掛在 IIS 上的樣子是全站 500.30，連 `GET /manual` 都打不開，而那頁上什麼線索都沒有。
+// ⚠️ 這與這個專案自己立的界線矛盾：`AppDiag` 與 `13_nid_unique.sql` 都刻意**不做**啟動時
+//    bootstrap，理由正是「啟動時多做一件可能失敗的事，代價是 App 起不來」。
+//    那條界線本來就該套在這四段身上。
+// 現在失敗就記一筆（Console → IIS 的 stdout log，再試著寫 dbo.AppLog，兩條都是 best-effort）
+// 然後**照樣啟動**：真的缺欄位時 `GET /api/requirements` 那句「若訊息是 Invalid column name，
+// 代表累加腳本還沒全部執行」本來就寫好了，比一片 500.30 好查得多；DB 只是暫時掛掉的話，
+// 它恢復之後這個 App **不必重啟**就會自己好（bootstrap 本來就是 idempotent 的補丁，
+// 不是任何一支端點的前提條件 —— 正常環境那四段全部是 no-op）。
+// ⚠️ **不可以改成「失敗就 throw」** —— 那就是把上面那個症狀原封不動搬回來。
+//
+// ⚠️ 四段共用**同一條連線**：連不上時只會有一次連線逾時（預設 15 秒），
+//    分四條的話是 4 × 15 = 60 秒的啟動延遲，而 ANCM 的啟動逾時預設只有 120 秒。
+//    連不上就整批跳過並只記一筆 —— 四段都記等於同一件事在 log 裡重複四次。
+SqlConnection? bootstrapConn = null;
+try
+{
+    bootstrapConn = new SqlConnection(connectionString);
+    bootstrapConn.Open();
+}
+catch (Exception ex)
+{
+    AppDiag.Error("bootstrap", "啟動時連不上資料庫，四段 bootstrap 全部跳過。"
+                + "App 仍會啟動，但每一支查詢都會失敗並回報自己的原因", ex);
+    bootstrapConn?.Dispose();
+    bootstrapConn = null;
+}
+
+void Bootstrap(string name, string sql)
+{
+    if (bootstrapConn == null) return;      // 連不上，上面已經記過一筆，不必每段再記
+    try
+    {
+        using var cmd = new SqlCommand(sql, bootstrapConn);
+        cmd.ExecuteNonQuery();
+    }
+    catch (Exception ex)
+    {
+        AppDiag.Error("bootstrap", $"啟動時的「{name}」bootstrap 失敗，App 照樣啟動。"
+                    + "缺的欄位／資料表會在實際查詢時由該端點回報", ex);
+    }
+}
+
 // 指派人員主檔。正式的變更紀錄在 11_create_assignee.sql，
 // 這裡的 bootstrap 只是讓尚未跑過腳本的環境也能啟動（沿用下方 MsdConfirmHistory 的做法）。
 // ⚠️ 名單的回填只在腳本裡做，這裡只建空表。
 // 舊的 dbo.Personnel 已由 12_drop_personnel.sql 刪除，這裡不再建立、也不再讀寫。
-using (var conn = new SqlConnection(connectionString))
-{
-    conn.Open();
-    using (var cmd = new SqlCommand(@"
+Bootstrap("dbo.Assignee", @"
         IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='Assignee' and xtype='U')
         BEGIN
             CREATE TABLE dbo.Assignee (
@@ -141,18 +244,11 @@ using (var conn = new SqlConnection(connectionString))
         IF NOT EXISTS(SELECT * FROM sys.columns WHERE Name = N'EMAIL' AND Object_ID = Object_ID(N'dbo.Assignee'))
         BEGIN
             ALTER TABLE dbo.Assignee ADD EMAIL NVARCHAR(255) NULL
-        END", conn))
-    {
-        cmd.ExecuteNonQuery();
-    }
-}
+        END");
 // 頁面瀏覽權限的三張表（第 74 批，2026-09-21）。正式的變更紀錄在 18_add_access_control.sql，
 // 這裡只讓沒跑過腳本的環境也能啟動 —— 開關的預設值 'false' 也在這裡補，
 // 否則 /api/access-status 查不到那一列會被當成「沒開」，而那正好是想要的結果，但寧可明寫。
-using (var conn = new SqlConnection(connectionString))
-{
-    conn.Open();
-    using (var cmd = new SqlCommand(@"
+Bootstrap("瀏覽權限的四張表", @"
         IF OBJECT_ID(N'dbo.AccessRules', N'U') IS NULL
         BEGIN
             CREATE TABLE dbo.AccessRules (
@@ -210,25 +306,14 @@ using (var conn = new SqlConnection(connectionString))
             ALTER TABLE dbo.AccessLog DROP CONSTRAINT CK_AccessLog_Action;
             ALTER TABLE dbo.AccessLog WITH CHECK
                 ADD CONSTRAINT CK_AccessLog_Action CHECK (Action IN (N'ADD_RULE', N'DELETE_RULE', N'ENABLE', N'DISABLE', N'ADD_ADMIN', N'DELETE_ADMIN'));
-        END", conn))
-    {
-        cmd.ExecuteNonQuery();
-    }
-}
+        END");
 // Add MsdConfirmHistory column if it doesn't exist
-using (var conn = new SqlConnection(connectionString))
-{
-    conn.Open();
-    using (var cmd = new SqlCommand(@"
+Bootstrap("MsdConfirmHistory 欄", @"
         IF NOT EXISTS(SELECT * FROM sys.columns WHERE Name = N'MsdConfirmHistory' AND Object_ID = Object_ID(N'dbo.Controltable'))
         BEGIN
             ALTER TABLE dbo.Controltable ADD MsdConfirmHistory NVARCHAR(MAX)
         END
-        ", conn))
-    {
-        cmd.ExecuteNonQuery();
-    }
-}
+        ");
 // ─── 欄位 bootstrap ───
 // 正式的變更紀錄一律在累加腳本裡（`01`~`13`），這裡只是讓尚未跑過腳本的環境也能啟動。
 //
@@ -244,10 +329,7 @@ using (var conn = new SqlConnection(connectionString))
 //    2. 既有資料的正規化：Status 大小寫、StageCode 去括號、YearMonth、RegDate 回填（`04`~`07`）
 //    3. `08` 的 sp_rename（舊 NotesLink 欄裝的其實是 Remark 的文字）與 `13` 的唯一索引
 //    這裡刻意不碰那些 —— 猜錯一次就是整表資料損毀，而腳本是可以先看過再執行的。
-using (var conn = new SqlConnection(connectionString))
-{
-    conn.Open();
-    using (var cmd = new SqlCommand(@"
+Bootstrap("dbo.Controltable 的欄位與稽核表", @"
         IF NOT EXISTS(SELECT * FROM sys.columns WHERE Name = N'IsDeleted' AND Object_ID = Object_ID(N'dbo.Controltable'))
         BEGIN
             ALTER TABLE dbo.Controltable ADD IsDeleted BIT NOT NULL CONSTRAINT DF_Controltable_IsDeleted DEFAULT (0)
@@ -336,15 +418,29 @@ using (var conn = new SqlConnection(connectionString))
                 Note NVARCHAR(1000) NULL,
                 ChangedBy NVARCHAR(100) NULL,
                 ChangedBySource NVARCHAR(20) NULL,
-                ChangedAt DATETIME2(0) NOT NULL CONSTRAINT DF_Controltable_History_ChangedAt DEFAULT (SYSDATETIME())
+                ChangedAt DATETIME2(0) NOT NULL CONSTRAINT DF_Controltable_History_ChangedAt DEFAULT (SYSDATETIME()),
+                -- 非日期欄位的稽核（第 84 批）。正式的變更紀錄在 21_add_history_field_audit.sql
+                FieldKey NVARCHAR(50) NULL, OldValue NVARCHAR(MAX) NULL, NewValue NVARCHAR(MAX) NULL
             )
             CREATE INDEX IX_Controltable_History_Req ON dbo.Controltable_History (RequirementId, ChangedAt)
         END
-        ", conn))
-    {
-        cmd.ExecuteNonQuery();
-    }
-}
+        -- ⚠️ 上面那段 CREATE TABLE 只在「表還不存在」時跑，所以既有環境要靠這三段 ALTER 補
+        --（與 dbo.Assignee 的 EMAIL 同一個做法）。正式的變更紀錄在 21_add_history_field_audit.sql
+        IF NOT EXISTS(SELECT * FROM sys.columns WHERE Name = N'FieldKey' AND Object_ID = Object_ID(N'dbo.Controltable_History'))
+        BEGIN
+            ALTER TABLE dbo.Controltable_History ADD FieldKey NVARCHAR(50) NULL
+        END
+        IF NOT EXISTS(SELECT * FROM sys.columns WHERE Name = N'OldValue' AND Object_ID = Object_ID(N'dbo.Controltable_History'))
+        BEGIN
+            ALTER TABLE dbo.Controltable_History ADD OldValue NVARCHAR(MAX) NULL
+        END
+        IF NOT EXISTS(SELECT * FROM sys.columns WHERE Name = N'NewValue' AND Object_ID = Object_ID(N'dbo.Controltable_History'))
+        BEGIN
+            ALTER TABLE dbo.Controltable_History ADD NewValue NVARCHAR(MAX) NULL
+        END
+        ");
+// 四段都跑完（或都跳過）之後才收掉那條共用連線
+bootstrapConn?.Dispose();
 
 // ─── 日期處理 ───
 // DB 的時程欄位已為 DATE 型別 (見 01/02 累加腳本)，但 JSON 與前端 <input type="date">
@@ -510,6 +606,24 @@ static bool IsCrossSiteRequest(HttpContext ctx)
     var self = $"{ctx.Request.Scheme}://{ctx.Request.Host.Value}";
     return !origin.TrimEnd('/').Equals(self, StringComparison.OrdinalIgnoreCase);
 }
+
+// ─── 500 一律回 { message }，不可以用 Results.Problem（第 84 批，2026-09-28）───
+// ⚠️⚠️ 在此之前這 12 支用的是 `Results.Problem("中文訊息", statusCode: 500)`，而
+//    `Results.Problem` 把第一個參數放進 **detail**、title 一律填成 .NET 的預設英文句
+//    「An error occurred while processing your request.」。前端各處讀的是
+//    `j.message || j.title`（全專案的 400／409 都是 `{ message }`，讀取側自然跟著那一套），
+//    **`j.detail` 在 app.jsx 出現 0 次** —— 於是這裡每一句寫得很仔細的中文診斷都到不了畫面。
+//    實測（把連線字串指到連不到的主機）：body 裡有完整的
+//    「讀取需求清單失敗：…（若訊息是 Invalid column name，代表累加腳本還沒全部執行）」，
+//    而瀏覽器上整頁只有一行 **「權限檢查失敗：An error occurred while processing your request.」**。
+// ⚠️ 這與第 83 批 A3 是同一件事的兩半：那批讓「DB 掛掉時 App 照樣起得來」變成正常狀態，
+//    而使用者落在的那一頁正是上面那句英文。第 82 批的 AppDiag 解的是「事後查得到」，
+//    這一條解的是「當下看得懂」——兩件事，缺一不可。
+// ⚠️ 不要改成「在 Results.Problem 上補 title:」：那只是讓兩種形狀（{message} 與
+//    ProblemDetails）繼續並存，下一個人照樣會挑錯欄位。**全站統一 `{ message }` 一種形狀。**
+// ⚠️ `GET /manual` 的 404 刻意維持 Results.Problem —— 那支是使用者直接在分頁裡開的，
+//    看到的是 raw JSON，而它的 title 本來就寫了中文。
+static IResult ServerError(string message) => Results.Json(new { message }, statusCode: 500);
 
 // ─── API Endpoints ───
 
@@ -713,7 +827,7 @@ app.MapGet("/api/access-status", async () =>
     catch (Exception ex)
     {
         app.Logger.LogError(ex, "access-status 查詢失敗");
-        return Results.Problem("讀取瀏覽權限開關失敗", statusCode: 500);
+        return ServerError("讀取瀏覽權限開關失敗：" + ex.Message);
     }
 });
 
@@ -755,7 +869,7 @@ app.MapGet("/api/access-check", async (HttpContext ctx, string? testEmpId) =>
     catch (Exception ex)
     {
         app.Logger.LogError(ex, "access-check 失敗");
-        return Results.Problem("瀏覽權限檢查失敗", statusCode: 500);
+        return ServerError("瀏覽權限檢查失敗：" + ex.Message + "（若訊息是 Invalid object name，代表 18／19 這兩支腳本還沒執行）");
     }
 }).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
 
@@ -819,7 +933,7 @@ app.MapGet("/api/access-rules", async (HttpContext ctx) =>
     catch (Exception ex)
     {
         app.Logger.LogError(ex, "access-rules 查詢失敗");
-        return Results.Problem("讀取瀏覽權限規則失敗", statusCode: 500);
+        return ServerError("讀取瀏覽權限規則失敗：" + ex.Message);
     }
 }).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
 
@@ -879,7 +993,7 @@ app.MapPost("/api/access-rules", async (HttpContext ctx, AccessRuleRequest body)
     catch (Exception ex)
     {
         app.Logger.LogError(ex, "access-rules 新增失敗");
-        return Results.Problem("新增瀏覽權限規則失敗", statusCode: 500);
+        return ServerError("新增瀏覽權限規則失敗：" + ex.Message);
     }
 }).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
 
@@ -918,7 +1032,7 @@ app.MapDelete("/api/access-rules/{id:int}", async (HttpContext ctx, int id) =>
     catch (Exception ex)
     {
         app.Logger.LogError(ex, "access-rules 刪除失敗");
-        return Results.Problem("刪除瀏覽權限規則失敗", statusCode: 500);
+        return ServerError("刪除瀏覽權限規則失敗：" + ex.Message);
     }
 }).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
 
@@ -955,7 +1069,7 @@ app.MapPut("/api/access-control", async (HttpContext ctx, AccessToggleRequest bo
     catch (Exception ex)
     {
         app.Logger.LogError(ex, "access-control 切換失敗");
-        return Results.Problem("切換瀏覽權限卡控失敗", statusCode: 500);
+        return ServerError("切換瀏覽權限卡控失敗：" + ex.Message);
     }
 }).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
 
@@ -997,7 +1111,7 @@ app.MapPost("/api/access-admins", async (HttpContext ctx, AccessAdminRequest bod
     catch (Exception ex)
     {
         app.Logger.LogError(ex, "access-admins 新增失敗");
-        return Results.Problem("新增管理者失敗", statusCode: 500);
+        return ServerError("新增管理者失敗：" + ex.Message);
     }
 }).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
 
@@ -1046,7 +1160,7 @@ app.MapDelete("/api/access-admins/{id:int}", async (HttpContext ctx, int id) =>
     catch (Exception ex)
     {
         app.Logger.LogError(ex, "access-admins 刪除失敗");
-        return Results.Problem("移除管理者失敗", statusCode: 500);
+        return ServerError("移除管理者失敗：" + ex.Message);
     }
 }).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
 
@@ -1077,7 +1191,8 @@ app.MapGet("/api/history", async (int? requirementId) =>
     var sql = @"
         SELECT h.Id, h.RequirementId, h.NID, h.Phase, h.ChangeType, h.ReasonCategory,
                h.OldStart, h.OldEnd, h.OldConfirm, h.NewStart, h.NewEnd, h.NewConfirm,
-               h.Note, h.ChangedBy, h.ChangedBySource, h.ChangedAt
+               h.Note, h.ChangedBy, h.ChangedBySource, h.ChangedAt,
+               h.FieldKey, h.OldValue, h.NewValue
         FROM dbo.Controltable_History h
         WHERE EXISTS (SELECT 1 FROM dbo.Controltable c
                        WHERE c.Id = h.RequirementId AND c.IsDeleted = 0)"
@@ -1107,15 +1222,19 @@ app.MapGet("/api/history", async (int? requirementId) =>
             note = ReadString(reader, "Note"),
             changedBy = ReadString(reader, "ChangedBy"),
             changedBySource = ReadString(reader, "ChangedBySource"),
-            changedAt = ReadDateTime(reader, "ChangedAt")
+            changedAt = ReadDateTime(reader, "ChangedAt"),
+            // 非日期欄位的稽核（第 84 批）。日期類的列這三欄一律是 NULL
+            fieldKey = ReadString(reader, "FieldKey"),
+            oldValue = ReadString(reader, "OldValue"),
+            newValue = ReadString(reader, "NewValue")
         });
     }
     return Results.Ok(list);
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"History query failed: {ex}");
-        return Results.Problem("讀取時程異動軌跡失敗：" + ex.Message);
+        AppDiag.Error("history", "讀取時程異動軌跡失敗", ex);
+        return ServerError("讀取時程異動軌跡失敗：" + ex.Message);
     }
 });
 
@@ -1202,8 +1321,8 @@ app.MapGet("/api/requirements", async () =>
         // 這個 catch 接的是**所有**例外，而最常見的其實是「累加腳本沒跑完，少了某個欄位」
         // （Invalid column name 'DelayCount'）。原本一律回 "Database connection failed."，
         // 會把人整個帶去查連線字串，而真正的原因就寫在例外訊息裡
-        Console.WriteLine($"Requirements query failed: {ex}");
-        return Results.Problem("讀取需求清單失敗：" + ex.Message
+        AppDiag.Error("requirements", "讀取需求清單失敗", ex);
+        return ServerError("讀取需求清單失敗：" + ex.Message
             + "（若訊息是 Invalid column name，代表 DB_table.md 裡的累加腳本還沒全部執行）");
     }
 });
@@ -1217,6 +1336,13 @@ static string? ValidateAssignee(Assignee a)
 {
     if (string.IsNullOrWhiteSpace(a.Name)) return "姓名不可為空";
     if (a.Dept != "EMS" && a.Dept != "MSD") return "部門只能是 EMS 或 MSD";
+    // 長度（第 82 批）。dbo.Assignee 的 NAME 是 NVARCHAR(100)、EMPO 是 NVARCHAR(20) ——
+    // 貼上一整串名字或工號時，在此之前是 HTTP 500 加一句英文的 SQL 訊息。
+    // ⚠️ EMAIL 不驗：那一欄刻意唯讀（只在 SSMS 維護），POST／PUT 的 SQL 根本不寫它
+    if ((a.Name ?? "").Trim().Length > 100)
+        return $"姓名太長了：上限 100 字，目前 {(a.Name ?? "").Trim().Length} 字";
+    if ((a.EmpNo ?? "").Trim().Length > 20)
+        return $"工號太長了：上限 20 字，目前 {(a.EmpNo ?? "").Trim().Length} 字";
     return null;
 }
 
@@ -1266,8 +1392,8 @@ app.MapGet("/api/assignees", async () =>
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"Assignees query failed: {ex}");
-        return Results.Problem("讀取指派人員名單失敗：" + ex.Message
+        AppDiag.Error("assignees", "讀取指派人員名單失敗", ex);
+        return ServerError("讀取指派人員名單失敗：" + ex.Message
             + "（若訊息是 Invalid object name，代表 11_create_assignee.sql 還沒執行）");
     }
 });
@@ -1447,6 +1573,56 @@ static string[] MissingRequiredFields(Requirement req, Requirement? before = nul
     if (before != null && !string.IsNullOrWhiteSpace(before.spec?.end))
         Need(req.spec?.end, "EMS 提 Spec 結束日");
     return missing.ToArray();
+}
+
+// ─── 欄位長度上限（第 82 批，2026-09-25）──────────────────────────────────
+// 在此之前**前後端都沒有任何長度檢查**。超過 DB 的欄位長度時 SQL Server 直接丟
+// 「字串或二進位資料將會截斷」→ 沒有人接 → HTTP 500。實測：需求補充打 600 字就會踩到
+// （Remark 是 NVARCHAR(500)），而正式環境（Production）連那句 SQL 訊息都不會回，
+// 畫面上只剩「儲存失敗：HTTP 500」—— 使用者不知道是哪一欄、上限多少、也不知道下一步做什麼。
+//
+// ⚠️⚠️ **不可以改成「靜靜截斷」** —— 那是把他剛打的字丟掉而且不告訴他。
+//    一律回 400 並講明：哪一欄、上限幾字、他現在打了幾字。
+// ⚠️ 這些數字**必須與 DB 的欄位定義一致**（見 DB_table.md）；前端 app.jsx 的 FIELD_MAX
+//    是這一份的鏡像（maxLength 屬性 ＋ validateEdit 就地標紅），**改了要兩邊一起改**。
+// ⚠️ 現況描述（CurrentStatus）是 NVARCHAR(MAX)，**刻意沒有上限**，不要順手補一個。
+// ⚠️ 用 Trim() 之後的長度算 —— 寫入走 AddText()，它存進去的就是 Trim 過的值。
+// ⚠️ 數字本身放在檔尾的 FieldLimits（top-level statements 裡不能宣告 static readonly 欄位）。
+static string[] TooLongFields(Requirement req)
+    => FieldLimits.Text.Select(t => (t.Label, t.Max, Len: (t.Get(req) ?? "").Trim().Length))
+                 .Where(x => x.Len > x.Max)
+                 .Select(x => $"{x.Label}：上限 {x.Max} 字，目前 {x.Len} 字")
+                 .ToArray();
+
+static string[] TooLongNotes(Requirement req)
+{
+    if (req.changeMeta == null) return Array.Empty<string>();
+    var bad = new List<string>();
+    foreach (var (key, meta) in req.changeMeta)
+    {
+        var label = key == "stage" ? "狀態調整" : DoneColumnsOf(key).Label;
+        if (label == "") label = key;
+        var len = (meta?.note ?? "").Trim().Length;
+        if (len > FieldLimits.NoteMax)
+            bad.Add($"{label} 的異動理由：上限 {FieldLimits.NoteMax} 字，目前 {len} 字");
+        // 原因分類寫進 History.ReasonCategory（NVARCHAR(20)）。畫面上它是四顆固定的按鈕，
+        // 所以這一道只對「直接打 API」成立 —— 但那正是第 21 批立下的界線：
+        // **讀取側不可以假設寫入側已經收乾淨**，而超長的值在這裡是 HTTP 500
+        var clen = (meta?.category ?? "").Trim().Length;
+        if (clen > 20)
+            bad.Add($"{label} 的異動原因分類：上限 20 字，目前 {clen} 字");
+    }
+    return bad.ToArray();
+}
+
+// /done、/rollback、/undo-done、DELETE 各自只有一個說明欄，用這支檢查。
+// 回 null = 沒問題；有字串 = 直接拿去當 400 的訊息
+static string? NoteTooLong(string? note, string label)
+{
+    var len = (note ?? "").Trim().Length;
+    return len > FieldLimits.NoteMax
+        ? $"{label}太長了：上限 {FieldLimits.NoteMax} 字，目前 {len} 字。\n\n請把內容縮短之後再送出（長篇的背景說明建議寫在需求的「現況描述」欄，那一欄沒有字數上限）。"
+        : null;
 }
 
 // ─── Start 沒填就補成與 End 同一天（2026-08-22）───
@@ -1747,6 +1923,16 @@ app.MapPost("/api/requirements", async (Requirement req) =>
     if (missing.Length > 0)
         return Results.BadRequest(new { message = "以下必填欄位未填寫：" + string.Join("、", missing), fields = missing });
 
+    // 欄位長度（第 82 批）。⚠️ 一定要排在 SQL 之前 —— 讓 DB 去擋的話是 HTTP 500 加一句英文
+    var tooLong = TooLongFields(req).Concat(TooLongNotes(req)).ToArray();
+    if (tooLong.Length > 0)
+        return Results.BadRequest(new
+        {
+            message = "以下欄位超過長度上限：\n" + string.Join("\n", tooLong.Select(t => "• " + t))
+                    + "\n\n請縮短後再儲存。（現況描述沒有字數上限，長篇說明可以寫在那裡）",
+            fields = tooLong
+        });
+
     var badRanges = InvalidDateRanges(req);
     if (badRanges.Length > 0)
         return Results.BadRequest(new
@@ -1835,6 +2021,20 @@ app.MapPost("/api/requirements", async (Requirement req) =>
         // 新增時已填的日期一律記成 init（不算異動，只是留下起始基準）
         var (actor, actorSrc) = ResolveActor(req);
         await WriteAuditAsync(conn, newId, req, null, actor, actorSrc, tx);
+        // ─── 建立紀錄（第 85 批，2026-09-28）───
+        // ⚠️⚠️ 在此之前「這筆需求是誰開的」全系統查不到：dbo.Controltable 沒有 CreatedBy 欄，
+        //    而 WriteAuditAsync(oldReq=null) 只替**已填的日期**寫 init —— ① 結束日自第 42 批起是
+        //    選填，所以「只填必填欄位就存檔」這條最常見的路徑會留下 **0 筆稽核列**（實測 ZZ85-A）。
+        //    CreatedAt 回答了「什麼時候」，人的部分整個是空的；而第 84 批才剛補完 11 個非日期
+        //    欄位的異動稽核（誰把負責人換掉查得到），連 dbo.AccessRules 都記得住規則是誰加的。
+        //    這一列補的就是那條資料鏈的起點。
+        // ⚠️ 型別是 `建立`、Phase 用 `stage`（整筆需求層級的事，與手動調整／刪除同一欄）。
+        //    **不進 isDateChange、不動三個計數欄、不強制理由** —— 它不是「有人改了什麼」，
+        //    是這筆需求的出生點（與 init 同一條界線）。前端的 NON_CHANGE_TYPES 把它排除在
+        //    「變更軌跡」的清單之外，改印在明細的「建立時間」旁邊，否則每一筆需求都會多出
+        //    一張寫著「狀態調整 · 建立」的卡。
+        await InsertHistoryAsync(conn, newId, req.nid, "stage", "建立", null,
+                                 "建立需求", actor, actorSrc, (null, null, null), (null, null, null), tx);
 
         tx.Commit();
     }
@@ -1884,8 +2084,13 @@ app.MapPut("/api/requirements/{id}", async (int id, Requirement req) =>
     // UpdatedAt 是樂觀鎖的版本 token。
     Requirement? before = null;
     var beforeStamp = "";
+    // ⚠️ 第 84 批起另外讀那 9 個非日期欄位（NID / RegDate / MainCat / SubCat / 兩個負責人 /
+    //    MpSaving / Remark / NotesLink / CurrentStatus）—— WriteFieldAuditAsync() 要拿它們比對。
+    //    少讀一欄的後果是「那一欄永遠被判成從空白改成新值」，而不是「不記錄」，所以這份
+    //    SELECT 與 AuditFields 必須對齊：日後往 AuditFields 加欄位，這裡要一起加。
     using (var oldCmd = new SqlCommand(@"
         SELECT Status, StageCode, MsdConfirmNote, UpdatedAt,
+               NID, RegDate, MainCat, SubCat, EmsOwner, MsdOwner, MpSaving, Remark, NotesLink, CurrentStatus,
                SpecStart, SpecEnd, MsdConfirm, MsdStart, MsdEnd, UatStart, UatEnd,
                SpecActualEnd, MsdConfirmActualEnd, MsdActualEnd, UatActualEnd
         FROM dbo.Controltable WHERE Id = @Id AND IsDeleted = 0", conn, tx))
@@ -1898,6 +2103,16 @@ app.MapPut("/api/requirements/{id}", async (int id, Requirement req) =>
             {
                 status = ReadString(r, "Status"),
                 stageCode = ReadString(r, "StageCode"),
+                nid = ReadString(r, "NID"),
+                regDate = ReadDate(r, "RegDate"),
+                mainCat = ReadString(r, "MainCat"),
+                subCat = ReadString(r, "SubCat"),
+                emsOwner = ReadString(r, "EmsOwner"),
+                msdOwner = ReadString(r, "MsdOwner"),
+                mpSaving = ReadString(r, "MpSaving"),
+                remark = ReadString(r, "Remark"),
+                notesLink = ReadString(r, "NotesLink"),
+                currentStatus = ReadString(r, "CurrentStatus"),
                 spec = new Phase { start = ReadDate(r, "SpecStart"), end = ReadDate(r, "SpecEnd"),
                                    actualEnd = ReadDate(r, "SpecActualEnd") },
                 msd  = new MsdPhase { confirm = ReadDate(r, "MsdConfirm"), confirmNote = ReadString(r, "MsdConfirmNote"),
@@ -1930,6 +2145,18 @@ app.MapPut("/api/requirements/{id}", async (int id, Requirement req) =>
     var missing = MissingRequiredFields(req, before);
     if (missing.Length > 0)
         return Results.BadRequest(new { message = "以下必填欄位未填寫：" + string.Join("、", missing), fields = missing });
+
+    // 欄位長度（第 82 批）。⚠️ 這裡**不必**套「只在被改動時才驗」那條界線（第 14 批）——
+    // 超過上限的值本來就進不了 DB，所以既有資料一定都在上限內，
+    // 會被擋下來的必然是這一次新打進來的字，不存在「有值卻永遠改不動」
+    var tooLong = TooLongFields(req).Concat(TooLongNotes(req)).ToArray();
+    if (tooLong.Length > 0)
+        return Results.BadRequest(new
+        {
+            message = "以下欄位超過長度上限：\n" + string.Join("\n", tooLong.Select(t => "• " + t))
+                    + "\n\n請縮短後再儲存。（現況描述沒有字數上限，長篇說明可以寫在那裡）",
+            fields = tooLong
+        });
 
     // ─── MsdConfirmNote：呼叫端沒帶就保留原值（2026-08-22 / 第 20 批）───
     // 這一欄沒有輸入介面，只有「GET 讀出來 → PUT 原樣帶回去」這一條路徑維持它。
@@ -2157,6 +2384,14 @@ app.MapPut("/api/requirements/{id}", async (int id, Requirement req) =>
                                  actor, actorSrc, empty, empty, tx);
     }
 
+    // ─── 非日期欄位的稽核（第 84 批，2026-09-28）───
+    // ⚠️ 排在最後：同一次儲存的軌跡順序是「日期 → 狀態 → 欄位」，而 /api/history 是
+    //    `ORDER BY RequirementId, ChangedAt, Id`（同一秒內只有 Id 分得出先後）。
+    //    最重要的事（日期）排在前面，改名改備註這種排後面。
+    // ⚠️ 與上面兩段**同一個 tx** —— 主表 UPDATE 成功但稽核列失敗的話，就會留下
+    //    「欄位變了卻查不到誰改的」，那正是這一批要消滅的狀態（DB_table.md 第 7 條）。
+    await WriteFieldAuditAsync(conn, id, req, before, actor, actorSrc, tx);
+
     tx.Commit();
     }
     catch
@@ -2193,6 +2428,10 @@ app.MapDelete("/api/requirements/{id}", async (int id,
 {
     if (string.IsNullOrWhiteSpace(body?.note))
         return Results.BadRequest(new { message = "刪除需求必須填寫原因才能執行。" });
+    // 長度（第 82 批）：這些說明最後會寫進 dbo.Controltable_History.Note（NVARCHAR(1000)），
+    // 讓 DB 去擋的話是 HTTP 500 加一句英文的 SQL 訊息
+    var badNote = NoteTooLong(body!.note, "刪除原因");
+    if (badNote != null) return Results.BadRequest(new { message = badNote });
 
     using var conn = new SqlConnection(connectionString);
     await conn.OpenAsync();
@@ -2877,6 +3116,8 @@ app.MapPost("/api/requirements/{id}/rollback", async (int id, RollbackRequest bo
     // 異動原因固定為「規格變更」不必讓使用者選，但文字說明一定要有 —— 沒有說明的回退無從追溯
     if (string.IsNullOrWhiteSpace(body.note))
         return Results.BadRequest(new { message = "規格回退必須填寫文字說明才能執行。" });
+    var badRbNote = NoteTooLong(body.note, "回退說明");
+    if (badRbNote != null) return Results.BadRequest(new { message = badRbNote });
 
     using var conn = new SqlConnection(connectionString);
     await conn.OpenAsync();
@@ -3048,6 +3289,10 @@ app.MapPost("/api/requirements/{id}/rollback", async (int id, RollbackRequest bo
 app.MapPost("/api/requirements/{id}/undo-done", async (int id,
     [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] UndoDoneRequest? body) =>
 {
+    // 長度（第 82 批）：撤銷說明是選填，但填了就會進 History.Note，一樣要先擋
+    var badUndoNote = NoteTooLong(body?.note, "撤銷說明");
+    if (badUndoNote != null) return Results.BadRequest(new { message = badUndoNote });
+
     using var conn = new SqlConnection(connectionString);
     await conn.OpenAsync();
     using var tx = conn.BeginTransaction();
@@ -3400,7 +3645,7 @@ async Task<(string? Error, bool Uncertain, string Detail)> SendNotifyMailAsync(
     }
     catch (Exception pex)
     {
-        Console.WriteLine($"Notify mail probe failed ({mailHost}:{mailPort}): {pex}");
+        AppDiag.Error("notify-probe", $"連線探測失敗（{mailHost}:{mailPort}）", pex);
         var psock = pex as System.Net.Sockets.SocketException ?? pex.InnerException as System.Net.Sockets.SocketException;
         // TimeoutException = 我們自己的逾時；那和「被防火牆丟包」在現象上是同一件事
         var reason = pex is TimeoutException
@@ -3460,7 +3705,7 @@ async Task<(string? Error, bool Uncertain, string Detail)> SendNotifyMailAsync(
     //    畫面用彈窗、而且措辭不可以是「已寄出」。
     catch (OperationCanceledException)
     {
-        Console.WriteLine($"Notify mail send timed out after {mailTimeout} ms ({mailHost}:{mailPort})");
+        AppDiag.Error("notify-smtp", $"寄信逾時 {mailTimeout} ms（{mailHost}:{mailPort}）—— 未確認送出");
         return (null, true,
             $"已經連上 {mailHost}:{mailPort} 並開始傳送，但 {mailTimeout / 1000} 秒內沒有完成。\n"
           // ⚠️ 這是給使用者看的純文字彈窗，不要在這裡用 ** 之類的 markdown 記號 ——
@@ -3470,7 +3715,7 @@ async Task<(string? Error, bool Uncertain, string Detail)> SendNotifyMailAsync(
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"Notify mail send failed: {ex}");
+        AppDiag.Error("notify-smtp", $"寄信失敗（{mailHost}:{mailPort}）", ex);
         // 把 SMTP 伺服器實際回的話帶到畫面上 —— 「寄信失敗」四個字查不出任何東西
         return (ex.Message + (ex.InnerException != null ? "（" + ex.InnerException.Message + "）" : "")
              + "\n\n" + MailFailureHint(ex.InnerException as System.Net.Sockets.SocketException, false, ex as SmtpException)
@@ -3576,7 +3821,7 @@ async Task<(string? Error, bool Queued, int MailItemId, string Detail)> SendViaD
     }
     catch (SqlException ex)
     {
-        Console.WriteLine($"sp_send_dbmail failed: {ex}");
+        AppDiag.Error("notify-dbmail", "sp_send_dbmail 失敗", ex);
         // 這幾種是設定／權限問題，訊息要指得出該做什麼 —— 它們都不在程式這一側
         var hint =
             ex.Message.Contains("EXECUTE permission", StringComparison.OrdinalIgnoreCase)
@@ -3615,7 +3860,7 @@ async Task<(string? Error, bool Queued, int MailItemId, string Detail)> SendViaD
         }
         catch (SqlException ex)
         {
-            Console.WriteLine($"sysmail_allitems query failed: {ex}");
+            AppDiag.Error("notify-dbmail", $"查詢 sysmail_allitems 失敗（mailitem_id = {mailItemId}）—— 未確認送出", ex);
             return (null, true, mailItemId,
                 "已交給 Database Mail（mailitem_id = " + mailItemId + "），"
               + "但連線帳號沒有權限查詢送出狀態，無法確認是否真的寄出。\n"
@@ -3901,7 +4146,7 @@ app.MapPost("/api/requirements/{id}/notify-unset", async (int id, NotifyRequest?
     catch (Exception ex)
     {
         // 信已經寄出去了，這裡不可以回失敗 —— 使用者會再按一次而收件者收到第二封
-        Console.WriteLine($"Notify audit insert failed (mail was already sent): {ex}");
+        AppDiag.Error("notify-audit", "信已經寄出去了，但稽核列沒寫進去 —— 這個階段之後會被判成「還沒通知」而再問一次", ex, actor, id);
     }
 
     // ⚠️ 「已排入佇列」不可以講成「已寄出」（第 41 批）。Database Mail 是非同步的，
@@ -4016,8 +4261,8 @@ app.MapGet("/api/export", async () =>
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"Export failed: {ex}");
-        return Results.Problem("匯出失敗：" + ex.Message
+        AppDiag.Error("export", "匯出 Excel 失敗", ex);
+        return ServerError("匯出失敗：" + ex.Message
             + "（若訊息是 Invalid column name，代表 DB_table.md 裡的累加腳本還沒全部執行）");
     }
 });
@@ -4029,7 +4274,7 @@ app.MapPost("/api/import", async (HttpContext context) =>
     // 見上方 IsCrossSiteRequest() 的說明。
     if (IsCrossSiteRequest(context))
     {
-        Console.WriteLine($"Import rejected: cross-site request. Origin={context.Request.Headers["Origin"]}, "
+        AppDiag.Error("import", $"匯入被跨站防護拒絕。Origin={context.Request.Headers["Origin"]}, "
                         + $"Sec-Fetch-Site={context.Request.Headers["Sec-Fetch-Site"]}");
         return Results.Json(new
         {
@@ -4058,7 +4303,7 @@ app.MapPost("/api/import", async (HttpContext context) =>
     }
     catch (Exception ex)
     {
-        Console.WriteLine($"Import open failed: {ex}");
+        AppDiag.Error("import", "匯入的檔案讀不出來（可能不是 .xlsx 或已損毀）", ex);
         return Results.BadRequest(new
         {
             message = "這個檔案讀不出來，可能不是 .xlsx 格式或檔案已損毀。資料庫沒有任何變動。原因：" + ex.Message
@@ -4233,9 +4478,20 @@ app.MapPost("/api/import", async (HttpContext context) =>
                     + "匯入已中止，資料庫沒有任何變動。"
         });
 
-    // 2. 先掃一遍算出「真正有資料的列」與重複的 NID
+    // 2. 先掃一遍算出「真正有資料的列」、重複的 NID，以及超過欄位長度的格子（第 82 批）
     var preNid = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+    var preLong = new List<string>();
     int dataRows = 0;
+    // 匯入欄位的長度上限。⚠️ 與 textLimits（POST／PUT 那一份）是同一組數字、同一份 DB 定義；
+    //    這裡的 key 是匯入的 field 名稱。現況描述（currentStatus）是 NVARCHAR(MAX)，不列
+    var importLimits = new (string Field, string Label, int Max)[]
+    {
+        ("nid", "NID", 50), ("yearMonth", "YearMonth", 50), ("status", "OverallStatus", 50),
+        ("mainCat", "MainCat", 100), ("subCat", "SubCat", 100),
+        ("remark", "Remark", 500), ("notesLink", "NotesLink", 500),
+        ("emsOwner", "EMS", 50), ("msdOwner", "MSD", 50),
+        ("mpSaving", "MP Saving", 50), ("msdConfirmNote", "2_MSDNote", 500),
+    };
     for (int rowNum = startRow; rowNum <= lastRow; rowNum++)
     {
         var row = worksheet.Row(rowNum);
@@ -4247,6 +4503,12 @@ app.MapPost("/api/import", async (HttpContext context) =>
         dataRows++;
         var key = n.Trim();
         if (key != "") preNid[key] = preNid.TryGetValue(key, out var seen) ? seen + 1 : 1;
+        foreach (var lim in importLimits)
+        {
+            var len = GetVal(row, lim.Field).Trim().Length;
+            if (len > lim.Max)
+                preLong.Add($"第 {rowNum} 列（NID {(key == "" ? "空白" : key)}）的 {lim.Label}：上限 {lim.Max} 字，目前 {len} 字");
+        }
     }
 
     // 3. 一列資料都讀不出來 —— 表頭對到了但欄位全是空的，多半是選錯工作表或檔案是空殼。
@@ -4272,6 +4534,21 @@ app.MapPost("/api/import", async (HttpContext context) =>
                     + "。\n\nNID 必須是唯一值（資料庫已建立唯一索引），請先在 Excel 裡修正再匯入。\n\n"
                     + "匯入已中止，資料庫沒有任何變動。",
             duplicateNids = preDup
+        });
+
+    // 5. 有格子超過欄位長度（第 82 批，2026-09-25）。
+    //    ⚠️ 交易本來就會回捲，所以少了這一道**不會**匯進壞資料 —— 但使用者拿到的是
+    //    「匯入失敗…原因：字串或二進位資料將會截斷」這種 SQL 訊息，**不知道是哪一列、哪一欄**。
+    //    64 列 × 22 欄要自己一格一格找。這一道的價值全在訊息上。
+    //    ⚠️ 排在 BeginTransaction 之前與前面四道同一個理由（回捲不了「成功地匯入一份錯的檔案」）。
+    if (preLong.Count > 0)
+        return Results.BadRequest(new
+        {
+            message = "以下格子超過欄位長度上限：\n"
+                    + string.Join("\n", preLong.Take(20).Select(x => "• " + x))
+                    + (preLong.Count > 20 ? $"\n…另外還有 {preLong.Count - 20} 處" : "")
+                    + "\n\n請在 Excel 裡縮短之後再匯入。\n\n匯入已中止，資料庫沒有任何變動。",
+            tooLong = preLong.ToArray()
         });
 
     // ─── 清空 + 重灌，整批包在一個交易裡 ───
@@ -4378,6 +4655,13 @@ app.MapPost("/api/import", async (HttpContext context) =>
         // 匯入進來的日期一律記成 init，讓每一筆都有起始基準可以對照。
         // init 不算異動，所以不會讓資料列冒出 ⚠N 徽章
         await WriteAuditAsync(conn, importedId, req, null, "Excel 匯入", "import", tx);
+        // 建立紀錄（第 85 批）。⚠️ 匯入也要寫：少了它，匯入進來的那 60 幾筆在明細上會是
+        // 「建立者 -」，而畫面上分不出「沒有人建過」與「這功能是後來才有的」——
+        // 「由 Excel 匯入建立」本身就是答案（這一支拿不到 Windows 身分，它是匿名的
+        // multipart 端點，所以掛的是與 init 同一個 `Excel 匯入`）。
+        // ⚠️ 匯入會先 TRUNCATE 稽核表，所以這一列不會逐次累積
+        await InsertHistoryAsync(conn, importedId, req.nid, "stage", "建立", null,
+                                 "由 Excel 匯入建立", "Excel 匯入", "import", (null, null, null), (null, null, null), tx);
         imported++;
     }
 
@@ -4389,7 +4673,7 @@ app.MapPost("/api/import", async (HttpContext context) =>
         // 那種情況 SQL Server 會自行回捲未提交的交易，吞掉即可 —— 重點是不要用
         // 這個次要例外蓋掉真正的失敗原因
         try { tx.Rollback(); } catch { /* 連線已斷，交易由 SQL Server 自行回捲 */ }
-        Console.WriteLine($"Import failed: {ex}");
+        AppDiag.Error("import", "匯入失敗，已回捲到匯入前的狀態", ex);
         return Results.BadRequest(new
         {
             message = "匯入失敗，資料庫已回復到匯入前的狀態（現有資料沒有被清掉）。原因：" + ex.Message
@@ -4590,16 +4874,19 @@ static async Task InsertHistoryAsync(SqlConnection conn, int reqId, string? nid,
     string changeType, string? category, string? note, string? changedBy, string changedBySource,
     (string? start, string? end, string? confirm) oldD,
     (string? start, string? end, string? confirm) newD,
-    SqlTransaction? tx = null)
+    SqlTransaction? tx = null,
+    // 非日期欄位的稽核（第 84 批）。三個都是選填 —— 日期類的稽核列一律不帶，
+    // 既有的 265 列與所有呼叫端都不受影響
+    string? fieldKey = null, string? oldValue = null, string? newValue = null)
 {
     using var cmd = new SqlCommand(@"
         INSERT INTO dbo.Controltable_History
             (RequirementId, NID, Phase, ChangeType, ReasonCategory,
              OldStart, OldEnd, OldConfirm, NewStart, NewEnd, NewConfirm,
-             Note, ChangedBy, ChangedBySource)
+             Note, ChangedBy, ChangedBySource, FieldKey, OldValue, NewValue)
         VALUES (@Rid, @NID, @Phase, @Type, @Cat,
                 @OS, @OE, @OC, @NS, @NE, @NC,
-                @Note, @By, @Src)", conn, tx);
+                @Note, @By, @Src, @FKey, @OVal, @NVal)", conn, tx);
     cmd.Parameters.AddWithValue("@Rid", reqId);
     AddText(cmd, "@NID", nid);
     AddText(cmd, "@Phase", phase);
@@ -4613,12 +4900,66 @@ static async Task InsertHistoryAsync(SqlConnection conn, int reqId, string? nid,
     AddDate(cmd, "@NC", newD.confirm);
     // Note 欄是 NVARCHAR(1000)。使用者的說明文字加上系統補的註記有機會超過，
     // 超長時 SQL Server 直接拋「String or binary data would be truncated」而整筆寫不進去 ——
-    // 稽核列寫不進去比說明被截短嚴重得多，所以這裡先截
+    // 稽核列寫不進去比說明被截短嚴重得多，所以這裡先截。
+    // ⚠️ 第 82 批起這一道是**保險，不再是第一道**：使用者打的理由已經先被 FieldLimits.NoteMax（500）
+    //    的 400 擋在外面（NoteTooLong / TooLongNotes），而系統自己組的前綴遠不到 500 ——
+    //    所以正常情況下這裡永遠不會真的切到字。**兩道都要留**：這一道保護的是
+    //    「日後有人把前綴寫長了」那種沒人會預料到的組合，切掉幾個字總比稽核列整筆寫不進去好。
     if (note != null && note.Length > 1000) note = note[..997] + "...";
     AddText(cmd, "@Note", note);
     AddText(cmd, "@By", changedBy);
     AddText(cmd, "@Src", changedBySource);
+    // ⚠️ 這三欄**刻意不截斷**（OldValue / NewValue 是 NVARCHAR(MAX)）——
+    //    現況描述沒有字數上限，截了就是把事實記錯，而這張表的用途正是「事實」
+    AddText(cmd, "@FKey", fieldKey);
+    AddText(cmd, "@OVal", oldValue);
+    AddText(cmd, "@NVal", newValue);
     await cmd.ExecuteNonQueryAsync();
+}
+
+// ─── 非日期欄位的稽核（第 84 批，2026-09-28）───
+// ⚠️⚠️ 在此之前 WriteAuditAsync() 只掃四個階段的日期，另外只有手動改 StatusID / Status 會寫
+//    一筆 `手動調整` —— 底下這 11 欄改掉之後**全系統一列紀錄都不會留**，只有 UpdatedAt 會動。
+//    這與 memory.md 第 1 節寫的主管第二核心需求正面矛盾（「規格填完後是否被異動過，
+//    有異動就要留下可追蹤的紀錄」），而 Spec 的內容本體（Main Cat／Sub Cat／需求補充／
+//    現況描述）剛好全在沒紀錄的那一邊。實測：62 筆裡 52 筆有現況描述。
+// ⚠️ 負責人尤其明顯：第 43 批的 phaseNotifiedEntry() 特別做了「收件者換人就重問」——
+//    系統自己知道換人是件大事，卻查不到是誰在什麼時候換的。
+//
+// ⚠️ **Label 是鏡像**：app.jsx 的 FIELD_AUDIT_LABELS 是同一份，改了要兩邊一起改
+//    （畫面上印的是這裡存的 FieldKey → 那邊查出來的字）。
+// ⚠️ `currentStatus` 是 NVARCHAR(MAX)，所以前後值存進 OldValue / NewValue（也是 MAX），
+//    **不塞進 Note（NVARCHAR(1000)）** —— 塞進去必然要截斷，而第 82 批立的界線是
+//    「不可以靜靜截斷」。
+// ⚠️ 這裡**不含** status / stageCode：那兩欄早就有 `手動調整`（第 21 批），
+//    重複記一次會讓同一次操作在軌跡上出現兩張卡。
+// ⚠️ 陣列本身放在檔尾的 AuditFields 類別（top-level statements 裡不能宣告 static readonly 欄位，
+//    與 FieldLimits 同一個理由）。
+
+// 逐欄比對並寫入 `欄位異動`。
+// ⚠️ 只在 PUT（oldReq != null）呼叫 —— 新增與匯入整筆都是新的，那不是「修改」
+//    （與 init 不算異動同一條界線，否則每建一筆需求就會多出 11 列稽核）。
+// ⚠️ 比較前一律 Trim：前後只差一個空白不是使用者做的事，記下來只會讓軌跡變吵。
+//    null 與空字串視為同一件事（DB 兩種都存在）。
+// ⚠️ 寫入順序＝ AuditFields 的宣告順序，而 /api/history 是
+//    `ORDER BY RequirementId, ChangedAt, Id` —— 同一秒內只有 Id 分得出先後，
+//    所以這個順序就是畫面上的順序，動它會改變軌跡的呈現。
+// ⚠️ 這幾列**不進 isDateChange**、也不動三個計數欄：沒有任何日期被改動，
+//    計進 ⚠N 會讓「時程異動」這個數字失去意義（第 20 批立的界線）。
+// ⚠️ 不強制填理由：第 14 批定調「只有 End 真的被改掉才強制」，這裡照舊。
+static async Task WriteFieldAuditAsync(SqlConnection conn, int reqId, Requirement req, Requirement oldReq,
+                                       string? changedBy, string changedBySource, SqlTransaction? tx)
+{
+    var empty = ((string?)null, (string?)null, (string?)null);
+    foreach (var f in AuditFields.All)
+    {
+        var before = (f.Get(oldReq) ?? "").Trim();
+        var after  = (f.Get(req)    ?? "").Trim();
+        if (before == after) continue;
+        await InsertHistoryAsync(conn, reqId, req.nid, "field", "欄位異動", null,
+                                 null, changedBy, changedBySource, empty, empty, tx,
+                                 f.Key, before, after);
+    }
 }
 
 // 比對新舊四個階段的日期，逐階段寫入稽核紀錄。
@@ -4854,7 +5195,7 @@ public class Requirement
 // POST /api/requirements/{id}/done 的請求內容
 public class DoneRequest
 {
-    // spec / confirm / msd / uat
+    // spec / confirm / msd / uat / stage（手動調整・刪除）/ field（欄位異動，第 84 批）
     public string? phase { get; set; }
     // 實際完成日（YYYY-MM-DD）。第 58 批新增 —— 在此之前完成日寫死成伺服器的今天，
     // 隔幾天才回平台補登就會被判成延期（見 /done 端點裡的說明）。
@@ -4962,4 +5303,180 @@ public class HistoryEntry
     // windows / simulated / import / unknown（import 由 Excel 匯入寫入，見 DB_table.md）
     public string? changedBySource { get; set; }
     public string? changedAt { get; set; }
+    // ─── 非日期欄位的稽核（第 84 批）───
+    // 只有 ChangeType = '欄位異動' 的列會帶。fieldKey 對應 AuditFields 的 Key，
+    // 前端用 FIELD_AUDIT_LABELS（鏡像）查出中文欄位名。
+    // ⚠️ 前後值刻意不截斷（DB 是 NVARCHAR(MAX)）—— 現況描述沒有字數上限，
+    //    而這張表的用途正是「事實」。要截的是**顯示**，不是紀錄。
+    public string? fieldKey { get; set; }
+    public string? oldValue { get; set; }
+    public string? newValue { get; set; }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 後端錯誤日誌（第 82 批，2026-09-25）
+// ════════════════════════════════════════════════════════════════════════════
+// 為什麼會有這個東西：`Console.WriteLine($"... failed: {ex}")` 在**開發機上**很好用，
+// 但發佈到 IIS 之後它等於不存在 —— SDK 產生的 web.config 預設 stdoutLogEnabled="false"，
+// 而這個專案沒有任何檔案或 DB 日誌。使用者回報「按了沒反應」時現場什麼都查不到。
+// 現在兩條路一起走：
+//   1. web.config 打開 stdout log（見專案根目錄的 web.config）——「DB 自己掛掉」時唯一還活著的那條
+//   2. 這裡把 Error 級別的紀錄寫進 dbo.AppLog —— 他本來就在用 SSMS，這是最容易查的地方
+//
+// ⚠️⚠️ **日誌不可以反過來變成故障源**，所以這一整支的每一個環節都是 best-effort：
+//   - 寫不進去（資料表不存在／權限不足／DB 掛了）一律**靜靜跳過**，絕不往上拋。
+//     因此 `20_add_applog.sql` 沒有跑，App 的行為與加這段之前**完全一樣**。
+//   - 用**自己的連線**，不吃呼叫端那個正在回捲的交易（否則錯誤紀錄會跟著被回捲掉）。
+//   - 連線字串強制短逾時（Connect Timeout=3）＋ SqlCommand 5 秒 —— 錯誤路徑不可以再卡住請求。
+//   - **斷路器**：寫失敗之後 60 秒內不再嘗試。DB 掛掉時每個請求都會產生錯誤紀錄，
+//     少了這道就會變成「每一筆請求都再多等 3 秒去寫一個一定寫不進去的日誌」。
+//   - **重入防護**：從 DB 寫入路徑裡冒出來的 log 不可以再觸發一次 DB 寫入。
+public static class AppDiag
+{
+    static string? _conn;
+    static long _muteUntilTicks;                 // 斷路器：這個時間點之前不再嘗試寫 DB
+    [ThreadStatic] static bool _inWrite;         // 重入防護
+
+    public static void Init(string? connectionString)
+    {
+        if (string.IsNullOrWhiteSpace(connectionString)) return;
+        // 附加短逾時。已經寫了 Connect Timeout 的就不動它（使用者自己設的值優先）
+        _conn = connectionString.Contains("Connect Timeout", StringComparison.OrdinalIgnoreCase)
+             || connectionString.Contains("Connection Timeout", StringComparison.OrdinalIgnoreCase)
+            ? connectionString
+            : connectionString.TrimEnd(';') + ";Connect Timeout=3;";
+    }
+
+    // 程式裡明確要記一筆的入口（取代原本 13 處的 Console.WriteLine）。
+    // source 是「哪一支」，日後在 SSMS 裡就是 WHERE Source = '…' 的那個值。
+    public static void Error(string source, string message, Exception? ex = null,
+                             string? actor = null, int? requirementId = null)
+    {
+        // stdout 那條一定要留著 —— DB 掛掉時它是唯一還看得到東西的地方
+        Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {source}: {message}"
+                        + (ex != null ? Environment.NewLine + ex : ""));
+        Write(source, message, ex?.ToString(), actor, requirementId);
+    }
+
+    static void Write(string source, string? message, string? detail, string? actor, int? requirementId)
+    {
+        if (_conn == null || _inWrite) return;
+        if (Volatile.Read(ref _muteUntilTicks) > DateTime.UtcNow.Ticks) return;   // 斷路器開著
+        _inWrite = true;
+        try
+        {
+            using var conn = new SqlConnection(_conn);
+            conn.Open();
+            using var cmd = new SqlCommand(
+                "INSERT INTO dbo.AppLog (Source, Message, Detail, Actor, RequirementId) "
+              + "VALUES (@S, @M, @D, @A, @R)", conn) { CommandTimeout = 5 };
+            cmd.Parameters.AddWithValue("@S", Cut(source, 100) ?? "(unknown)");
+            cmd.Parameters.AddWithValue("@M", (object?)Cut(message, 400) ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@D", (object?)detail ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@A", (object?)Cut(actor, 100) ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("@R", (object?)requirementId ?? DBNull.Value);
+            cmd.ExecuteNonQuery();
+        }
+        catch (Exception logEx)
+        {
+            // ⚠️ 這裡**只能**寫 Console，不可以再呼叫 Error()（會無限遞迴）
+            Volatile.Write(ref _muteUntilTicks, DateTime.UtcNow.AddSeconds(60).Ticks);
+            Console.WriteLine($"[AppDiag] 寫入 dbo.AppLog 失敗，60 秒內不再嘗試："
+                            + logEx.Message + "（若訊息是 Invalid object name，代表 20_add_applog.sql 還沒執行）");
+        }
+        finally { _inWrite = false; }
+    }
+
+    static string? Cut(string? s, int max)
+        => string.IsNullOrWhiteSpace(s) ? null : (s!.Length > max ? s[..max] : s);
+
+    // ─── 把框架自己記的 Error 也收進來 ───────────────────────────────────
+    // ⚠️⚠️ 這是這一整段**最有價值**的部分：它收的是「沒有人寫 catch」的那些失敗。
+    //    實測起因就是一個沒人預期的例外 —— 需求補充打超過 500 字時 SQL Server 丟
+    //    「字串或二進位資料將會截斷」，那條路上沒有任何一行 Console.WriteLine，
+    //    在 IIS 上是一個完全查不到原因的 500。
+    // ⚠️ 只收 Error 與 Critical。Warning 在 ASP.NET Core 裡很吵（連線被客戶端中斷等），
+    //    收進來會把真正的錯誤淹掉。
+    public sealed class DbLoggerProvider : ILoggerProvider
+    {
+        public ILogger CreateLogger(string categoryName) => new DbLogger(categoryName);
+        public void Dispose() { }
+
+        sealed class DbLogger : ILogger
+        {
+            readonly string _category;
+            public DbLogger(string category) => _category = category;
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+            public bool IsEnabled(LogLevel level) => level >= LogLevel.Error;
+            public void Log<TState>(LogLevel level, EventId eventId, TState state, Exception? ex,
+                                    Func<TState, Exception?, string> formatter)
+            {
+                if (!IsEnabled(level)) return;
+                // 短名當 Source：Microsoft.AspNetCore.Diagnostics.X → X（Source 只有 100 字）
+                var dot = _category.LastIndexOf('.');
+                var src = dot >= 0 && dot < _category.Length - 1 ? _category[(dot + 1)..] : _category;
+                Write(src, formatter(state, ex), ex?.ToString(), null, null);
+            }
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 非日期欄位的稽核清單（第 84 批，2026-09-28）
+// ════════════════════════════════════════════════════════════════════════════
+// 說明見上方 WriteFieldAuditAsync()。⚠️ Label 與 app.jsx 的 FIELD_AUDIT_LABELS 是鏡像。
+public static class AuditFields
+{
+    public static readonly (string Key, string Label, Func<Requirement, string?> Get)[] All =
+    {
+        ("nid",             "NID",            r => r.nid),
+        ("regDate",         "註冊日期",        r => r.regDate),
+        ("mainCat",         "Main Cat",       r => r.mainCat),
+        ("subCat",          "Sub Cat",        r => r.subCat),
+        ("emsOwner",        "EMS 負責人",      r => r.emsOwner),
+        ("msdOwner",        "MSD 負責人",      r => r.msdOwner),
+        ("mpSaving",        "MP Saving",      r => r.mpSaving),
+        ("remark",          "需求補充",        r => r.remark),
+        ("notesLink",       "Notes Link",     r => r.notesLink),
+        ("currentStatus",   "現況描述",        r => r.currentStatus),
+        ("msd.confirmNote", "Next Check 說明", r => r.msd?.confirmNote),
+    };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 欄位長度上限（第 82 批，2026-09-25）
+// ════════════════════════════════════════════════════════════════════════════
+// ⚠️⚠️ 這些數字**必須與 DB 的欄位定義一致**（見 DB_table.md）。動 DB 欄位長度時要一起改，
+//      而 app.jsx 的 FIELD_MAX 是這一份的鏡像（輸入框的 maxLength ＋ validateEdit 就地標紅），
+//      **改了要兩邊一起改**。
+// ⚠️ 為什麼會有這個東西：在此之前前後端都沒有任何長度檢查，超過上限時 SQL Server 直接丟
+//    「字串或二進位資料將會截斷」→ 沒有人接 → HTTP 500。實測需求補充打 600 字就會踩到，
+//    而正式環境（Production）連那句 SQL 訊息都不會回，畫面上只剩「儲存失敗：HTTP 500」。
+// ⚠️ 現況描述（CurrentStatus）是 NVARCHAR(MAX)，**刻意不列**，不要順手補一個上限。
+public static class FieldLimits
+{
+    public static readonly (Func<Requirement, string?> Get, string Label, int Max)[] Text =
+    {
+        (r => r.nid,              "NID",                  50),
+        // ⚠️ 年月正常是由 RegDate 反推的（"yyyy/MM"），走不到這一道。但 RegDate 空的時候
+        //    寫入的是 FormatYearMonth(req.yearMonth)，而那一支「認不出來就原樣留著」——
+        //    直接打 API 送一段長字串就是 HTTP 500（實測過）。第 82 批補上
+        (r => r.yearMonth,        "年月 (YearMonth)",      50),
+        (r => r.mainCat,          "專案名稱 (MainCat)",   100),
+        (r => r.subCat,           "子項目分類 (SubCat)",  100),
+        (r => r.emsOwner,         "EMS 負責人",            50),
+        (r => r.msdOwner,         "MSD 負責人",            50),
+        (r => r.remark,           "需求補充 (Remark)",    500),
+        (r => r.notesLink,        "Notes Link",           500),
+        (r => r.mpSaving,         "MP Saving",             50),
+        (r => r.msd?.confirmNote, "Next Check 說明",      500),
+    };
+
+    // 使用者打的理由／說明的上限。
+    // ⚠️ DB 的 dbo.Controltable_History.Note 是 NVARCHAR(1000)，這裡刻意只開一半 ——
+    //    那一欄還要裝系統自己組的前綴（「此階段已於 X 標記完成（完成日 Y）…」、
+    //    回退時「一併清除實際完成日：…」等等）。兩邊加起來才是真正寫進去的字串。
+    // ⚠️ InsertHistoryAsync() 另有一道「夾到 1000」的保險。**兩道都要留**：
+    //    有這個 400 在前面，那道夾永遠不會真的切到使用者打的字（在此之前它會，而且沒有出聲）。
+    public const int NoteMax = 500;
 }

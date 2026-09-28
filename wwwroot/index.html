@@ -4,9 +4,22 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MSD 需求管控表</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Noto+Sans+TC:wght@400;500;600;700;900&display=swap" rel="stylesheet">
-    <link href="__BASE__app.css?v=20260922003" rel="stylesheet">
+    <!-- ═══ 字型走系統字，⚠️ 不要再加回 Google Fonts ═══
+         第 83 批（2026-09-28）移除了這兩行：
+           <link rel="preconnect" href="https://fonts.googleapis.com">
+           <link href="https://fonts.googleapis.com/css2?family=Inter:…&family=Noto+Sans+TC:…&display=swap" rel="stylesheet">
+         理由與第 82 批把 React 從 unpkg 搬進 vendor/ **完全相同**，而且這一支更嚴重：
+         1. ⚠️⚠️ `<link rel="stylesheet">` 是 **render-blocking** 的。`display=swap` 只管
+            「字型檔還沒到的時候先用備用字」，管不到這支 CSS 自己 —— 連不到 CDN 而且是
+            「封包被丟掉」那種（IT 封站、代理掛掉）時，瀏覽器要等自己的網路逾時才畫第一格，
+            使用者看到的就是一片空白。這個 App 跑在工廠內網，對外網路不是它該依賴的東西。
+         2. 實測那支 CSS 是 **166,952 bytes / 230 ms**，比 react-dom（131,835）還大
+            （它是 567 個 @font-face 宣告，Noto Sans TC 被切成上百個 unicode-range 子集），
+            之後還要再去 fonts.gstatic.com 抓實際用到的 96 個子集檔。
+         3. React 搬下來之後，這是全站**最後一個對外相依**。
+         ⚠️ docs/使用者手冊.html 一直都是這樣做的（只列本機字型、沒有任何 CDN），
+            這次只是讓 App 跟它一致。字型堆疊定義在 ClientApp/input.css 的 body。 -->
+    <link href="__BASE__app.css?v=20260928003" rel="stylesheet">
 </head>
 <body>
     <!-- __BASE__ 由 Program.cs 的中介軟體在回傳 index.html 時換成實際的 PathBase：
@@ -16,11 +29,43 @@
     <div id="root"></div>
     <script>window.addEventListener('error',function(e){var l=document.getElementById('error-log');if(!l)return;l.style.display='block';l.innerText+=e.message+'\n'+e.filename+':'+e.lineno+'\n'})</script>
 
-    <!-- React 18 CDN -->
-    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
-    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <!-- ═══ React 18.3.1（本機檔案，⚠️ 不要改回 CDN）═══
+         第 82 批（2026-09-25）把這兩支從 https://unpkg.com/react@18/umd/react.development.js
+         搬進 wwwroot/vendor/。三個理由，第一個最重要：
+         1. ⚠️⚠️ **CDN 是全站單點失效**。unpkg 連不到（IT 封 CDN、代理掛掉、unpkg 自己出過幾次
+            事故）→ app.js 第一行 `const { useState … } = React` 立刻 ReferenceError →
+            整個網頁一片空白，而畫面上唯一的線索是底下那個 error-log 印一句英文
+            "React is not defined"。這個 App 在工廠內網跑，對外網路不是它該依賴的東西。
+         2. **development build 是 1.19 MB**（react 109,931 B + react-dom 1,080,227 B，實測）。
+            production.min 兩支合起來只有 142,586 B —— 少 1.05 MB，而且沒有 dev build 那一整套
+            執行期檢查（這張表是 62 列 × 16 欄）。
+         3. 舊寫法的 `react@18` 會解析成**當下最新的 18.x**，等於版本沒鎖。現在檔名就帶版本，
+            要升版是改檔名這種看得見的動作。
+         ⚠️ 檔名自帶版本 = 自己就是 cache buster，所以這兩支**刻意不帶 ?v=**（內容永遠不會變；
+            要換版本就是換檔名）。⚠️ 走 __BASE__，子路徑部署才對得到。
+         ⚠️ 這兩個檔要跟著 dotnet publish 出去 —— 它們在 wwwroot 底下，預設就會帶，不必改 csproj。 -->
+    <script src="__BASE__vendor/react-18.3.1.production.min.js"></script>
+    <script src="__BASE__vendor/react-dom-18.3.1.production.min.js"></script>
+
+    <!-- React 真的沒載進來時，講一句看得懂的話（第 82 批）。
+         在此之前這種情況只會留下一句英文的 "React is not defined"，使用者不知道發生什麼事、
+         也不知道該找誰 —— 而這是整個網頁唯一會一片空白的失敗。 -->
+    <script>
+    (function () {
+        if (window.React && window.ReactDOM) return;
+        var l = document.getElementById('error-log');
+        if (!l) return;
+        l.style.cssText = 'display:block;margin:24px auto;max-width:640px;padding:20px 24px;'
+            + 'border:1px solid #b91c1c;border-radius:12px;background:#fff;color:#1a1a1a;'
+            + 'font:14px/1.8 "Noto Sans TC",system-ui,sans-serif;white-space:pre-wrap';
+        l.innerText = '網頁的核心程式沒有載入成功，畫面無法顯示。\n\n'
+            + '這不是資料的問題，資料庫沒有任何變動。\n'
+            + '請先重新整理一次；若仍然一樣，請把這個畫面截圖給系統管理員，'
+            + '並告知「vendor/react-18.3.1.production.min.js 載不進來」。\n\n';
+    })();
+    </script>
 
     <!-- Compiled App Logic -->
-    <script src="__BASE__app.js?v=20260922003"></script>
+    <script src="__BASE__app.js?v=20260928003"></script>
 </body>
 </html>

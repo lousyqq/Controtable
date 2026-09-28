@@ -27,6 +27,12 @@ node_modules/
 # 連線字串等等。appsettings.json 本身要追蹤，只忽略個人覆寫檔
 appsettings.*.local.json
 
+# ─── IIS 的 stdout log（第 82 批，2026-09-25）───
+# web.config 的 stdoutLogEnabled="true" 會把後端輸出寫到 logs\stdout_<pid>_<時間>.log。
+# ⚠️ 資料夾本身要留著（logs/.gitkeep）—— 它不存在時 ANCM 是**靜靜不產生** log 的
+logs/*
+!logs/.gitkeep
+
 # ─── 暫存與作業系統產生的檔案 ───
 # ._xxx 是在 macOS 上開過的 Office 檔留下的 AppleDouble 資源分支
 ._*
