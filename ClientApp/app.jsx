@@ -1359,6 +1359,102 @@ const { useState, useMemo, Fragment, useEffect } = React;
             </button>
         );
 
+        // ═══ 「現在輪到這一階段」的標記（第 87 批，2026-09-29 使用者要求）═══
+        // 使用者原話：「我點選 NID:35 的編輯，目前需要決定是否已完成的人是該帳號人員…
+        // 可以特別標記讓他知道目前要填寫已完成 or 改日期（目前版面這邊提示好像不清楚）」。
+        //
+        // ⚠️ 在此之前畫面上**只有顏色**在講這件事：第 86 批讓目前這一階段是唯一展開的那一個，
+        //    但四個階段的標題長得一樣、展開與收合的差別在不捲到底時看不出來，而那一行
+        //    「🔓 已鎖定，點此修改」＋「標記完成…」是**每一個已經壓過日期的階段都有**的。
+        //    使用者要的答案（「現在該我做什麼」）沒有任何一個地方用字寫出來。
+        //
+        // ⚠️⚠️ 這一段只講**兩個動作**，不可以再長：
+        //    已經做完了 → 標記完成…／還沒做完、日期要改 → 解鎖改 End。
+        //    （這正是 CLAUDE.md 第 86 批引的那句「EMS 人員完全不懂網頁這些功能操作」——
+        //      把四種可能性都列出來就等於沒有講。）
+        // ⚠️ 用 indigo（`--brand`，全域的「要你做事」色）不可以用 teal／`✓`（第 59 批）：
+        //    這是還沒發生的動作，不是已經發生的結果。只有「還沒壓日期」那一種走警示色 ——
+        //    它與資料列上那顆紅色的「⚠ 未壓日期」是同一件事，兩邊顏色要對得起來。
+        //
+        // ═══ 第 88 批（2026-09-29 使用者要求）：把**說明換成按鈕** ═══
+        // 使用者附圖：「目前這個版面好像有點複雜，有更簡單的 UX 設計嗎?」。
+        // 第 87 批這一段是**四行說明**，而它們在講的那兩顆鈕就在正上方的標題列裡 ——
+        // 動作與說明分家，說明還得寫「按**上面的**…」把眼睛送回去，長度是按鈕的十倍。
+        // 這一批把那兩顆鈕**搬進這個框**，說明整段拿掉：問句的正下方就是答案。
+        // ⚠️⚠️ 兩顆鈕一律沿用原本的元件與**原本的字**（`DoneButton`「標記完成…」／
+        //    `UnlockButton`「已鎖定，點此修改」）。第 59 批為了那顆鈕的名字改過 app.jsx 12 處
+        //    ＋手冊 6 處，在這裡另取一個名字（「已經完成了」之類）就是同一個概念兩組字（第 37 批）；
+        //    也因此**不可以順手補回 `✓`**（第 59 批：`✓` 與 teal 只留給已經發生的結果）。
+        // ⚠️ 標題列那兩顆要同時藏起來（見 noticePhase）—— 兩邊都畫就是同一顆鈕出現兩次。
+        // doneSlot   = 「標記完成…」那顆，按不了時是 donePanel 用的同一組灰字提示（prereq／order）
+        // unlockSlot = 「已鎖定，點此修改」那顆；已經解鎖或本來就沒鎖時為 null，改印一句灰字
+        // onFill     = 還沒壓日期時那顆「填寫…」：需要的話先解鎖，再把游標送到下面的日期欄
+        const CurrentPhaseNotice = ({ endShort, endLabel, endValue, days, sideLabel, ownerName, isMe,
+                                      doneSlot, unlockSlot, onFill }) => {
+            const unset = !isDateVal(endValue);
+            const tone = unset
+                ? { c:'var(--tone-alert)', bg:'var(--tone-alert-bg)', b:'var(--tone-alert-border)' }
+                : { c:'var(--brand)',      bg:'var(--brand-soft)',    b:'var(--brand)' };
+            // 「還有幾天」只在有日期時講。⚠️ 0 要印「今天到期」不可以印「還有 0 天」
+            const when = (!unset && days !== null)
+                ? (days < 0 ? `已逾期 ${-days} 天` : days === 0 ? '今天到期' : `還有 ${days} 天`)
+                : '';
+            return (
+                <div className="mb-3 px-3 py-2 rounded-lg text-[11px] leading-relaxed"
+                     style={{color:tone.c, background:tone.bg, border:`1px solid ${tone.b}`}}>
+                    {/* 第一行＝事實：日期、還剩幾天、誰負責。⚠️「已逾期 N 天」升到第一行 ——
+                        第 87 批它夾在第二行的括號裡，而它是整個框裡最急的一句 */}
+                    <div className="flex items-center gap-2 flex-wrap">
+                        {unset ? (
+                            <span className="font-bold">⚠ 這一階段還沒有{endShort}</span>
+                        ) : (<>
+                            <span style={{color:'var(--text-secondary)'}}>{endShort}
+                                <b className="font-mono ml-1" style={{color:'var(--text-primary)'}}>{endValue}</b></span>
+                            {when && <span className="font-bold"
+                                           style={{color: days < 0 ? 'var(--tone-alert)' : tone.c}}>
+                                {days < 0 ? '⚠ ' : ''}{when}</span>}
+                        </>)}
+                        {ownerName && (
+                            <span className="ml-auto" style={{color:'var(--text-muted)'}}>
+                                {sideLabel} 負責人 {ownerName}{isMe ? '（就是你）' : ''}
+                            </span>
+                        )}
+                    </div>
+                    {/* 第二行＝動作本身。⚠️ 不要在這一行以外再加任何解說 —— 加回去就是第 87 批那個版面 */}
+                    <div className="mt-2 flex items-center gap-2 flex-wrap">
+                        {unset ? (<>
+                            <span className="font-bold" style={{color:'var(--text-primary)'}}>預計什麼時候完成？</span>
+                            <button type="button" onClick={onFill}
+                                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold border transition-colors"
+                                    style={{color:'var(--brand)', background:'var(--brand-soft)', borderColor:'var(--brand)'}}
+                                    title={`把游標移到下面的「${endLabel}」（鎖著的話順便解鎖）`}>
+                                填寫「{endLabel}」
+                            </button>
+                            <span style={{color:'var(--text-muted)'}}>
+                                空著的話這筆會一直標成「⚠ 未壓日期」；填好並儲存後這裡會出現「標記完成…」
+                            </span>
+                        </>) : (<>
+                            <span className="font-bold" style={{color:'var(--text-primary)'}}>完成了嗎？</span>
+                            {doneSlot}
+                            {doneSlot && <span style={{color:'var(--text-muted)'}}>晚幾天回來補登不會被算成延期</span>}
+                            <span style={{color:'var(--text-muted)'}}>｜</span>
+                            <span className="font-bold" style={{color:'var(--text-primary)'}}>要改日期？</span>
+                            {unlockSlot || <span style={{color:'var(--text-muted)'}}>下面的「{endLabel}」可以直接改</span>}
+                        </>)}
+                    </div>
+                </div>
+            );
+        };
+
+        // 收合起來時接在階段標題後面的同一顆標記（展開時也在）。
+        // ⚠️ 收合狀態也一定要看得到：使用者可以把它收起來，收起來之後畫面上
+        //    就再也沒有任何地方說「該做的是這一段」
+        const CurrentPhaseChip = () => (
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold flex-shrink-0"
+                  style={{color:'var(--brand)', background:'var(--brand-soft)', border:'1px solid var(--brand)'}}
+                  title="這筆需求的 StatusID 就停在這一階段 —— 現在要處理的是它">現在輪到</span>
+        );
+
         // 解鎖後改了日期時要填的「異動原因分類 + 文字說明」。
         // 兩者都會寫進 dbo.Controltable_History（ReasonCategory / Note）
         // ⚠️ 文字說明上限 NOTE_MAX（500，第 82 批）。這些字最後會接在系統組的前綴後面寫進
@@ -2072,6 +2168,21 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // 按過一次「儲存」之後才把驗證結果畫到欄位上（第 26 批）。
             // 一開視窗就滿江紅是在罵人 —— 新增時本來就每一欄都還沒填
             const [showSaveErrors, setShowSaveErrors] = useState(false);
+            // ─── 編輯視窗的收合（第 86 批，2026-09-29 使用者要求：「對 EMS 人員來說，
+            //     他們完全不懂網頁這些功能操作…只要有需求想請 MSD 配合就來新增需求」）───
+            // 一個視窗 20 幾個欄位、四個階段區塊，而任何一個人在任何一個時間點
+            // 真正要動的只有「現在這一階段」。三個旗標各收一塊：
+            //   openPhases  = 四個階段區塊（預設只展開「目前這一階段」，見 defaultOpenPhases）
+            //   advOpen     = StatusID／Status／🔄 規格回退（繞過機制的操作，一般人不該動）
+            //   addMoreOpen = 新增時的四個選填欄位
+            // ⚠️⚠️ 三塊都是**收合不是隱藏**：標題永遠看得到、收合時那一行要印出裡面的值
+            //      （日期／目前階段），而且一按就展開。刻意的限制沒有講出來，在使用者眼裡
+            //      就等於壞掉（第 57 批）—— 這裡更嚴重，收掉的是他可能真的要按的東西。
+            // ⚠️ 不寫 localStorage：這是「這一次打開這一筆」的狀態，不是偏好。
+            //    記起來會讓下一筆需求用上一筆的收合狀態開場，而每一筆卡在的階段都不同。
+            const [openPhases, setOpenPhases] = useState({ spec: true, confirm: true, msd: true, uat: true });
+            const [advOpen, setAdvOpen] = useState(false);
+            const [addMoreOpen, setAddMoreOpen] = useState(false);
             // ─── 時程異動稽核（第 13 批）───
             // historyEntries 是 dbo.Controltable_History 的全部紀錄，
             // historyMap 依 requirementId 分組供資料列與明細查用
@@ -3198,12 +3309,48 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 });
             };
 
+            // ─── 這個階段的「完成」區塊現在是哪一種（第 87 批抽出來共用）───
+            // 在此之前這串判斷寫死在 donePanel() 的一連串 early return 裡。第 87 批的
+            // 「現在輪到這一階段」說明要講「已經完成了 → 按上面的『標記完成…』」，
+            // 而那顆鈕**不是每次都在**（前置缺日期、已經走過、前一階段排在今天之後都不會出現）——
+            // ⚠️ 兩邊各判一次遲早會漂移成「說明叫他按一顆畫面上沒有的按鈕」
+            //    （與第 50 批 renderChip 只留一份是同一個理由）。
+            //   'done'   已經有完成紀錄  'button' 可以按「標記完成…」
+            //   'past'   已略過此階段（可補記）    'prereq' 前面的階段還缺日期
+            //   'order'  前一階段的日期還在今天之後 'hint' 還沒壓日期  'none' 什麼都不顯示
+            const donePanelKind = (phaseKey) => {
+                if (!editingData?.id) return { kind:'none' };
+                const ph = PHASES[phaseKey];
+                const done = phaseDoneEntry(phaseKey);
+                if (done) return { kind:'done', done };
+                const original = requirementsData.find(d => d.id === editingData.id);
+                // 還沒壓日期 → 沒有原訂日就沒有提早／延期可言。前置未完成的階段不提示
+                // （旁邊的 GateLock 已經在講「請先完成 XX 的日期」）
+                if (!isDateVal(original?.[ph.obj]?.[ph.endKey]))
+                    return isPhaseOpen(phaseKey) ? { kind:'hint', original } : { kind:'none', original };
+                // 已經走過的階段不給按（第 21 批）。ph.doneStage 是「按完之後會到達的階段」，
+                // 所以這個階段自己的代號是 doneStage - 1。StatusID 為空的舊資料不擋
+                const curStage = savedStage(original);
+                if (curStage > 0 && ph.doneStage - 1 < curStage) return { kind:'past', original, curStage };
+                // 前置階段的日期要齊全（第 22 批）。與手動改 StatusID 同一條規則 ——
+                // 傳 ph.doneStage 剛好等於「這個階段自己與它前面的 End 都要有值」，
+                // 而這個階段自己的 End 上一行已經驗過了。後端 /done 同一套
+                const lackPrereq = stagePrereqMissing(String(ph.doneStage), original);
+                if (lackPrereq.length > 0) return { kind:'prereq', original, lackPrereq };
+                // 提早完成會把 End 拉到今天 —— 今天早於前一階段的 End 就會做出倒序資料（第 22 批）
+                const prev = prevPhaseEndOf(original, phaseKey);
+                if (TODAY_ISO <= original[ph.obj][ph.endKey] && prev && TODAY_ISO < prev.end)
+                    return { kind:'order', original, prev };
+                return { kind:'button', original };
+            };
+
             // 階段標題旁要顯示什麼：已完成 → 結果標籤；還沒完成且已壓日期 → 完成鈕；
             // 連日期都還沒壓 → 什麼都不顯示（沒有原訂日就沒有提早／延期可言）
             const donePanel = (phaseKey) => {
                 if (!editingData?.id) return null;
                 const ph = PHASES[phaseKey];
-                const done = phaseDoneEntry(phaseKey);
+                const st = donePanelKind(phaseKey);
+                const done = st.done;
                 if (done) {
                     // ⚠️ 走 changeTypeStyle()（2026-08-23 / 第 23 批補上）——
                     // 原本是 `CHANGE_TYPES[...] || {}`，查不到時 color / bg 都是 undefined，
@@ -3256,15 +3403,10 @@ const { useState, useMemo, Fragment, useEffect } = React;
                         </span>
                     );
                 }
-                const original = requirementsData.find(d => d.id === editingData.id);
-                // 還沒壓日期 → 沒有原訂日就沒有提早／延期可言。前置未完成的階段不提示
-                // （旁邊的 GateLock 已經在講「請先完成 XX 的日期」）
-                if (!isDateVal(original?.[ph.obj]?.[ph.endKey]))
-                    return isPhaseOpen(phaseKey) ? <DoneHint /> : null;
-                // 已經走過的階段不給按（第 21 批）。ph.doneStage 是「按完之後會到達的階段」，
-                // 所以這個階段自己的代號是 doneStage - 1。StatusID 為空的舊資料不擋
-                const curStage = savedStage(original);
-                if (curStage > 0 && ph.doneStage - 1 < curStage) {
+                const original = st.original;
+                if (st.kind === 'hint')   return <DoneHint />;
+                if (st.kind === 'none')   return null;
+                if (st.kind === 'past') {
                     // 事後補記（第 70 批）：範圍算不出來（前一階段實際結束日 > 下一階段的日期，匯入倒序資料）
                     // 就不給按、在 tooltip 講原因 —— 不讓使用者開了視窗才發現一天都選不到
                     const bm = doneMainMin({ prevEnd: prevPhaseEndOf(original, phaseKey)?.end || '', extras: [] });
@@ -3272,7 +3414,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     const blocked = bm.min > cap.max
                         ? `前一階段的${prevPhaseEndOf(original, phaseKey)?.actual ? '實際完成日' : '日期'} ${bm.min} 晚於下一階段「${cap.label}」的${cap.actual ? '實際完成日' : '日期'} ${cap.max}，沒有一天選得下去；請先修正那兩個日期`
                         : '';
-                    const stageLabel = STAGE_CODES[String(curStage)]?.label || curStage;
+                    const stageLabel = STAGE_CODES[String(st.curStage)]?.label || st.curStage;
                     return (
                         <span className="inline-flex items-center gap-1.5">
                             <DonePastHint stageLabel={stageLabel} blocked={blocked} />
@@ -3280,15 +3422,8 @@ const { useState, useMemo, Fragment, useEffect } = React;
                         </span>
                     );
                 }
-                // 前置階段的日期要齊全（第 22 批）。與手動改 StatusID 同一條規則 ——
-                // 傳 ph.doneStage 剛好等於「這個階段自己與它前面的 End 都要有值」，
-                // 而這個階段自己的 End 上一行已經驗過了。後端 /done 同一套
-                const lackPrereq = stagePrereqMissing(String(ph.doneStage), original);
-                if (lackPrereq.length > 0) return <DonePrereqHint missing={lackPrereq} />;
-                // 提早完成會把 End 拉到今天 —— 今天早於前一階段的 End 就會做出倒序資料（第 22 批）
-                const prev = prevPhaseEndOf(original, phaseKey);
-                if (TODAY_ISO <= original[ph.obj][ph.endKey] && prev && TODAY_ISO < prev.end)
-                    return <DoneOrderHint prevLabel={prev.label} prevEnd={prev.end} />;
+                if (st.kind === 'prereq') return <DonePrereqHint missing={st.lackPrereq} />;
+                if (st.kind === 'order')  return <DoneOrderHint prevLabel={st.prev.label} prevEnd={st.prev.end} />;
                 return <DoneButton onClick={()=>handleDone(phaseKey)}
                                    title={`標記「${ph.label}」完成。按下去可以填實際完成的那一天（預設今天）——\n不必當天就來按，補登也不會被算成延期`} />;
             };
@@ -3735,6 +3870,73 @@ const { useState, useMemo, Fragment, useEffect } = React;
             const errOf = k => showSaveErrors ? (editProblems.fields[k] || '') : '';
             const errBorder = k => errOf(k) ? 'var(--tone-alert)' : 'var(--border-table)';
 
+            // ═══ 階段區塊的收合（第 86 批）═══
+            // ⚠️ 這個階段有沒有被解鎖，就一定要展開：解鎖代表使用者已經在改它了，
+            //    而底下的「異動理由」欄就掛在區塊裡。收起來會讓一筆改到一半的異動消失在畫面上
+            //    （沿用第 50 批 `legendShown = legendOpen || !!historyError` 那個寫法）
+            const phaseShown = pk => !!openPhases[pk] || !!unlockedSections[pk];
+            const togglePhase = pk => setOpenPhases(o => ({ ...o, [pk]: !phaseShown(pk) }));
+            // ⚠️ 按過「✎ 手動修正 StatusID」之後就不准再收起來（同上一條的理由：
+            //    異動理由欄掛在裡面，收起來會變成「說要填理由卻找不到那一欄」）
+            const advShown = advOpen || stageUnlocked;
+
+            // 收合時那一行印的字。⚠️ 讀的是 **editingData**（畫面上當下的值）不是已儲存的值 ——
+            // 收合不可以把使用者剛改的東西藏起來
+            const phaseFoldText = (pk) => {
+                const ph = PHASES[pk];
+                const v = editingData?.[ph.obj] || {};
+                const d = s => isDateVal(s) ? s.slice(5).replace('-', '/') : '';
+                if (pk === 'confirm') return d(v.confirm) ? `確認 ${d(v.confirm)}` : '確認日未填';
+                const s = d(v.start), e = d(v.end);
+                if (e) return s ? `${s} → ${e}` : `結束 ${e}`;
+                return s ? `${s} → 結束日未填` : '未填';
+            };
+
+            // ⚠️⚠️ 顏色 class 一律由呼叫端傳**完整字面量**（'text-amber-500'…），
+            //    不可以拼成 `text-${c}-500` —— 拼出來的 class Tailwind 掃不到，會靜靜不生效
+            const PhaseFoldHead = ({ pk, titleClass }) => {
+                const open = phaseShown(pk);
+                return (
+                    <button type="button" onClick={()=>togglePhase(pk)} aria-expanded={open}
+                            className="flex items-center gap-1.5 px-1 -ml-1 rounded hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+                            title={open ? '收合這個階段（日期還是會印在標題旁）'
+                                        : '展開這個階段：可以修改日期、標記完成、看這一階的異動紀錄'}>
+                        <span className="text-[10px] leading-none w-2" style={{color:'var(--text-muted)'}}>{open ? '▾' : '▸'}</span>
+                        <h4 className={`text-sm font-bold ${titleClass}`}>{PHASES[pk].label}</h4>
+                        {/* ⚠️ 標記掛在標題上（不是只掛在展開後的說明區塊裡）：使用者可以把這一段
+                            收起來，收起來之後畫面上就再也沒有地方說「該做的是這一段」（第 87 批） */}
+                        {pk === curPhaseKey && <CurrentPhaseChip />}
+                    </button>
+                );
+            };
+
+            // 收合時接在標題後面的摘要。三件事都不可以省：
+            //   日期（收合的是版面不是資料）／✓ 完成（那是「這一階已經結束」唯一的訊號）／
+            //   ● 有未儲存的修改（改到一半又收起來時，畫面上一定要看得出來還有東西沒存）
+            const PhaseFoldSummary = ({ pk }) => {
+                const done = editingData?.id ? phaseDoneEntry(pk) : null;
+                const ct = done ? changeTypeStyle(done.changeType) : null;
+                const modified = isPhaseModified(pk);
+                const gated = !isPhaseOpen(pk);
+                return (
+                    <span className="flex items-center gap-1.5 flex-wrap text-[11px] min-w-0" style={{color:'var(--text-tertiary)'}}>
+                        <span className="font-mono font-semibold tabular-nums">{phaseFoldText(pk)}</span>
+                        {done && (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold"
+                                  style={{color:ct.color, background:ct.bg}}>✓ {entryLabelOf(done)}</span>
+                        )}
+                        {modified && (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold"
+                                  style={{color:'var(--tone-warn)', background:'var(--tone-warn-bg)'}}
+                                  title="這個階段的日期在這個視窗裡被改過，但還沒儲存。展開可以看到改成什麼">● 有未儲存的修改</span>
+                        )}
+                        {gated && !done && (
+                            <span className="text-[10px]" style={{color:'var(--text-muted)'}} title={gateHint(pk)}>🔒 還沒輪到</span>
+                        )}
+                    </span>
+                );
+            };
+
             const handleSave = async (e) => {
                 if(e) e.preventDefault();
 
@@ -3745,6 +3947,9 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 //    使用者得自己回想剛剛那句話講的是哪一欄
                 if (editProblems.groups.length > 0) {
                     setShowSaveErrors(true);
+                    // ⚠️ 有問題的區塊自己展開（第 86 批）—— 見 revealProblemSections。
+                    //    收合起來的紅框等於沒有畫，而下面那句「已在編輯視窗中標紅」會變成假話
+                    revealProblemSections(editProblems.fields);
                     const g = editProblems.groups;
                     setAlertModal({
                         title: g.length === 1 ? g[0].title : `有 ${g.length} 類問題需要修正`,
@@ -3935,8 +4140,129 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // ⚠️ 用 ref 不用 state：這是一次性的動作，做成 state 會讓整個編輯視窗
             //    在開起來之後再多 render 一次（20 幾個欄位）。
             const focusPhaseRef = React.useRef(null);
+
+            // ─── 開窗時哪幾個階段區塊是展開的（第 86 批）───
+            // 規則只有一條：**展開「目前這一階段」，其餘收合**。
+            // ⚠️⚠️ 刻意**不依登入身分**判斷（「① ④ 是 EMS、② ③ 是 MSD」那種分法）——
+            //   ① 使用者 2026-09-05 已經否決過「用登入身分篩」（「我沒有用全名，用篩選無效」
+            //      ＋「有時候登入的人可能是主管」），那條路要嘛查名冊、要嘛做一個新的身分開關；
+            //   ② 依身分分反而更差：EMS 在等 MSD 開發（StatusID=3）時，依身分會展開 ①④、
+            //      收起 ③ —— 把他**正在等的那一格**收起來，而把還沒輪到的 ④ 攤開。
+            //   依階段分則兩種身分各自都對，而且不需要知道使用者是誰。
+            // ⚠️ StatusID 推不出來（0，舊資料）→ **全部展開**，不猜（第 33 批那條
+            //    「空白一律不推斷」）。收合這件事在壞資料上寧可不生效，也不要指錯地方。
+            // ⚠️ 已結案（5）→ 沒有「目前這一階段」，四個全收合；日期在摘要行上照樣看得到。
+            const PHASE_BY_STAGE = { 1:'spec', 2:'confirm', 3:'msd', 4:'uat' };
+            // 這筆需求「現在輪到」哪一階段 —— StatusID 對應的那一個。
+            // 5 結案（沒有輪到的階段）與推不出來的 0（舊資料）一律回空字串，不猜（第 33 批）。
+            // 第 87 批起這一支同時決定三件事：開窗時展開誰、開窗後捲到誰、那一段要不要畫「輪到你了」的標記
+            const currentPhaseOf = (row) => PHASE_BY_STAGE[savedStage(row)] || '';
+            // ⚠️ 讀的是**已儲存**的那一列（savedRow）不是 editingData：使用者在視窗裡把
+            //    StatusID 改掉（⚙ 進階）還沒存檔時，「現在輪到誰」的事實還沒有變。
+            const curPhaseKey = editingData?.id ? currentPhaseOf(savedRow) : '';
+            // 「現在輪到這一階段」的說明區塊（第 87 批）。四個階段區塊共用同一支 ——
+            // 各寫一份的話日後一定只會改到其中一兩個（第 50 批 renderChip 那條）
+            // 這一階段要不要畫那個框 —— 回 donePanelKind() 的結果（要用到 kind）或 null。
+            // ⚠️ 判斷抽出來是因為**標題列也要問同一件事**：框裡與標題列是同兩顆鈕，
+            //    兩邊都畫就是同一顆按鈕在畫面上出現兩次（第 88 批）
+            const currentNoticeState = (pk) => {
+                if (!pk || pk !== curPhaseKey || !editingData?.id) return null;
+                // 前置還沒完成的（跳空資料）不畫：旁邊的 GateLock 已經在講「請先完成 XX 的日期」，
+                // 而這裡叫他去壓一個當下按不動的欄位只會更亂
+                if (!isPhaseOpen(pk)) return null;
+                const st = donePanelKind(pk);
+                if (st.kind === 'done' || st.kind === 'past') return null;   // 這一階已經有結論了
+                return st;
+            };
+            // 這一次 render 把框畫在哪一階段（沒有就是 null）。標題列靠它決定要不要收起那兩顆鈕
+            const noticePhase = currentNoticeState(curPhaseKey) ? curPhaseKey : null;
+            // ⚠️ hover 色一律寫**完整字面量**（Tailwind 掃不到拼出來的 class，會靜靜不生效）
+            const PHASE_HOVER = { spec:'hover:text-amber-500', confirm:'hover:text-violet-500',
+                                  msd:'hover:text-blue-500',   uat:'hover:text-pink-500' };
+            // 還沒壓日期時那顆「填寫…」：鎖著就先解鎖，再把游標送到下面的日期欄。
+            // ⚠️ 解鎖是 setState，那個 <input> 要等下一次 render 才不是 disabled ——
+            //    所以 focus 要排在 commit 之後（setTimeout 0）。⚠️ 不可以用 requestAnimationFrame
+            //    （分頁在背景時不會被呼叫，見 CLAUDE.md 第 30 批那個坑）
+            const focusPhaseEnd = (pk) => {
+                if (isFieldLocked(pk, PHASES[pk].endKey)) handleUnlock(pk);
+                setTimeout(() => {
+                    const el = document.querySelector(`[data-ct-focus="${pk}"]`);
+                    if (!el) return;
+                    try { el.scrollIntoView({ block:'center' }); } catch (e) { /* noop */ }
+                    if (!el.disabled) { try { el.focus(); } catch (e) { /* noop */ } }
+                }, 0);
+            };
+            const currentPhaseNotice = (pk) => {
+                const st = currentNoticeState(pk);
+                if (!st) return null;
+                const ph = PHASES[pk];
+                const dp = DUE_PHASES.find(p => p.key === pk);
+                // ⚠️ 日期讀 editingData（畫面上當下的值）——他剛在這個視窗裡填完，
+                //    框就要立刻從「還沒壓日期」翻成「完成了嗎？」
+                const endValue = editingData?.[ph.obj]?.[ph.endKey] || '';
+                const owner = ((dp?.side === 'MSD' ? editingData.msdOwner : editingData.emsOwner) || '').trim();
+                const myName = (meAssignee?.name || '').trim();
+                const endLabel = ph.endKey === 'confirm' ? 'Confirm EMS Spec Date' : 'End Date';
+                // ⚠️⚠️ 三種狀態一律沿用 donePanel() 用的**同一組元件** —— 各寫一份的話
+                //    那兩條界線（前置階段還缺日期／前一階段的日期還在今天之後）遲早只會改到一邊
+                const doneSlot = st.kind === 'button'
+                    ? <DoneButton onClick={()=>handleDone(pk)}
+                                  title={`標記「${ph.label}」完成。按下去可以填實際完成的那一天（預設今天）——\n不必當天就來按，補登也不會被算成延期`} />
+                    : st.kind === 'prereq' ? <DonePrereqHint missing={st.lackPrereq} />
+                    : st.kind === 'order'  ? <DoneOrderHint prevLabel={st.prev.label} prevEnd={st.prev.end} />
+                    : null;
+                return <CurrentPhaseNotice
+                            endShort={ph.endKey === 'confirm' ? '確認日' : '結束日'}
+                            endLabel={endLabel}
+                            endValue={endValue}
+                            days={isDateVal(endValue) ? dayDiff(TODAY_ISO, endValue) : null}
+                            sideLabel={dp?.side || ''} ownerName={owner}
+                            isMe={!!owner && !!myName && owner === myName}
+                            doneSlot={doneSlot}
+                            unlockSlot={hasAnyField(pk) && !unlockedSections[pk]
+                                ? <UnlockButton onClick={() => handleUnlock(pk)} hoverClass={PHASE_HOVER[pk]} />
+                                : null}
+                            onFill={() => focusPhaseEnd(pk)} />;
+            };
+            const defaultOpenPhases = (row) => {
+                const n = savedStage(row);
+                if (!n) return { spec: true, confirm: true, msd: true, uat: true };
+                const o = { spec: false, confirm: false, msd: false, uat: false };
+                const cur = PHASE_BY_STAGE[n];
+                if (cur) o[cur] = true;
+                return o;
+            };
+
+            // ⚠️⚠️ 驗證有錯的區塊一定要自己展開（handleSave 會呼叫）。
+            //   errBorder() 的紅框畫在收合起來的 DOM 裡等於沒有畫，而彈窗最後一句寫著
+            //   「有問題的欄位已在編輯視窗中標紅」—— 不展開的話那句話就是畫面上的假話，
+            //   而且使用者會看到一個「說有問題卻找不到問題在哪」的視窗。
+            //   （這是第 82 批那條「不可以靜靜」在收合上的對應。）
+            const FIELD_TO_PHASE = { 'spec.start':'spec', 'spec.end':'spec', 'msd.confirm':'confirm',
+                                     'msd.start':'msd', 'msd.end':'msd', 'uat.start':'uat', 'uat.end':'uat' };
+            const revealProblemSections = (fields) => {
+                const keys = Object.keys(fields || {});
+                if (!keys.length) return;
+                const open = {};
+                keys.forEach(k => {
+                    const p = FIELD_TO_PHASE[k] || (k.startsWith('reason.') ? k.slice(7) : '');
+                    if (PHASES[p]) open[p] = true;
+                });
+                if (Object.keys(open).length) setOpenPhases(o => ({ ...o, ...open }));
+                if (keys.some(k => k === 'stage' || k === 'status' || k === 'reason.stage')) setAdvOpen(true);
+                // 新增時的選填區（MP Saving／Notes Link 有長度上限，會被驗到）
+                if (keys.some(k => k === 'mpSaving' || k === 'notesLink' || k === 'msdOwner')) setAddMoreOpen(true);
+            };
+
             const openEdit = (item, phaseKey = null) => {
-                focusPhaseRef.current = PHASES[phaseKey] ? phaseKey : null;
+                // ─── 沒指名階段（資料列的 ✎）也要跳到「現在輪到的那一階段」（第 87 批，
+                //     2026-09-29 使用者要求：「開啟編輯視窗，畫面直接跳到該階段的確認畫面」）───
+                // 第 86 批已經讓它**展開**目前這一階段，但視窗仍然停在最上面的 NID ——
+                // 20 幾個欄位捲下去才看得到那一格，而那正是他打開這個視窗唯一要做的事。
+                // ⚠️ 新增（沒有 id）與結案／舊資料（currentPhaseOf 回空）一律不跳：
+                //    沒有「輪到的階段」時硬捲一個地方，比停在最上面更難理解。
+                focusPhaseRef.current = PHASES[phaseKey] ? phaseKey
+                                      : (item?.id ? (currentPhaseOf(item) || null) : null);
                 setEditingData(item);
                 editSnapshot.current = JSON.stringify(item);
                 setUnlockedSections({ spec: false, confirm: false, msd: false, uat: false });
@@ -3944,6 +4270,14 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 setUnlockCategories({ spec: '', confirm: '', msd: '', uat: '', stage: '' });
                 setStageUnlocked(false);
                 setShowSaveErrors(false);
+                // ⚠️⚠️ 指名階段進來的（資料列上「⚠ 未壓日期」那顆徽章，第 54 批）**一定要展開它** ——
+                //    收合起來的話 data-ct-focus 的那個 <input> 根本不在 DOM 裡，
+                //    底下那個 querySelector 會撲空，第 54 批那顆按鈕就靜靜失效了。
+                setOpenPhases(PHASES[phaseKey]
+                    ? { ...defaultOpenPhases(item), [phaseKey]: true }
+                    : defaultOpenPhases(item));
+                setAdvOpen(false);
+                setAddMoreOpen(false);
                 setIsModalOpen(true);
             };
             const openAdd = () => { 
@@ -3959,6 +4293,10 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 setUnlockCategories({ spec: '', confirm: '', msd: '', uat: '', stage: '' });
                 setStageUnlocked(false);
                 setShowSaveErrors(false);
+                // 新增只有 ① 這一個階段區塊（② ③ ④ 本來就整段不渲染），選填區預設收起
+                setOpenPhases({ spec: true, confirm: true, msd: true, uat: true });
+                setAdvOpen(false);
+                setAddMoreOpen(false);
                 setIsModalOpen(true);
             };
 
@@ -4047,10 +4385,16 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 if (!key || openModalCount === 0) return;
                 focusPhaseRef.current = null;          // 一次性，關窗後不會再跳
                 const el = document.querySelector(`[data-ct-focus="${key}"]`);
+                // ⚠️ 捲的是**整個階段區塊**（`data-ct-phase`）不是那個 <input>（第 87 批）：
+                //    這一段真正要讓他看到的是「標題 ＋ 輪到你了的說明 ＋ 標記完成… ＋ 日期欄」
+                //    整組，只把日期欄捲到畫面正中間的話，上面那顆「標記完成…」
+                //    與那句「已完成就按它、要改日期就解鎖」剛好被切在視窗上緣外面。
+                //    區塊不在（理論上不會）才退回原本的作法。
+                const sec = document.querySelector(`[data-ct-phase="${key}"]`);
+                try { (sec || el)?.scrollIntoView({ block: sec ? 'start' : 'center' }); } catch (e) { /* noop */ }
                 if (!el) return;
-                // 先捲到定位再聚焦。gate 沒過的欄位是 disabled（focus 無效），
-                // 但捲過去仍然有意義 —— 那顆鎖旁邊就寫著「要先填完前一階段」
-                try { el.scrollIntoView({ block:'center' }); } catch (e) { /* noop */ }
+                // gate 沒過的欄位是 disabled（focus 無效），但捲過去仍然有意義 ——
+                // 那顆鎖旁邊就寫著「要先填完前一階段」
                 if (!el.disabled) { try { el.focus(); } catch (e) { /* noop */ } }
             }, [openModalCount]);
             useEffect(() => {
@@ -4351,6 +4695,61 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 return { ems: pick(it => it.emsOwner), msd: pick(it => it.msdOwner) };
             }, [requirementsData]);
             const matchOwner = (val, sel) => sel === 'All' || ((val || '').trim() || '未指派') === sel;
+
+            // ═══ EMS 登入者預設只看自己的需求（第 87 批，2026-09-29 使用者要求）═══
+            // 「若登入者為 EMS 人員，就預設篩選該 EMS 人員，底下列出跟他有關的需求。」
+            //
+            // ⚠️⚠️ **這件事 2026-09-05 被否決過一次**（memory.md 第 3 節），理由是
+            //    「我沒有用全名，用篩選無效」＋「有時候登入的人可能是主管，不需要」——
+            //    當時是想用「工號 → 名冊姓名」去猜控表負責人欄裡的字串，猜不中就是一張空清單。
+            //    這一批走的是**另一條路**：2026-08-31 起 `dbo.Assignee` 的 `EMPO` 已由使用者
+            //    全部補齊（那是為了寄信做的，見 CLAUDE.md 的 notify-unset），所以
+            //    **工號 → 姓名是查表查出來的，不是猜的**，而那張表的 `NAME` 正好就是
+            //    編輯視窗負責人下拉寫進控表的同一份字串。
+            //
+            // ⚠️⚠️ 三道界線少一道就會變回當年那個「一片空白又看不出原因」：
+            //   ① **查不到就什麼都不做** —— 工號不在 `dbo.Assignee`（主管、MSD 以外的人、
+            //      新進還沒建檔）一律維持原本的全部清單。這正好涵蓋「登入的可能是主管」。
+            //   ② **`DEPT` 必須是 EMS** —— MSD 是平台的操作者，他們要看全部（使用者原話：
+            //      「MSD 主要是負責網頁平台開發的人員在操作」）。
+            //   ③ **那個名字在控表裡至少要對得到一筆，否則不套用** —— 這是當年那句
+            //      「用篩選無效」唯一真正的防線。`dbo.Assignee.NAME` 與控表的
+            //      `EmsOwner` 之間**沒有外鍵**（CLAUDE.md 寫明了），名字被改過、
+            //      或舊資料存的是別的寫法時，套下去就是 0 筆 —— 而 0 筆與
+            //      「你今天沒有需求」在畫面上長得一模一樣。寧可不套。
+            //
+            // ⚠️ 套用之後的出路就是現成的**條件晶片**（第 28 批）：看得見、可以單獨移除、
+            //    會印出來、也會寫進網址。刻意不做新的開關 —— 那是第 49 批那條
+            //    「要減的是列不是控制項」。
+            // ⚠️ 網址已經帶了 `ems=` 的一律不覆蓋（別人分享的連結、或他自己按 F5）。
+            // ⚠️ 同一個工號只套一次：他把晶片按掉之後不可以自己回來（第 23 批那條坑）。
+            //    `emsFilter !== 'All'` 也擋一手 —— 他已經自己選了人時不去動它。
+            const meAssignee = useMemo(() => {
+                const key = String(actor.empId || '').trim();
+                if (!key) return null;
+                return assigneeList.find(a => (a.empNo || '').trim() === key) || null;
+            }, [actor.empId, assigneeList]);
+            // 「我是 EMS 的某某」—— 晶片的說明文字也靠它分辨這一條是不是自動套上去的。
+            // ⚠️ 用衍生值不用 state：按 F5 時 `emsFilter` 由網址還原、下面那個 effect 會早退，
+            //    用 state 記「有沒有自動套過」的話重整之後晶片的說明就消失了
+            const myEmsName = (meAssignee && meAssignee.dept === 'EMS') ? (meAssignee.name || '').trim() : '';
+            const autoEmsRef = React.useRef('');
+            useEffect(() => {
+                if (!myEmsName || !requirementsData.length) return;
+                const key = String(actor.empId || '').trim();
+                if (autoEmsRef.current === key) return;            // 同一個帳號只套一次
+                autoEmsRef.current = key;
+                if (URL_PARAMS.get('ems')) return;                 // 網址指定的優先
+                if (emsFilter !== 'All') return;                   // 他已經自己選了人
+                const n = requirementsData.filter(r => (r.emsOwner || '').trim() === myEmsName).length;
+                if (!n) return;                                    // 界線 ③：對不到就不套
+                setEmsFilter(myEmsName);
+                // ⚠️ **這句刻意不印筆數**：這裡數得到的是「他名下的全部」（實測 20 筆），
+                //    而畫面預設只看進行中（第 49 批）當下只有 3 列 —— 一句話講 20、
+                //    正下方寫著 3，正是 CLAUDE.md 一路在防的那種靜默落差。
+                //    真正的數字由階段那一排的「顯示 N / M 筆」負責，那一份一定是對的
+                showToast(`已依你的帳號自動篩選：EMS ${myEmsName}。要看全部請按表格上方那顆「👤 EMS ${myEmsName}」晶片的 ✕`);
+            }, [myEmsName, actor.empId, requirementsData, emsFilter]);
 
             // 編輯視窗「指派負責人」的下拉選項 —— 來源是指派人員主檔 dbo.Assignee，
             // 與上面工具列的篩選下拉刻意不同：篩選問的是「資料裡有誰」，
@@ -4791,7 +5190,13 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     id:'stage:'+k, label:'StatusID', value:`${k} ${STAGE_CODES[k]?.short || ''}`.trim(),
                     color: STAGE_CODES[k]?.color,
                     onRemove:()=>setStageFilter(prev => prev.filter(x => x !== k)) }));
-                if (emsFilter !== 'All') out.push({ id:'ems', label:'EMS', value:emsFilter, onRemove:()=>setEmsFilter('All') });
+                // ⚠️ 自動套上去的那一條一定要說得出「為什麼畫面只剩這幾筆」（第 87 批）——
+                //    使用者沒按過任何東西，清單卻少了一半，而這顆晶片是唯一的線索
+                if (emsFilter !== 'All') out.push({ id:'ems', label:'EMS', value:emsFilter,
+                    note: emsFilter === myEmsName
+                        ? `這一條是依你的 Windows 帳號（${actor.empId}）自動套上去的 —— 指派人員主檔裡你是 EMS 的「${myEmsName}」。點 ✕ 就會看到全部的需求。`
+                        : '',
+                    onRemove:()=>setEmsFilter('All') });
                 if (msdFilter !== 'All') out.push({ id:'msd', label:'MSD', value:msdFilter, onRemove:()=>setMsdFilter('All') });
                 if (dueFilter !== 'All') out.push({ id:'due', label:'到期', value:DUE_FILTER_LABEL[dueFilter] || dueFilter,
                     // 「需關注」是連著「逾期優先」排序一起被打開的（見那顆鈕），拿掉時要一起還原
@@ -4806,7 +5211,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                onRemove:()=>setColFilters(prev => { const n = {...prev}; delete n[k]; return n; }) });
                 });
                 return out;
-            }, [searchTerm, stageFilter, emsFilter, msdFilter, dueFilter, progressFilter, alertFilter, colFilters, compact]);
+            }, [searchTerm, stageFilter, emsFilter, msdFilter, dueFilter, progressFilter, alertFilter, colFilters, compact, myEmsName, actor.empId]);
             const hiddenChipCount = activeChips.filter(c => c.hidden).length;
             // ─── 只剩「預設的進度」那一顆時，晶片列在螢幕上不出現（第 50→51 批，2026-09-05）───
             // 為了一顆晶片撐起一張 49px 的卡，是這個畫面最貴的一行（實測第一列資料
@@ -4832,8 +5237,10 @@ const { useState, useMemo, Fragment, useEffect } = React;
                           : {color:'var(--text-secondary)', background:'var(--bg-input)', border:'1px solid var(--bg-input-border)'}}
                       title={c.hidden
                           ? `這個條件正在生效，但「${c.label}」欄在目前的模式下被收起來了，所以看不到它的輸入框 —— 筆數變少的原因就是它。點 ✕ 可以直接移除`
-                          : `${c.label}：${c.value}（點 ✕ 只移除這一條）`}>
+                          : (c.note || `${c.label}：${c.value}（點 ✕ 只移除這一條）`)}>
                     {c.hidden && <span aria-hidden="true">⚠</span>}
+                    {/* 自動套上去的條件標一顆小點：使用者沒按過任何東西，要看得出這一條不是他自己設的 */}
+                    {!c.hidden && c.note && <span aria-hidden="true" title={c.note}>👤</span>}
                     {/* 階段色點：與上面那排 StatusID 鈕同一套顏色，一眼對得起來 */}
                     {c.color && <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{background:c.color}}></span>}
                     <span style={{color: c.hidden ? 'inherit' : 'var(--text-muted)'}}>{c.label}</span>
@@ -6931,150 +7338,6 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                             <input type="text" className="w-full px-3 py-2 rounded-lg text-sm border outline-none cursor-not-allowed" style={{background:'var(--bg-header-border)', borderColor:'var(--border-table)', color:'var(--text-secondary)'}} value={fmtYmd(editingData.regDate)} readOnly placeholder="例如: 2026/01/15"/>
                                         </div>
                                         )}
-                                        {!editingData.isNew && (
-                                        <div className="col-span-1">
-                                            <label className="block text-xs font-bold mb-1" style={{color:'var(--text-secondary)'}}>Status <span className="font-normal" style={{color:'var(--text-muted)'}}>(OverallStatus)</span></label>
-                                            {/* Done ⇔ StatusID 5（第 67 批）：矛盾時就地標紅，理由見 validateEdit */}
-                                            <select className="w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 ring-indigo-500/50" style={{background:'var(--bg-main)', borderColor:errBorder('status')}} value={normStatus(editingData.status)} onChange={e=>setEditingData({...editingData, status:e.target.value})}
-                                                    title="Done 只能配 StatusID 5 結案。正常流程是由 ④ 的「標記完成…」自動改成 Done；重開請用「🔄 規格回退」">
-                                                {Object.entries(STATUSES).map(([k,v])=><option key={k} value={k}>{v.label}</option>)}
-                                            </select>
-                                            <FieldErrorHint msg={errOf('status')} />
-                                            {(() => {
-                                                // StatusID 下拉剛被調到 5 時，Status 是被一併改成 Done 的 —— 要說出來，不可以靜靜發生
-                                                const sv = requirementsData.find(d => d.id === editingData.id);
-                                                const autoDone = stageUnlocked && normStageCode(editingData.stageCode) === '5'
-                                                              && normStageCode(sv?.stageCode) !== '5' && normStatus(editingData.status) === 'Done';
-                                                return autoDone ? (
-                                                    <div className="text-[10px] mt-1" style={{color:'var(--text-muted)'}}>StatusID 調成 5 結案，Status 已一併改成 Done</div>
-                                                ) : null;
-                                            })()}
-                                        </div>
-                                        )}
-                                        {!editingData.isNew && (
-                                        <div className="col-span-1">
-                                            <label className="block text-xs font-bold mb-1" style={{color:'var(--text-secondary)'}}>StatusID <span className="font-normal" style={{color:'var(--text-muted)'}}>(1~5)</span></label>
-                                            {/* ─── A5：StatusID 預設唯讀（第 19 批）───
-                                                正常推進只走「標記完成…」與「🔄 規格回退」—— 那兩條路會寫稽核列、
-                                                維護 DelayCount / EarlyCount / RollbackCount，並依「今天 vs 原訂 End」
-                                                判定提早或延期。直接用下拉跳階段等於繞過整套機制，
-                                                主管看到的「延期 0 次」就可能只是有人手動跳過去的結果。
-                                                但**不做成完全鎖死** —— 匯入資料的階段填錯一定會發生，
-                                                鎖死的話第一次遇到就會被要求開一個沒有稽核的後門。 */}
-                                            {stageUnlocked ? (() => {
-                                                // ─── 只能往前（第 66 批 H2，2026-09-11 使用者要求）───
-                                                // 往回改而不經回退會留下已走完階段的 ActualEnd 與完成紀錄。
-                                                // 往回只有兩條路：「🔄 規格回退」（規格變了、要重做）與
-                                                // 「撤銷」（誤按了標記完成，在該階段的 ✓ 標籤旁）。
-                                                // 「未設定」那個選項也拿掉了（H3：StageCode 已是 NOT NULL）
-                                                const savedN = savedStage(requirementsData.find(d => d.id === editingData.id));
-                                                return (
-                                                <select className="w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 ring-amber-500/50" style={{background:'var(--bg-main)', borderColor:'var(--tone-warn)'}} value={normStageCode(editingData.stageCode)}
-                                                        // 調到 5 結案就一併把 Status 改成 Done（第 67 批：Done ⇔ 5）。改在旁邊那顆看得見的下拉上，
-                                                        // 且 Status 欄底下會寫「已一併改成 Done」—— 不是靜靜做。往回本來就 disabled，不會有「離開 5 要改回什麼」的問題
-                                                        onChange={e=>setEditingData({...editingData, stageCode:e.target.value, ...(e.target.value === '5' ? { status:'Done' } : {})})}
-                                                        title={savedN > 1 ? `只能往前調。要退回「${STAGE_CODES[String(savedN)]?.label}」之前的階段請用「🔄 規格回退」或該階段的「撤銷」` : undefined}>
-                                                    {Object.entries(STAGE_CODES).map(([k,v]) => {
-                                                        const back = savedN > 0 && parseInt(k, 10) < savedN;
-                                                        return <option key={k} value={k} disabled={back}>{v.label}{back ? '（往回請用規格回退／撤銷）' : ''}</option>;
-                                                    })}
-                                                </select>
-                                                );
-                                            })() : (() => {
-                                                const c = normStageCode(editingData.stageCode);
-                                                const sc = STAGE_CODES[c];
-                                                return (
-                                                    <div className="w-full px-3 py-2 rounded-lg text-sm border flex items-center gap-1.5"
-                                                         style={{background:'var(--bg-header-border)', borderColor:'var(--border-table)', color:'var(--text-secondary)'}}
-                                                         title="StatusID 由「標記完成…」與「🔄 規格回退」自動推進，不直接編輯">
-                                                        {sc
-                                                            ? <><span className="w-2 h-2 rounded-full flex-shrink-0" style={{background:sc.color}}></span>{sc.label}</>
-                                                            : <span style={{color:'var(--text-muted)'}}>{c || '未設定'}</span>}
-                                                    </div>
-                                                );
-                                            })()}
-                                            <FieldErrorHint msg={errOf('stage')} />
-                                            {!stageUnlocked && (
-                                                <button type="button" onClick={()=>setStageUnlocked(true)}
-                                                        className="mt-1.5 w-full px-2 py-1 rounded text-[11px] font-bold border transition-colors"
-                                                        style={{color:'var(--tone-warn)', background:'var(--tone-warn-bg)', borderColor:'var(--tone-warn-border)'}}
-                                                        title="階段填錯時用這個修正。會要求填異動原因，並在軌跡留下一筆「手動調整」">
-                                                    ✎ 手動修正 StatusID
-                                                </button>
-                                            )}
-                                            {/* 規格回退（第 16 批）。只有已經走過第 1 階段的才有東西可退。
-                                                以「已儲存的 StatusID」判斷，與後端看同一個值 */}
-                                            {(() => {
-                                                const cur = savedStage(requirementsData.find(d => d.id === editingData.id));
-                                                if (cur < 2) return null;
-                                                return (
-                                                    <button type="button"
-                                                            /* A7：回退成功後視窗會關掉並重新載入，未儲存的欄位會被靜靜丟掉。
-                                                               擋在**開啟回退視窗之前** —— 讓人先挑完階段、打完回退說明
-                                                               才說「不行」是最惱人的順序 */
-                                                            onClick={()=>{
-                                                                if (isEditDirty()) {
-                                                                    setAlertModal({
-                                                                        title: '有尚未儲存的變更',
-                                                                        message: '這個視窗裡還有沒儲存的欄位。\n\n'
-                                                                               + '規格回退會重新載入這筆資料，那些變更會遺失。\n\n請先按「儲存變更」，再回來執行回退。'
-                                                                    });
-                                                                    return;
-                                                                }
-                                                                setRollbackModal({ id:editingData.id, nid:editingData.nid, curStage:cur, target:cur-1, note:'' });
-                                                            }}
-                                                            className="mt-1.5 w-full px-2 py-1 rounded text-[11px] font-bold border transition-colors"
-                                                            style={{color:'#8b5cf6', background:'rgba(139,92,246,0.08)', borderColor:'rgba(139,92,246,0.3)'}}
-                                                            title="規格變更需要重做目前或前面的階段時使用（清掉目標階段（含）以後的日期、回退次數 +1）">
-                                                        🔄 規格回退
-                                                    </button>
-                                                );
-                                            })()}
-                                        </div>
-                                        )}
-                                        {/* 手動修正 StatusID 的原因欄。⚠️ 刻意做成**整列寬**而不是塞在
-                                            StatusID 那一格裡：四顆分類鈕加一個輸入框在 1/3 欄寬會擠成三排，
-                                            而這是「會繞過完成／回退機制」的操作，不該長得像個附註。
-                                            只有真的改動了值才出現 —— 按了修正鈕又改回原值就不必寫理由 */}
-                                        {!editingData.isNew && stageUnlocked && (() => {
-                                            const orig = requirementsData.find(d => d.id === editingData.id);
-                                            const changed = orig && normStageCode(orig.stageCode) !== normStageCode(editingData.stageCode);
-                                            if (!changed) return null;
-                                            const from = STAGE_CODES[normStageCode(orig.stageCode)]?.label || '未設定';
-                                            const to   = STAGE_CODES[normStageCode(editingData.stageCode)]?.label || '未設定';
-                                            // 前面的階段沒填完 → 先講這件事，連原因欄都不給填。
-                                            // 讓人填完理由再說「其實不能改」是最惱人的順序
-                                            const lacking = stagePrereqMissing(editingData.stageCode, editingData);
-                                            if (lacking.length > 0) return (
-                                                <div className="col-span-1 md:col-span-3 p-3 rounded-lg border"
-                                                     style={{background:'var(--tone-alert-bg)', borderColor:'var(--tone-alert-border)'}}>
-                                                    <div className="text-[11px] font-bold mb-2" style={{color:'var(--tone-alert)'}}>
-                                                        ⚠️ 不能改成「{to}」—— 前面的階段還沒填完
-                                                    </div>
-                                                    <div className="text-[11px] mb-2" style={{color:'var(--text-tertiary)'}}>
-                                                        設成這個階段代表前面的都已經走完。請先在下面補上這些日期
-                                                        （可以在同一個視窗裡補完再存），或改選其他階段：
-                                                    </div>
-                                                    <ul className="text-[11px] font-bold list-disc pl-4 space-y-0.5" style={{color:'var(--tone-alert)'}}>
-                                                        {lacking.map(m => <li key={m}>{m}</li>)}
-                                                    </ul>
-                                                </div>
-                                            );
-                                            return (
-                                                <div className="col-span-1 md:col-span-3 p-3 rounded-lg border"
-                                                     style={{background:'var(--tone-warn-bg)', borderColor:'var(--tone-warn-border)'}}>
-                                                    <div className="text-[11px] font-bold mb-2" style={{color:'var(--tone-warn)'}}>
-                                                        ✎ 手動調整 StatusID：{from} → {to}
-                                                    </div>
-                                                    <div className="text-[11px] mb-2.5" style={{color:'var(--text-tertiary)'}}>
-                                                        這是繞過「標記完成…」與「🔄 規格回退」的直接修改，<span className="font-bold">不會計入延期／提早／回退次數</span>，
-                                                        也不會補寫該階段的完成紀錄。儲存後會在這筆需求的軌跡留下一筆「手動調整」。
-                                                    </div>
-                                                    <ReasonFields phaseKey="stage" categories={unlockCategories} setCategories={setUnlockCategories}
-                                                                  reasons={unlockReasons} setReasons={setUnlockReasons} error={errOf('reason.stage')} />
-                                                </div>
-                                            );
-                                        })()}
                                         <div className="col-span-1">
                                             <label className="block text-xs font-bold mb-1" style={{color:'var(--text-secondary)'}}>Main Cat <span className="text-red-500">*</span><LenHint value={editingData.mainCat} max={FIELD_MAX.mainCat} /></label>
                                             <input type="text" className="w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 ring-indigo-500/50" style={{background:'var(--bg-main)', borderColor:errBorder('mainCat')}} value={editingData.mainCat||''} onChange={e=>setEditingData({...editingData, mainCat:e.target.value})} maxLength={FIELD_MAX.mainCat} />
@@ -7086,10 +7349,6 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                             <FieldErrorHint msg={errOf('subCat')} />
                                         </div>
                                         <div className="col-span-1">
-                                            <label className="block text-xs font-bold mb-1" style={{color:'var(--text-secondary)'}}>MP Saving<LenHint value={editingData.mpSaving} max={FIELD_MAX.mpSaving} /></label>
-                                            <input type="text" className="w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 ring-indigo-500/50" style={{background:'var(--bg-main)', borderColor:'var(--border-table)'}} value={editingData.mpSaving||''} onChange={e=>setEditingData({...editingData, mpSaving:e.target.value})} placeholder="例如: 3人天" maxLength={FIELD_MAX.mpSaving} />
-                                        </div>
-                                        <div className="col-span-1">
                                             <label className="block text-xs font-bold mb-1" style={{color:'var(--text-secondary)'}}>EMS 負責人 <span className="text-red-500">*</span></label>
                                             <select className="w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 ring-indigo-500/50" style={{background:'var(--bg-main)', borderColor:errBorder('emsOwner')}} value={editingData.emsOwner||''} onChange={e=>setEditingData({...editingData, emsOwner:e.target.value})}>
                                                 <option value="">請選擇</option>
@@ -7099,6 +7358,30 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                             <OwnerEmailHint dept="EMS" name={editingData.emsOwner} />
                                             <AssigneeErrorHint error={assigneeError} />
                                         </div>
+                                        {/* ─── 新增時的選填區（第 86 批，2026-09-29）───
+                                            使用者要求：EMS 來這裡的動作是「有需求 → 建一筆 → 請 MSD 配合」。
+                                            新增視窗原本一次攤開 10 欄，而其中**只有 4 欄是必填**；
+                                            MSD 負責人（這時候多半還沒指定）／MP Saving／Notes Link（62/64 筆是空的）／
+                                            現況說明（還沒開始跑，沒有現況）四欄在建立當下幾乎都不會填。
+                                            ⚠️⚠️ 這是**收合不是移除**：開關的字裡要把四個欄位名全部列出來，
+                                               不然使用者會以為「這個系統沒有 Notes Link 可以填」。
+                                            ⚠️ 只在新增時收 —— 編輯時那四欄照舊直接顯示（既有資料裡本來就有值，
+                                               收起來會變成「有值卻看不到」，那比多幾個空欄嚴重得多）。
+                                            ⚠️ MP Saving 這一格原本排在 Sub Cat 與 EMS 負責人中間，這一批搬到
+                                               MSD 負責人後面 —— 收起來時才不會在 EMS 負責人前面留一個洞，
+                                               順帶讓 EMS／MSD 兩個負責人下拉相鄰（編輯時也一樣）。 */}
+                                        {editingData.isNew && (
+                                        <div className="col-span-1 md:col-span-3">
+                                            <button type="button" onClick={()=>setAddMoreOpen(!addMoreOpen)} aria-expanded={addMoreOpen}
+                                                    className="flex items-center gap-1.5 px-1 -ml-1 rounded text-[11px] font-bold hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+                                                    style={{color:'var(--text-tertiary)'}}
+                                                    title="這四欄都可以之後再補，不影響這筆需求建立">
+                                                <span className="text-[10px] leading-none w-2">{addMoreOpen ? '▾' : '▸'}</span>
+                                                選填欄位（MSD 負責人、MP Saving、Notes Link、現況說明）—— 都可以之後再補
+                                            </button>
+                                        </div>
+                                        )}
+                                        {(!editingData.isNew || addMoreOpen) && (<>
                                         <div className="col-span-1">
                                             <label className="block text-xs font-bold mb-1" style={{color:'var(--text-secondary)'}}>MSD 負責人</label>
                                             <select className="w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 ring-indigo-500/50" style={{background:'var(--bg-main)', borderColor:'var(--border-table)'}} value={editingData.msdOwner||''} onChange={e=>setEditingData({...editingData, msdOwner:e.target.value})}>
@@ -7108,15 +7391,25 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                             <OwnerEmailHint dept="MSD" name={editingData.msdOwner} />
                                             <AssigneeErrorHint error={assigneeError} />
                                         </div>
+                                        <div className="col-span-1">
+                                            <label className="block text-xs font-bold mb-1" style={{color:'var(--text-secondary)'}}>MP Saving<LenHint value={editingData.mpSaving} max={FIELD_MAX.mpSaving} /></label>
+                                            <input type="text" className="w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 ring-indigo-500/50" style={{background:'var(--bg-main)', borderColor:'var(--border-table)'}} value={editingData.mpSaving||''} onChange={e=>setEditingData({...editingData, mpSaving:e.target.value})} placeholder="例如: 3人天" maxLength={FIELD_MAX.mpSaving} />
+                                        </div>
+                                        </>)}
                                         {/* EMS 需求提供 */}
-                                        <div className="col-span-1 md:col-span-3 mt-4 border-t pt-4" style={{borderColor:'var(--border-table)'}}>
-                                            <div className="flex items-center gap-2 mb-3">
-                                                <h4 className="text-sm font-bold text-amber-500">1_EMS規格確認</h4>
-                                                {hasAnyField('spec') && !unlockedSections.spec && (
+                                        <div className="col-span-1 md:col-span-3 mt-4 border-t pt-4" data-ct-phase="spec" style={{borderColor:'var(--border-table)'}}>
+                                            <div className={`flex items-center gap-2${phaseShown('spec') ? ' mb-3' : ''}`}>
+                                                <PhaseFoldHead pk="spec" titleClass="text-amber-500" />
+                                                {phaseShown('spec') ? (<>
+                                                {/* ⚠️ 這兩顆在「現在輪到」的那一階段會搬進下面的動作框（第 88 批）—— 兩邊都畫就是同一顆鈕出現兩次 */}
+                                                {noticePhase !== 'spec' && hasAnyField('spec') && !unlockedSections.spec && (
                                                     <UnlockButton onClick={() => handleUnlock('spec')} hoverClass="hover:text-amber-500" />
                                                 )}
-                                                {donePanel('spec')}
+                                                {noticePhase !== 'spec' && donePanel('spec')}
+                                                </>) : <PhaseFoldSummary pk="spec" />}
                                             </div>
+                                            {phaseShown('spec') && (<>
+                                            {currentPhaseNotice('spec')}
                                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                                 <div>
                                                     {/* ① 的 Start 2026-08-22 起不是必填（沒填就自動帶成 End），紅星拿掉 */}
@@ -7151,6 +7444,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 </div>
                                             )}
                                             <PhaseAuditList entries={editingPhaseHist('spec')} phaseKey="spec" item={savedRow} onOpenFull={openHistFor('spec')} />
+                                            </>)}
                                         </div>
 
                                         {/* 需求補充 (Excel「Remark」)：純文字的描述補充，多行 */}
@@ -7161,24 +7455,31 @@ const { useState, useMemo, Fragment, useEffect } = React;
 
                                         {/* Notes Link (Excel「NotesLink」)：只放超連結，與上面的需求補充是兩個獨立欄位。
                                             type 用 text 不用 url —— 實際資料是 Notes:// 開頭，
-                                            type="url" 的原生驗證會把它擋下來不給送出 */}
+                                            type="url" 的原生驗證會把它擋下來不給送出。
+                                            新增時收在上面那個「選填欄位」開關裡（第 86 批） */}
+                                        {(!editingData.isNew || addMoreOpen) && (
                                         <div className="col-span-1 md:col-span-3">
                                             <label className="block text-xs font-bold mb-1" style={{color:'var(--text-secondary)'}}>Notes Link <span className="font-normal" style={{color:'var(--text-muted)'}}>(超連結，例如 Notes://... 或 https://...)</span><LenHint value={editingData.notesLink} max={FIELD_MAX.notesLink} /></label>
                                             <input type="text" className="w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 ring-indigo-500/50" style={{background:'var(--bg-main)', borderColor:'var(--border-table)'}} value={editingData.notesLink||''} onChange={e=>setEditingData({...editingData, notesLink:e.target.value})} placeholder="Notes://... 或 https://..." maxLength={FIELD_MAX.notesLink} />
                                         </div>
+                                        )}
 
                                         {/* ② MSD 確認Spec ── Confirm 日期從「MSD 開發」搬到這裡自成一個階段，
                                             異動軌跡寫進 msd.confirmHistory (Excel 的 2_MSDHistory) */}
                                         {!editingData.isNew && (
-                                        <div className="col-span-1 md:col-span-3 mt-2 border-t pt-4" style={{borderColor:'var(--border-table)'}}>
-                                            <div className="flex items-center gap-2 mb-3">
-                                                <h4 className="text-sm font-bold text-violet-500">2_MSD確認中</h4>
-                                                {hasAnyField('confirm') && !unlockedSections.confirm && (
+                                        <div className="col-span-1 md:col-span-3 mt-2 border-t pt-4" data-ct-phase="confirm" style={{borderColor:'var(--border-table)'}}>
+                                            <div className={`flex items-center gap-2${phaseShown('confirm') ? ' mb-3' : ''}`}>
+                                                <PhaseFoldHead pk="confirm" titleClass="text-violet-500" />
+                                                {phaseShown('confirm') ? (<>
+                                                {noticePhase !== 'confirm' && hasAnyField('confirm') && !unlockedSections.confirm && (
                                                     <UnlockButton onClick={() => handleUnlock('confirm')} hoverClass="hover:text-violet-500" />
                                                 )}
                                                 {!isPhaseOpen('confirm') && <GateLock text={gateHint('confirm')} showText={true} />}
-                                                {donePanel('confirm')}
+                                                {noticePhase !== 'confirm' && donePanel('confirm')}
+                                                </>) : <PhaseFoldSummary pk="confirm" />}
                                             </div>
+                                            {phaseShown('confirm') && (<>
+                                            {currentPhaseNotice('confirm')}
                                             <div>
                                                 <label className="flex items-center gap-1.5 text-xs mb-1" style={{color:'var(--text-secondary)'}}>Confirm EMS Spec Date
                                                     {fieldLockReason('confirm','confirm')==='gated' && <GateLock text={gateHint('confirm')} />}
@@ -7196,20 +7497,25 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 </div>
                                             )}
                                             <PhaseAuditList entries={editingPhaseHist('confirm')} phaseKey="confirm" item={savedRow} onOpenFull={openHistFor('confirm')} />
+                                            </>)}
                                         </div>
                                         )}
 
                                         {/* ③ MSD 開發 ── 只管 Start / End，Confirm 已移到上面的 ② */}
                                         {!editingData.isNew && (
-                                        <div className="col-span-1 md:col-span-3 mt-2 border-t pt-4" style={{borderColor:'var(--border-table)'}}>
-                                            <div className="flex items-center gap-2 mb-3">
-                                                <h4 className="text-sm font-bold text-blue-500">3_MSD開發中</h4>
-                                                {hasAnyField('msd') && !unlockedSections.msd && (
+                                        <div className="col-span-1 md:col-span-3 mt-2 border-t pt-4" data-ct-phase="msd" style={{borderColor:'var(--border-table)'}}>
+                                            <div className={`flex items-center gap-2${phaseShown('msd') ? ' mb-3' : ''}`}>
+                                                <PhaseFoldHead pk="msd" titleClass="text-blue-500" />
+                                                {phaseShown('msd') ? (<>
+                                                {noticePhase !== 'msd' && hasAnyField('msd') && !unlockedSections.msd && (
                                                     <UnlockButton onClick={() => handleUnlock('msd')} hoverClass="hover:text-blue-500" />
                                                 )}
                                                 {!isPhaseOpen('msd') && <GateLock text={gateHint('msd')} showText={true} />}
-                                                {donePanel('msd')}
+                                                {noticePhase !== 'msd' && donePanel('msd')}
+                                                </>) : <PhaseFoldSummary pk="msd" />}
                                             </div>
+                                            {phaseShown('msd') && (<>
+                                            {currentPhaseNotice('msd')}
                                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                                 <div>
                                                     <label className="flex items-center gap-1.5 text-xs mb-1" style={{color:'var(--text-secondary)'}}>Start Date
@@ -7235,20 +7541,25 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 </div>
                                             )}
                                             <PhaseAuditList entries={editingPhaseHist('msd')} phaseKey="msd" item={savedRow} onOpenFull={openHistFor('msd')} />
+                                            </>)}
                                         </div>
                                         )}
 
                                         {/* ④ EMS 驗收 */}
                                         {!editingData.isNew && (
-                                        <div className="col-span-1 md:col-span-3 mt-2 border-t pt-4" style={{borderColor:'var(--border-table)'}}>
-                                            <div className="flex items-center gap-2 mb-3">
-                                                <h4 className="text-sm font-bold text-pink-500">4_EMS驗收</h4>
-                                                {hasAnyField('uat') && !unlockedSections.uat && (
+                                        <div className="col-span-1 md:col-span-3 mt-2 border-t pt-4" data-ct-phase="uat" style={{borderColor:'var(--border-table)'}}>
+                                            <div className={`flex items-center gap-2${phaseShown('uat') ? ' mb-3' : ''}`}>
+                                                <PhaseFoldHead pk="uat" titleClass="text-pink-500" />
+                                                {phaseShown('uat') ? (<>
+                                                {noticePhase !== 'uat' && hasAnyField('uat') && !unlockedSections.uat && (
                                                     <UnlockButton onClick={() => handleUnlock('uat')} hoverClass="hover:text-pink-500" />
                                                 )}
                                                 {!isPhaseOpen('uat') && <GateLock text={gateHint('uat')} showText={true} />}
-                                                {donePanel('uat')}
+                                                {noticePhase !== 'uat' && donePanel('uat')}
+                                                </>) : <PhaseFoldSummary pk="uat" />}
                                             </div>
+                                            {phaseShown('uat') && (<>
+                                            {currentPhaseNotice('uat')}
                                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                                 <div>
                                                     <label className="flex items-center gap-1.5 text-xs mb-1" style={{color:'var(--text-secondary)'}}>Start Date
@@ -7274,14 +7585,205 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 </div>
                                             )}
                                             <PhaseAuditList entries={editingPhaseHist('uat')} phaseKey="uat" item={savedRow} onOpenFull={openHistFor('uat')} />
+                                            </>)}
                                         </div>
                                         )}
 
-                                        {/* 現況說明 */}
+                                        {/* 現況說明。新增時收在上面那個「選填欄位」開關裡（第 86 批）——
+                                            需求剛建立還沒開始跑，沒有「現況」可以寫 */}
+                                        {(!editingData.isNew || addMoreOpen) && (
                                         <div className="col-span-1 md:col-span-3 mt-2 border-t pt-4" style={{borderColor:'var(--border-table)'}}>
                                             <label className="block text-sm font-bold mb-1" style={{color:'var(--text-primary)'}}>現況說明 (Current Status)</label>
                                             <textarea className="w-full px-3 py-2 rounded-lg text-sm border h-24 outline-none focus:ring-2 ring-indigo-500/50" style={{background:'var(--bg-main)', borderColor:'var(--border-table)'}} value={editingData.currentStatus||''} onChange={e=>setEditingData({...editingData, currentStatus:e.target.value})} placeholder="輸入目前進度說明..."></textarea>
                                         </div>
+                                        )}
+
+                                        {/* ═══ 進階：階段與狀態（第 86 批，2026-09-29）═══
+                                            使用者要求：「EMS 人員完全不懂網頁這些功能操作…他們也不想了解這麼多東西」。
+                                            這三樣（Status／StatusID／🔄 規格回退）原本擺在視窗**最上面、NID 旁邊**，
+                                            也就是每一個打開編輯視窗的人第一眼看到的東西 —— 而它們正好是
+                                            **最不該隨手動、動錯了最難救**的三個：
+                                              ・StatusID 手動改會繞過「標記完成…」整套機制（不寫完成紀錄、不計提早／延期）
+                                              ・Status 與 StatusID 之間有 Done ⇔ 5 的硬約束（第 67 批）
+                                              ・規格回退會清掉目標階段（含）以後的全部日期、RollbackCount +1
+                                            搬到現況說明底下並預設收起，讓視窗上半部只剩「基本資料 ＋ 這一階段的日期」。
+                                            ⚠️⚠️ 標題一定要**把裡面有什麼列出來**（StatusID／Status／規格回退）——
+                                               收起來又不講裡面是什麼，等於把「規格回退」這顆按鈕從畫面上刪掉，
+                                               使用者會回報「回退功能不見了」（第 57 批：刻意的限制沒講出來就等於壞掉）。
+                                            ⚠️ 收合時那一行要印出**目前的 StatusID 與 Status** —— 這一區收起來的是「控制項」
+                                               不是「資訊」，那兩個值本來就是打開視窗就該看到的東西。
+                                            ⚠️⚠️ advShown 吃 `advOpen || stageUnlocked`（沿用第 50 批 legendShown 的寫法）：
+                                               按過「✎ 手動修正 StatusID」之後就收不起來 —— 那時底下掛著一個**還沒填的異動理由欄**，
+                                               收起來會變成「按了儲存說要填理由，畫面上卻找不到那一欄」。
+                                            ⚠️ 驗證有錯時由 revealProblemSections() 自動展開（stage／status／reason.stage）。 */}
+                                        {!editingData.isNew && (
+                                        <div className="col-span-1 md:col-span-3 mt-2 border-t pt-4" style={{borderColor:'var(--border-table)'}}>
+                                            <button type="button" onClick={()=>setAdvOpen(!advShown)} aria-expanded={advShown}
+                                                    className="flex items-center gap-1.5 flex-wrap px-1 -ml-1 rounded hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+                                                    title={advShown ? '收起進階區' : '展開進階區：手動修正 StatusID／Status、執行規格回退。\n正常推進階段請用各階段的「標記完成…」，不需要進來這裡'}>
+                                                <span className="text-[10px] leading-none w-2" style={{color:'var(--text-muted)'}}>{advShown ? '▾' : '▸'}</span>
+                                                <h4 className="text-sm font-bold" style={{color:'var(--text-secondary)'}}>⚙ 進階：StatusID／Status／規格回退</h4>
+                                                {!advShown && (
+                                                    <span className="text-[11px]" style={{color:'var(--text-tertiary)'}}>
+                                                        目前 {STAGE_CODES[normStageCode(editingData.stageCode)]?.label || normStageCode(editingData.stageCode) || '未設定'}
+                                                        {' · '}{STATUSES[normStatus(editingData.status)]?.label || normStatus(editingData.status) || '—'}
+                                                    </span>
+                                                )}
+                                            </button>
+                                            {advShown && (
+                                            <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-4">
+                                                <div className="col-span-1 md:col-span-3 text-[11px] leading-relaxed" style={{color:'var(--text-muted)'}}>
+                                                    一般情況不用動這一區 —— 階段由各階段的「標記完成…」自動推進，走那條路才會寫完成紀錄、算提早／延期。
+                                                    規格變更要重做某一階段時用「🔄 規格回退」；只有階段代號本身填錯了（多半是匯入來的）才用「✎ 手動修正 StatusID」。
+                                                </div>
+                                            {!editingData.isNew && (
+                                            <div className="col-span-1">
+                                                <label className="block text-xs font-bold mb-1" style={{color:'var(--text-secondary)'}}>Status <span className="font-normal" style={{color:'var(--text-muted)'}}>(OverallStatus)</span></label>
+                                                {/* Done ⇔ StatusID 5（第 67 批）：矛盾時就地標紅，理由見 validateEdit */}
+                                                <select className="w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 ring-indigo-500/50" style={{background:'var(--bg-main)', borderColor:errBorder('status')}} value={normStatus(editingData.status)} onChange={e=>setEditingData({...editingData, status:e.target.value})}
+                                                        title="Done 只能配 StatusID 5 結案。正常流程是由 ④ 的「標記完成…」自動改成 Done；重開請用「🔄 規格回退」">
+                                                    {Object.entries(STATUSES).map(([k,v])=><option key={k} value={k}>{v.label}</option>)}
+                                                </select>
+                                                <FieldErrorHint msg={errOf('status')} />
+                                                {(() => {
+                                                    // StatusID 下拉剛被調到 5 時，Status 是被一併改成 Done 的 —— 要說出來，不可以靜靜發生
+                                                    const sv = requirementsData.find(d => d.id === editingData.id);
+                                                    const autoDone = stageUnlocked && normStageCode(editingData.stageCode) === '5'
+                                                                  && normStageCode(sv?.stageCode) !== '5' && normStatus(editingData.status) === 'Done';
+                                                    return autoDone ? (
+                                                        <div className="text-[10px] mt-1" style={{color:'var(--text-muted)'}}>StatusID 調成 5 結案，Status 已一併改成 Done</div>
+                                                    ) : null;
+                                                })()}
+                                            </div>
+                                            )}
+                                            {!editingData.isNew && (
+                                            <div className="col-span-1">
+                                                <label className="block text-xs font-bold mb-1" style={{color:'var(--text-secondary)'}}>StatusID <span className="font-normal" style={{color:'var(--text-muted)'}}>(1~5)</span></label>
+                                                {/* ─── A5：StatusID 預設唯讀（第 19 批）───
+                                                    正常推進只走「標記完成…」與「🔄 規格回退」—— 那兩條路會寫稽核列、
+                                                    維護 DelayCount / EarlyCount / RollbackCount，並依「今天 vs 原訂 End」
+                                                    判定提早或延期。直接用下拉跳階段等於繞過整套機制，
+                                                    主管看到的「延期 0 次」就可能只是有人手動跳過去的結果。
+                                                    但**不做成完全鎖死** —— 匯入資料的階段填錯一定會發生，
+                                                    鎖死的話第一次遇到就會被要求開一個沒有稽核的後門。 */}
+                                                {stageUnlocked ? (() => {
+                                                    // ─── 只能往前（第 66 批 H2，2026-09-11 使用者要求）───
+                                                    // 往回改而不經回退會留下已走完階段的 ActualEnd 與完成紀錄。
+                                                    // 往回只有兩條路：「🔄 規格回退」（規格變了、要重做）與
+                                                    // 「撤銷」（誤按了標記完成，在該階段的 ✓ 標籤旁）。
+                                                    // 「未設定」那個選項也拿掉了（H3：StageCode 已是 NOT NULL）
+                                                    const savedN = savedStage(requirementsData.find(d => d.id === editingData.id));
+                                                    return (
+                                                    <select className="w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 ring-amber-500/50" style={{background:'var(--bg-main)', borderColor:'var(--tone-warn)'}} value={normStageCode(editingData.stageCode)}
+                                                            // 調到 5 結案就一併把 Status 改成 Done（第 67 批：Done ⇔ 5）。改在旁邊那顆看得見的下拉上，
+                                                            // 且 Status 欄底下會寫「已一併改成 Done」—— 不是靜靜做。往回本來就 disabled，不會有「離開 5 要改回什麼」的問題
+                                                            onChange={e=>setEditingData({...editingData, stageCode:e.target.value, ...(e.target.value === '5' ? { status:'Done' } : {})})}
+                                                            title={savedN > 1 ? `只能往前調。要退回「${STAGE_CODES[String(savedN)]?.label}」之前的階段請用「🔄 規格回退」或該階段的「撤銷」` : undefined}>
+                                                        {Object.entries(STAGE_CODES).map(([k,v]) => {
+                                                            const back = savedN > 0 && parseInt(k, 10) < savedN;
+                                                            return <option key={k} value={k} disabled={back}>{v.label}{back ? '（往回請用規格回退／撤銷）' : ''}</option>;
+                                                        })}
+                                                    </select>
+                                                    );
+                                                })() : (() => {
+                                                    const c = normStageCode(editingData.stageCode);
+                                                    const sc = STAGE_CODES[c];
+                                                    return (
+                                                        <div className="w-full px-3 py-2 rounded-lg text-sm border flex items-center gap-1.5"
+                                                             style={{background:'var(--bg-header-border)', borderColor:'var(--border-table)', color:'var(--text-secondary)'}}
+                                                             title="StatusID 由「標記完成…」與「🔄 規格回退」自動推進，不直接編輯">
+                                                            {sc
+                                                                ? <><span className="w-2 h-2 rounded-full flex-shrink-0" style={{background:sc.color}}></span>{sc.label}</>
+                                                                : <span style={{color:'var(--text-muted)'}}>{c || '未設定'}</span>}
+                                                        </div>
+                                                    );
+                                                })()}
+                                                <FieldErrorHint msg={errOf('stage')} />
+                                                {!stageUnlocked && (
+                                                    <button type="button" onClick={()=>setStageUnlocked(true)}
+                                                            className="mt-1.5 w-full px-2 py-1 rounded text-[11px] font-bold border transition-colors"
+                                                            style={{color:'var(--tone-warn)', background:'var(--tone-warn-bg)', borderColor:'var(--tone-warn-border)'}}
+                                                            title="階段填錯時用這個修正。會要求填異動原因，並在軌跡留下一筆「手動調整」">
+                                                        ✎ 手動修正 StatusID
+                                                    </button>
+                                                )}
+                                                {/* 規格回退（第 16 批）。只有已經走過第 1 階段的才有東西可退。
+                                                    以「已儲存的 StatusID」判斷，與後端看同一個值 */}
+                                                {(() => {
+                                                    const cur = savedStage(requirementsData.find(d => d.id === editingData.id));
+                                                    if (cur < 2) return null;
+                                                    return (
+                                                        <button type="button"
+                                                                /* A7：回退成功後視窗會關掉並重新載入，未儲存的欄位會被靜靜丟掉。
+                                                                   擋在**開啟回退視窗之前** —— 讓人先挑完階段、打完回退說明
+                                                                   才說「不行」是最惱人的順序 */
+                                                                onClick={()=>{
+                                                                    if (isEditDirty()) {
+                                                                        setAlertModal({
+                                                                            title: '有尚未儲存的變更',
+                                                                            message: '這個視窗裡還有沒儲存的欄位。\n\n'
+                                                                                   + '規格回退會重新載入這筆資料，那些變更會遺失。\n\n請先按「儲存變更」，再回來執行回退。'
+                                                                        });
+                                                                        return;
+                                                                    }
+                                                                    setRollbackModal({ id:editingData.id, nid:editingData.nid, curStage:cur, target:cur-1, note:'' });
+                                                                }}
+                                                                className="mt-1.5 w-full px-2 py-1 rounded text-[11px] font-bold border transition-colors"
+                                                                style={{color:'#8b5cf6', background:'rgba(139,92,246,0.08)', borderColor:'rgba(139,92,246,0.3)'}}
+                                                                title="規格變更需要重做目前或前面的階段時使用（清掉目標階段（含）以後的日期、回退次數 +1）">
+                                                            🔄 規格回退
+                                                        </button>
+                                                    );
+                                                })()}
+                                            </div>
+                                            )}
+                                            {/* 手動修正 StatusID 的原因欄。⚠️ 刻意做成**整列寬**而不是塞在
+                                                StatusID 那一格裡：四顆分類鈕加一個輸入框在 1/3 欄寬會擠成三排，
+                                                而這是「會繞過完成／回退機制」的操作，不該長得像個附註。
+                                                只有真的改動了值才出現 —— 按了修正鈕又改回原值就不必寫理由 */}
+                                            {!editingData.isNew && stageUnlocked && (() => {
+                                                const orig = requirementsData.find(d => d.id === editingData.id);
+                                                const changed = orig && normStageCode(orig.stageCode) !== normStageCode(editingData.stageCode);
+                                                if (!changed) return null;
+                                                const from = STAGE_CODES[normStageCode(orig.stageCode)]?.label || '未設定';
+                                                const to   = STAGE_CODES[normStageCode(editingData.stageCode)]?.label || '未設定';
+                                                // 前面的階段沒填完 → 先講這件事，連原因欄都不給填。
+                                                // 讓人填完理由再說「其實不能改」是最惱人的順序
+                                                const lacking = stagePrereqMissing(editingData.stageCode, editingData);
+                                                if (lacking.length > 0) return (
+                                                    <div className="col-span-1 md:col-span-3 p-3 rounded-lg border"
+                                                         style={{background:'var(--tone-alert-bg)', borderColor:'var(--tone-alert-border)'}}>
+                                                        <div className="text-[11px] font-bold mb-2" style={{color:'var(--tone-alert)'}}>
+                                                            ⚠️ 不能改成「{to}」—— 前面的階段還沒填完
+                                                        </div>
+                                                        <div className="text-[11px] mb-2" style={{color:'var(--text-tertiary)'}}>
+                                                            設成這個階段代表前面的都已經走完。請先在下面補上這些日期
+                                                            （可以在同一個視窗裡補完再存），或改選其他階段：
+                                                        </div>
+                                                        <ul className="text-[11px] font-bold list-disc pl-4 space-y-0.5" style={{color:'var(--tone-alert)'}}>
+                                                            {lacking.map(m => <li key={m}>{m}</li>)}
+                                                        </ul>
+                                                    </div>
+                                                );
+                                                return (
+                                                    <div className="col-span-1 md:col-span-3 p-3 rounded-lg border"
+                                                         style={{background:'var(--tone-warn-bg)', borderColor:'var(--tone-warn-border)'}}>
+                                                        <div className="text-[11px] font-bold mb-2" style={{color:'var(--tone-warn)'}}>
+                                                            ✎ 手動調整 StatusID：{from} → {to}
+                                                        </div>
+                                                        <div className="text-[11px] mb-2.5" style={{color:'var(--text-tertiary)'}}>
+                                                            這是繞過「標記完成…」與「🔄 規格回退」的直接修改，<span className="font-bold">不會計入延期／提早／回退次數</span>，
+                                                            也不會補寫該階段的完成紀錄。儲存後會在這筆需求的軌跡留下一筆「手動調整」。
+                                                        </div>
+                                                        <ReasonFields phaseKey="stage" categories={unlockCategories} setCategories={setUnlockCategories}
+                                                                      reasons={unlockReasons} setReasons={setUnlockReasons} error={errOf('reason.stage')} />
+                                                    </div>
+                                                );
+                                            })()}
+                                            </div>
+                                            )}
+                                        </div>
+                                        )}
                                     </div>
                                     
                                     <div className="p-4 border-t flex justify-end gap-3 shrink-0" style={{borderColor:'var(--border-table)'}}>
