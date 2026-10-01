@@ -383,7 +383,7 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
     <h1>MSD 需求管控表</h1>
     <p class="lede">EMS 提需求、MSD 開發、EMS 驗收 —— 這套系統把一筆需求從提出到結案的四個階段、每一次日期異動的理由、以及每週要 review 的逾期項目，全部收在同一張表裡。<b>第一部</b>依你的角色（EMS／MSD／主管）一步一步講「輪到我時要按哪裡」，<b>第二部</b>是逐一功能的完整參考。第一次用請從 <a href="#ra">A 章</a> 開始。</p>
     <p class="meta">
-      <span><b>版本</b> 20260929003</span>
+      <span><b>版本</b> 20261001004</span>
       <span><b>適用</b> 需求列表 · 統計報表</span>
       <span><b>對象</b> EMS／MSD 負責人、主管</span>
     </p>
@@ -677,13 +677,14 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
     <div class="tw"><table>
       <thead><tr><th style="width:230px">我想要</th><th>去哪裡按</th><th style="width:110px">詳見</th></tr></thead>
       <tbody>
-        <tr><td>建一筆新需求</td><td>工具列右上 <span class="ui">＋ 新增需求</span></td><td>B-1、第 03 章</td></tr>
-        <tr><td>壓我這一階段的日期</td><td>點那一列的 <span class="badge a">⚠ 未壓日期</span>（或 ✎ → 該階段的 End Date）→ <span class="ui">儲存變更</span></td><td>B-2、C-2、第 04 章</td></tr>
-        <tr><td>我做完了</td><td>✎ → 該階段標題旁 <span class="ui">標記完成…</span> → 填實際完成日</td><td>第 05 章</td></tr>
+        <tr><td><b>知道現在有沒有我該做的事</b></td><td><b>EMS／MSD 負責人：</b>登入後預設停的那一頁 <span class="ui">我的待辦</span> —— 「要你處理」那一區就是答案，空的就代表沒你的事。<b>主管：</b>工具列 <span class="ui">逾期</span> 下拉 → 需關注</td><td>第 18 章、第 10 章</td></tr>
+        <tr><td>建一筆新需求</td><td><span class="ui">我的待辦</span> 右上、或需求列表工具列右上的 <span class="ui">＋ 新增需求</span></td><td>B-1、第 03 章</td></tr>
+        <tr><td>壓我這一階段的日期</td><td><b>最快：</b><span class="ui">我的待辦</span> → 卡片上的 <span class="ui">填寫結束日 →</span>（② 是「填寫確認日 →」）。或在需求列表點那一列的 <span class="badge a">⚠ 未壓日期</span>（或 ✎ → 該階段的 End Date）→ <span class="ui">儲存變更</span></td><td>第 18 章、B-2、C-2、第 04 章</td></tr>
+        <tr><td>我做完了</td><td><b>最快：</b><span class="ui">我的待辦</span> → 卡片上的 <span class="ui">標記完成 →</span>。或 ✎ → 該階段的 <span class="ui">標記完成…</span> → 填實際完成日</td><td>第 18 章、第 05 章</td></tr>
         <tr><td>提醒下一個人來壓日期</td><td>那一列徽章底下的 <span class="ui">✉</span></td><td>第 10 章</td></tr>
         <tr><td>日期要延後／提前（還沒做完）</td><td>✎ → <span class="ui">🔒</span> 解鎖 → 改 End Date → 選分類、填理由 → <span class="ui">儲存變更</span></td><td>第 04 章</td></tr>
         <tr><td>更新目前進度的文字</td><td>✎ → 最底下「現況說明」→ <span class="ui">儲存變更</span>（不必解鎖、不必理由）</td><td>—</td></tr>
-        <tr><td>只看我自己負責的</td><td><b>EMS 人員一登入就已經篩好了</b>（表格上方那顆 <span class="ui">👤 EMS ○○○</span> 晶片）；其他人用工具列 <span class="ui">EMS</span> 或 <span class="ui">MSD</span> 下拉選自己的名字</td><td>第 09 章</td></tr>
+        <tr><td>只看我自己負責的</td><td><b>EMS／MSD 負責人什麼都不用做</b> —— 登入後預設就是 <span class="ui">我的待辦</span>（只有你的需求）。EMS 切到需求列表也已經篩好了（表格上方那顆 <span class="ui">👤 EMS ○○○</span> 晶片）；MSD 請用工具列的 <span class="ui">MSD</span> 下拉選自己的名字，或按待辦頁的 <span class="ui">在需求列表看這 N 筆 →</span></td><td>第 18 章、第 09 章</td></tr>
         <tr><td>看我有哪些快到期</td><td>工具列 <span class="ui">逾期</span> 下拉 → 需關注（或頁籤上的紅數字）</td><td>第 10 章</td></tr>
         <tr><td>規格改了，前面的階段要重做</td><td>✎ → 最下方 <span class="ui">⚙ 進階</span> → <span class="ui">🔄 規格回退</span></td><td>B-5、第 06 章</td></tr>
         <tr><td>按錯「標記完成…」了</td><td>✎ → 那個階段 ✓ 旁邊的 <span class="ui">撤銷</span>（不是規格回退）</td><td>第 05 章</td></tr>
@@ -801,8 +802,9 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
 
     <div class="note">
       <span class="lb">一打開就是你自己的需求</span>
-      <p>你的工號在指派人員主檔裡而且部門是 EMS 時，需求列表<b>預設只列出 EMS 負責人是你的那些</b>，表格上方會有一顆 <span class="ui">👤 EMS ○○○ ✕</span> 晶片。要看全部就按它的 <b>✕</b>（見<a href="#c9-me">第 09 章</a>）。</p>
-      <p>沒有自動篩選代表你的工號還沒建檔、或主檔裡的姓名與需求上寫的不一樣 —— 請管理者對一下。</p>
+      <p>你的工號在指派人員主檔裡而且部門是 EMS 時，<b>登入後預設停在 <span class="ui">我的待辦</span></b> —— 那一頁只列你名下的需求，並且把「現在輪到你的」挑出來放最上面（見<a href="#c18">第 18 章</a>）。底下 B-1 ~ B-6 的每一步都可以從那一頁出發。</p>
+      <p>切到 <span class="ui">需求列表</span> 時也已經<b>預設只列出 EMS 負責人是你的那些</b>，表格上方會有一顆 <span class="ui">👤 EMS ○○○ ✕</span> 晶片。要看全部就按它的 <b>✕</b>（見<a href="#c9-me">第 09 章</a>）。</p>
+      <p>兩件事都沒有發生，代表你的工號還沒建檔、或主檔裡的姓名與需求上寫的不一樣 —— 請管理者對一下（第 18 章列出了三種原因）。</p>
     </div>
 
     <h3>B-1 建立一筆需求</h3>
@@ -881,11 +883,19 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
     <h2><span class="n">C</span><span>MSD 負責人：確認與開發</span><span class="who-tags"><span class="wt msd">MSD</span></span></h2>
     <p class="sub">你負責 <b style="color:var(--s2)">②</b> 與 <b style="color:var(--s3)">③</b>。從 EMS 把 ① 標記完成那一刻起這筆就是你的；③ 標記完成後交回 EMS 驗收。中間你會碰到的每一顆按鈕都在這一章。</p>
 
+    <div class="note">
+      <span class="lb">一打開就是你自己的需求</span>
+      <p>你的工號在指派人員主檔裡而且部門是 MSD 時，<b>登入後預設停在 <span class="ui">我的待辦</span></b> —— 那一頁只列你名下的需求，並且把「現在輪到你的」（也就是 ② 與 ③）挑出來放最上面（見<a href="#c18">第 18 章</a>）。底下 C-1 ~ C-5 的每一步都可以從那一頁出發。</p>
+      <p>要看全部人的需求、要搜尋排序匯出，隨時切到 <span class="ui">需求列表</span> —— 那一頁一欄都沒有少，而且可以<b>另外開一個分頁</b>長期擺著。</p>
+      <p>沒有停在那一頁，代表你的工號還沒建檔、或主檔裡的姓名與需求上寫的不一樣 —— 請管理者對一下（第 18 章列出了三種原因）。</p>
+    </div>
+
     <h3>C-1 怎麼知道有一筆輪到你了</h3>
     <ul>
+      <li><b>最直接：</b><span class="ui">我的待辦</span> 的「要你處理」那一區 —— 有卡片就是有事，空的就代表沒你的事（<a href="#c18">第 18 章</a>）。</li>
       <li>一封主旨「<b>[需求管控表] 請壓定「2_MSD確認中」日期：NID … / 專案 / 子項目</b>」的信。寄件者是 EMS 本人，有問題直接回信；信裡有 NID、分類、現況描述與系統網址。</li>
-      <li>沒收到信也看得到：工具列 <span class="ui">MSD</span> 下拉選你自己 → <span class="ui">逾期</span> 下拉選「需關注」→ 標著 <span class="badge a">⚠ 未壓日期</span> 的就是。</li>
-      <li>更快的訊號：頁籤「需求列表」右上角的紅色數字＝目前需關注的件數（不分人）。</li>
+      <li>在需求列表也看得到：工具列 <span class="ui">MSD</span> 下拉選你自己 → <span class="ui">逾期</span> 下拉選「需關注」→ 標著 <span class="badge a">⚠ 未壓日期</span> 的就是。</li>
+      <li>更快的訊號：頁籤上的紅點＝那邊有事情要看。</li>
     </ul>
 
     <h3>C-2 ② 確認：壓確認日、確認完標記完成</h3>
@@ -1029,13 +1039,14 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
   <!-- ═══ 02 ═══ -->
   <section id="c2" data-role="common" data-group="第二部 · 功能參考" data-num="02" data-title="畫面導覽">
     <h2><span class="n">02</span><span>畫面導覽</span><span class="who-tags"><span class="wt all">全體</span></span></h2>
-    <p class="sub">兩個頁籤：<span class="ui">需求列表</span> 與 <span class="ui">統計報表</span>。所有寫入動作都在需求列表。</p>
+    <p class="sub">最多三個頁籤：<span class="ui">我的待辦</span>（只有 EMS／MSD 負責人看得到，而且是他們的預設頁）、<span class="ui">需求列表</span>、<span class="ui">統計報表</span>。所有寫入動作都是在編輯視窗裡做的，而兩個列表頁都開得出那個視窗。</p>
 
     <h3>頁首（最上方一列）</h3>
     <div class="tw"><table>
       <thead><tr><th style="width:150px">控制項</th><th>作用</th></tr></thead>
       <tbody>
-        <tr><td><span class="ui">需求列表</span> / <span class="ui">統計報表</span></td><td>切換兩個頁籤。頁籤上的紅色數字＝目前需關注的件數。</td></tr>
+        <tr><td><span class="ui">我的待辦</span></td><td><b>只有 EMS／MSD 負責人看得到，而且登入後預設就停在這一頁</b>（第 18 章）。只列你名下的需求，並分成「要你處理／另有 N 筆在等 ○○／我的全部」。紅點＝有事情要你做。</td></tr>
+        <tr><td><span class="ui">需求列表</span> / <span class="ui">統計報表</span></td><td>切換頁籤。紅點＝那一頁有需關注的項目。<b>需求列表是完整的 16 欄表格</b>，搜尋、篩選、排序、匯出都在那裡。</td></tr>
         <tr><td><span class="badge a">⚠ 右邊被切掉</span></td><td><b>只在投影模式下才會出現</b>（台上的人看自己的螢幕，不會發現布幕右邊少了幾欄）。點一下降一級投影倍率。平常使用不會看到它 —— 右邊放不下時整個版面會一起變寬，橫向捲動即可。</td></tr>
         <tr><td><span class="ui">🔐</span> / <span class="ui">🔐 卡控中</span></td><td><b>只有管理者看得到。</b>開「瀏覽權限」面板（第 14 章）。藍色實心＋「卡控中」＝目前有在限制誰能看這個網頁。</td></tr>
         <tr><td><span class="ui">📽 投影</span></td><td>會議室投影模式。<b>必須先開精簡模式、而且在需求列表頁</b>才能按。</td></tr>
@@ -1125,7 +1136,8 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
 
     <div class="note">
       <span class="lb">① 的結束日可以先不填</span>
-      <p>註冊需求的當下常常還排不出 EMS 交規格的日子。<b>不必為了存檔先隨手填一個</b> —— 隨手填的日期會被系統當真，直接算進逾期與統計，比留空更難查。</p>
+      <p>註冊需求的當下常常還排不出 EMS 交規格的日子。<b>不必為了存檔先隨手填一個</b> —— 隨手填的日期會被系統當真，直接算進逾期與統計，比留空更難查。<b>新增視窗</b>的這一欄標著 <span class="ui">(可不填)</span>。</p>
+      <p>需求建好之後再進<b>編輯視窗</b>，那三個字就不會再出現 —— 因為這時候留空就是「⚠ 未壓日期」，不再是「沒關係」。<b>規則沒有變</b>：原本就空著的仍然存得進去（規格回退之後要重壓的也是走這條），欄位底下那行灰字會告訴你留空的後果。原本<b>已經填過</b>的那一欄則標著紅色的 <b style="color:var(--alert)">*</b>，不能再清空。</p>
       <p>留空之後會發生兩件事，兩件都看得見：</p>
       <ul>
         <li>資料列 ① 那一格標成紅色的 <span class="badge a">⚠ 未壓日期</span>，<b>點它就會直接打開編輯視窗、游標停在 ① 的結束日欄位上</b>；徽章下方另有一顆 <span class="ui">✉</span>，隨時可以按著寄通知。這一筆也會被算進「需關注」與「已到階段未壓日期」。</li>
@@ -2118,6 +2130,83 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
         <tr><td>整個網頁一片空白，只有一段英文</td><td>網頁的核心程式沒有載進來（例如 <code>vendor/react-18.3.1.production.min.js</code> 載不到）</td><td>重新整理一次；仍然一樣就<b>截圖</b>給管理者，並告訴他是哪個檔載不進來</td></tr>
       </tbody>
     </table></div>
+  </section>
+
+  <!-- ═══ 18 我的待辦 ═══ -->
+  <section id="c18" data-role="common" data-group="第二部 · 功能參考" data-num="18" data-title="我的待辦">
+    <h2><span class="n">18</span><span>我的待辦（EMS 與 MSD 的預設頁）</span><span class="who-tags"><span class="wt ems">EMS</span><span class="wt msd">MSD</span></span></h2>
+    <p class="sub">EMS 與 MSD 負責人登入後<b>預設就落在這一頁</b>。它只回答一個問題：<b>現在有沒有我該做的事</b>。沒有的話，這一頁會直接告訴你「目前沒有要你處理的事」，你看一眼就可以走。</p>
+
+    <div class="note">
+      <span class="lb">這一頁不是另一份需求清單</span>
+      <p>它列的是<b>你名下</b>的需求，而且依「現在輪到誰」分區。要看全部人的需求、要搜尋、要排序、要匯出，一律切到 <span class="ui">需求列表</span>（<a href="#c9">第 09 章</a>）—— 那一頁一欄都沒有少。</p>
+    </div>
+
+    <h3>三個區塊的意思</h3>
+    <div class="tw"><table>
+      <thead><tr><th style="width:150px">區塊</th><th>裡面是什麼</th><th style="width:230px">你要做的事</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><b>要你處理</b></td>
+          <td><b>目前這一階段的負責人欄寫的是你的名字。</b>①④ 看的是「EMS 負責人」、②③ 看的是「MSD 負責人」—— 所以 EMS 看到的多半是 ①④，MSD 看到的多半是 ②③。一筆一張卡，<b>最急的排最上面</b>（還沒壓日期的第一、再按剩下幾天排）。</td>
+          <td>按卡片右邊那一顆。它會開啟<b>編輯視窗</b>並直接跳到那一階段（<a href="#c4-now">第 04 章</a>）。</td>
+        </tr>
+        <tr>
+          <td><b>另有 N 筆在等 ○○</b></td>
+          <td>目前這一階段是<b>對方</b>的。預設收起來，按那一行展開；展開後一筆一行，寫著那一階段的日期、逾期幾天、以及在等哪一位。</td>
+          <td><b>現在不用你動手。</b>對方那一階段還沒壓日期時，這一行會有 <span class="badge a">⚠ 未壓日期</span> 與 <span class="ui">✉</span> —— 按 ✉ 可以寄信提醒他（<a href="#c10">第 10 章</a>）。</td>
+        </tr>
+        <tr>
+          <td><b>我的全部 N 筆</b></td>
+          <td>你名下的<b>全部</b>需求，含已結案的。預設收起來，按那一行展開。</td>
+          <td>要找一筆舊的、已結案的就在這裡。點 <b>NID</b> 開編輯視窗。</td>
+        </tr>
+      </tbody>
+    </table></div>
+
+    <h3>卡片上那一顆按鈕</h3>
+    <p>卡片只有三樣東西：<b>標題、一句話、一顆鈕</b>。那一句話講的是「這一階段怎麼了」，按鈕則<b>依狀況換字</b>：</p>
+    <div class="tw"><table>
+      <thead><tr><th style="width:230px">卡片上那句話</th><th style="width:190px">按鈕</th><th>按下去會怎樣</th></tr></thead>
+      <tbody>
+        <tr><td><b style="color:var(--alert)">⚠ 驗收日期還沒填</b><br><span style="color:var(--ink-3)">（② 是「確認日期還沒填」）</span></td><td><span class="ui">填寫結束日 →</span><br><span style="color:var(--ink-3)">（② 是「填寫確認日 →」）</span></td><td>開啟編輯視窗，<b>游標直接落在那一階段的日期欄</b>。填好按 <span class="ui">儲存變更</span>。</td></tr>
+        <tr><td><b style="color:var(--alert)">⚠ 驗收已逾期 29 天</b> 原訂 09/02<br>或 <b>規格確認 還有 91 天</b></td><td><span class="ui">標記完成 →</span></td><td>開啟編輯視窗並跳到那一階段，那裡就有 <span class="ui">標記完成…</span>（<a href="#c5">第 05 章</a>）。要改日期則按 <span class="ui">已鎖定，點此修改</span>。</td></tr>
+        <tr><td>同上</td><td><span class="ui">開啟這一階段 →</span></td><td>這一階段<b>當下按不了「標記完成…」</b>（前面的階段還缺日期、或完成順序擋著）。按下去會跳到那一階段，視窗上會寫是哪一個原因。</td></tr>
+      </tbody>
+    </table></div>
+
+    <h3>看到「目前沒有要你處理的事」</h3>
+    <p>這是<b>正常也是最常見</b>的畫面，代表球不在你手上。底下那一行會告訴你其他幾筆在哪裡 —— 例如「你名下有 2 筆還在進行，正在等 MSD」。要開新需求就按右上角的 <span class="ui">＋ 新增需求</span>（<a href="#c3">第 03 章</a>）。</p>
+    <p>名下的需求<b>全部結案</b>時，這一格會換成綠色的 <b style="color:var(--ok)">✓ 你名下的需求都已經結案了</b>。還在等對方的那一種<b>不會</b>出現 ✓ —— 那時候你一件都還沒完成，只是球不在你手上。</p>
+
+    <h3>為什麼有人看不到這個頁籤</h3>
+    <p><span class="ui">我的待辦</span> 只給<b>身分對得上的 EMS 或 MSD 負責人</b>看。主管沒有這個頁籤，因為名下沒有需求 —— 請用 <span class="ui">需求列表</span>，那裡看得到全部。</p>
+    <p>你是負責人卻看不到，或點進去出現<b>「判斷不出你是哪一位負責人」</b>，那頁會列出三種原因，三種都不是系統壞掉：</p>
+    <ol class="steps">
+      <li><b>工號不在指派人員主檔裡</b>還沒建檔。</li>
+      <li><b>主檔裡你的部門不是 EMS 也不是 MSD</b>主管本來就沒有這一頁。</li>
+      <li><b>主檔上的姓名與需求裡負責人欄寫的不一樣</b>例如主檔寫「桂豪」、需求上寫「桂瑮」—— 系統是拿名字去比對的，差一個字就對不上。</li>
+    </ol>
+    <p>這三種都要請管理者在 <code>dbo.Assignee</code> 補或改（那份名單目前只能由管理者直接在資料庫維護）。<b>在補好之前，需求列表完全照常可以用。</b></p>
+
+    <details class="adv"><summary>為什麼是「待辦」而不是「我的專案列表」</summary>
+      <div class="note">
+      <p>因為一位負責人身上<b>同時在跑的需求通常只有幾筆</b>，而其中有一半以上的時間球在對方手上。做成清單的話你還是得逐筆去看「這筆現在是誰要動」—— 那個判斷系統算得出來，所以直接幫你分好。</p>
+      <p>這一頁上的日期、逾期天數、徽章、信件，全部與需求列表用的是<b>同一套規則</b>，不是另外算一份。所以兩頁看到的不會打架。</p>
+    </div>
+    </details>
+
+    <details class="adv"><summary>為什麼卡片上沒有階段徽章、子項目、負責人</summary>
+      <div class="note">
+      <p>卡片上那句話裡已經有「驗收／開發／確認」了，再加一顆階段徽章是同一件事講兩次。子項目與負責人點進去就看得到。這一頁要回答的只有「現在要我做什麼」，其餘都在 <span class="ui">需求列表</span>（<a href="#c9">第 09 章</a>）。</p>
+    </div>
+    </details>
+
+    <details class="adv"><summary>我想要每次都先看需求列表</summary>
+      <div class="note">
+      <p>切到 <span class="ui">需求列表</span> 之後，<b>把網址列整條加到書籤</b>（網址裡會帶 <code>view=table</code>）。下次從那個書籤進來就會停在需求列表，不會跳回待辦頁；篩選與排序也一起記在那條網址裡（<a href="#c9">第 09 章</a>）。</p>
+    </div>
+    </details>
   </section>
 
   <footer>

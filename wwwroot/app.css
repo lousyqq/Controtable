@@ -685,7 +685,10 @@ body {
   --tone-warn:  #b45309;
   --tone-warn-bg:  rgba(180,83,9,0.08);
   --tone-warn-border:  rgba(180,83,9,0.22);
+  /* tone-good-bg 是第 90 批補的（「我的待辦」全部結案時那顆 ✓ 的底）。
+       數值與第 59 批那顆「✓ 提早完成」結果標籤的底色同一個 */
   --tone-good:  #0f766e;
+  --tone-good-bg: rgba(15,118,110,0.1);
 }
 
 .\!dark {
@@ -743,6 +746,7 @@ body {
   --tone-warn-bg:  rgba(251,191,36,0.12) !important;
   --tone-warn-border:  rgba(251,191,36,0.3) !important;
   --tone-good:  #2dd4bf !important;
+  --tone-good-bg: rgba(45,212,191,0.12) !important;
 }
 
 .dark {
@@ -800,6 +804,7 @@ body {
   --tone-warn-bg:  rgba(251,191,36,0.12);
   --tone-warn-border:  rgba(251,191,36,0.3);
   --tone-good:  #2dd4bf;
+  --tone-good-bg: rgba(45,212,191,0.12);
 }
 
 /* 原生 <select> 展開後的選項清單。上面的 color-scheme 已經讓 Chrome 用對配色，
@@ -942,6 +947,13 @@ select.ctl {
   align-items: center;
   gap: 6px;
   height: 26px;
+  /* ⚠️⚠️ 這兩行不可以拿掉（2026-10-01）：頁首是一條 flex，右側控制項一多就會把 .seg
+       壓縮，而 .seg-item 沒有 nowrap 時文字會換行 —— 使用者附截圖回報過「需求列／表」
+       這種斷字（第三個頁籤加進來之後更容易發生）。⚠️ **開發機重現不了**：沙箱的中文字型
+       比他機器上的 Microsoft JhengHei 窄，同樣的字在這裡量到的寬度偏小。
+       所以這裡解的是「結構上不可能換行」，不是靠把某個寬度調大。 */
+  white-space: nowrap;
+  flex-shrink: 0;
   padding: 0 12px;
   border-radius: 7px;
   font-size: 11px;
@@ -2326,8 +2338,28 @@ select.ctl {
   font-size: 13px;
 }
 
+.text-\[14px\] {
+  font-size: 14px;
+}
+
 .text-\[15px\] {
   font-size: 15px;
+}
+
+.text-\[16px\] {
+  font-size: 16px;
+}
+
+.text-\[17px\] {
+  font-size: 17px;
+}
+
+.text-\[24px\] {
+  font-size: 24px;
+}
+
+.text-\[26px\] {
+  font-size: 26px;
 }
 
 .text-\[28px\] {
@@ -2712,6 +2744,7 @@ select.ctl {
     --tone-warn-bg:transparent;
     --tone-warn-border:#8a4b00;
     --tone-good:#0f766e;
+    --tone-good-bg:transparent;
   }
 
   /* 15 欄橫式才放得下；直式印會被切掉右邊三四欄 */
@@ -2897,6 +2930,10 @@ select.ctl {
 .hover\:text-white:hover {
   --tw-text-opacity: 1;
   color: rgb(255 255 255 / var(--tw-text-opacity, 1));
+}
+
+.hover\:underline:hover {
+  text-decoration-line: underline;
 }
 
 .focus\:outline-none:focus {
