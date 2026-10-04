@@ -1549,10 +1549,14 @@ static string[] MissingRequiredFields(Requirement req, Requirement? before = nul
     var missing = new List<string>();
     void Need(string? v, string label) { if (string.IsNullOrWhiteSpace(v)) missing.Add(label); }
 
-    Need(req.nid, "NID");
-    Need(req.mainCat, "專案名稱 (MainCat)");
-    Need(req.subCat, "子項目分類 (SubCat)");
-    Need(req.emsOwner, "EMS");
+    // ⚠️ 標籤要與**畫面上的字**一致（第 96 批）：新增視窗寫中文（「類型分類」「子分類」，第 103 批改名），
+    //    編輯視窗與表格表頭寫英文代號（Main Cat／Sub Cat），所以這裡一律用「中文 (英文)」的
+    //    合併寫法，兩種人被擋的那一刻都認得出是哪一欄（第 37 批：同一個概念只能有一組字）。
+    //    前端 requiredFieldsFor() 是鏡像，改了要兩邊一起改。
+    Need(req.nid, "編號 NID");
+    Need(req.mainCat, "類型分類 (Main Cat)");
+    Need(req.subCat, "子分類 (Sub Cat)");
+    Need(req.emsOwner, "EMS 負責人");
     // ⚠️ 開始日**不再是必填**（2026-08-22 使用者定調：Start 不重要，沒填就等同 End 同一天）。
     // ApplyStartDefaults() 會在驗證之前補好，所以這裡只要求 End
     //
@@ -1900,11 +1904,13 @@ static string[] EndChangedWithoutReason(Requirement req, Requirement before)
 
 // NID 唯一。已軟刪除的資料不佔用 NID，所以只比對 IsDeleted = 0 的列。
 // excludeId 給編輯用，排除自己這筆。
-static async Task<bool> NidExistsAsync(SqlConnection conn, string? nid, int excludeId = 0, SqlTransaction? tx = null)
+// lockRange = 在交易裡用範圍鎖再查一次（第 96 批）。見下面 IsUniqueViolation 那段的說明。
+static async Task<bool> NidExistsAsync(SqlConnection conn, string? nid, int excludeId = 0, SqlTransaction? tx = null, bool lockRange = false)
 {
     if (string.IsNullOrWhiteSpace(nid)) return false;
     using var cmd = new SqlCommand(
-        "SELECT COUNT(*) FROM dbo.Controltable WHERE NID = @NID AND IsDeleted = 0 AND Id <> @ExcludeId", conn, tx);
+        "SELECT COUNT(*) FROM dbo.Controltable" + (lockRange ? " WITH (UPDLOCK, HOLDLOCK)" : "")
+        + " WHERE NID = @NID AND IsDeleted = 0 AND Id <> @ExcludeId", conn, tx);
     cmd.Parameters.AddWithValue("@NID", nid.Trim());
     cmd.Parameters.AddWithValue("@ExcludeId", excludeId);
     return Convert.ToInt32(await cmd.ExecuteScalarAsync()) > 0;
@@ -1912,8 +1918,16 @@ static async Task<bool> NidExistsAsync(SqlConnection conn, string? nid, int excl
 
 // SQL Server 的唯一鍵衝突（2601 = 唯一索引、2627 = 唯一/主鍵限制）。
 // 上面的 NidExistsAsync 是「先查再寫」，兩個請求同時進來時中間有空隙 ——
-// 真正的把關是 13_nid_unique.sql 建的 UX_Controltable_NID_Active，
-// 這支負責把它拋出來的例外翻成使用者看得懂的 409（做法與 dbo.Assignee 一致）。
+// 13_nid_unique.sql 建的 UX_Controltable_NID_Active 會把它擋成例外，
+// 這支負責把例外翻成使用者看得懂的 409（做法與 dbo.Assignee 一致）。
+//
+// ⚠️⚠️ **但那條索引刻意沒有在啟動時 bootstrap**（有重複資料時建索引會失敗，見 CLAUDE.md），
+//    所以正式主機上不保證存在 —— 它是後盾，不是唯一的防線。第 96 批把新增視窗的 NID 改成
+//    **自動取號**（現有純數字 NID 的最大值 +1）之後，「兩個人拿到同一個號」從手誤變成
+//    系統性的結果：兩位 EMS 同時按下「＋ 新增需求」拿到的必然都是 63。
+//    因此 POST 在 **交易裡**用 (UPDLOCK, HOLDLOCK) 再查一次 —— 後進來的那一個會被擋住，
+//    等前一個 commit 之後就看得到那筆、回 409 請他換號。沒有這一道而索引又不存在時，
+//    結果是兩筆 NID 63 靜靜進了資料庫，而這張表的所有畫面都假設 NID 是唯一的。
 static bool IsUniqueViolation(SqlException ex) => ex.Number == 2601 || ex.Number == 2627;
 
 app.MapPost("/api/requirements", async (Requirement req) =>
@@ -2006,6 +2020,14 @@ app.MapPost("/api/requirements", async (Requirement req) =>
     using var tx = conn.BeginTransaction();
     try
     {
+        // ⚠️ 交易裡再查一次，這次帶範圍鎖（第 96 批）。上面那次是「不必開交易就能擋掉」的
+        //    快路徑，這一次才是真正的把關 —— 理由見 IsUniqueViolation 上面那段。
+        if (await NidExistsAsync(conn, req.nid, 0, tx, lockRange: true))
+        {
+            tx.Rollback();
+            return Results.Conflict(new { message = $"NID「{req.nid}」已存在，請改用其他編號。", field = "nid" });
+        }
+
         // CreatedAt 交由資料庫的 DEFAULT SYSDATETIME() 產生，不由前端傳入
         using var cmd = new SqlCommand(@"
             INSERT INTO dbo.Controltable (NID, RegDate, YearMonth, MainCat, SubCat, Status, StageCode, Remark, NotesLink, EmsOwner, MsdOwner, CurrentStatus, MpSaving,
@@ -2392,6 +2414,27 @@ app.MapPut("/api/requirements/{id}", async (int id, Requirement req) =>
     //    「欄位變了卻查不到誰改的」，那正是這一批要消滅的狀態（DB_table.md 第 7 條）。
     await WriteFieldAuditAsync(conn, id, req, before, actor, actorSrc, tx);
 
+    // ─── 「這筆沒有連結可貼」的確認（第 105 批，2026-10-04 使用者要求）───
+    // ⚠️⚠️ 走既有的 PUT **不另開端點**（第 92 批那條）：樂觀鎖、交易、400／409 的中文訊息、
+    //    前端的 alertWriteFail 兩種措辭，全部一次套到。
+    // ⚠️ 排在 WriteFieldAuditAsync 之後：同一次儲存裡若他「先貼連結」就不會走到這裡（下面那道
+    //    IsLinkValue 擋著），而真的要確認無連結時，欄位異動那幾列本來也排在前面。
+    // ⚠️⚠️ **有合法連結時一律不寫**：兩件事同時成立是矛盾的，而稽核表上一筆矛盾的列
+    //    日後沒有人分得出哪一個才算數。前端也擋了一道，這裡是最後一道。
+    // ⚠️ 不進 isDateChange、不計 ⚠N、不動三個計數欄 —— 它與「建立」「通知寄送」同一類
+    //    （前端的 NON_CHANGE_TYPES，第 85 批）。
+    // ⚠️ Phase 欄是 NOT NULL，這件事屬於 ① 這一關，所以固定寫 'spec'
+    //    （NoNotesLinkConfirmedAsync 的基準線也是按 Phase = 'spec' 過濾規格回退）。
+    if (req.confirmNoNotesLink == true && !IsLinkValue(req.notesLink)
+        && !await NoNotesLinkConfirmedAsync(conn, id, tx))
+    {
+        var empty = ((string?)null, (string?)null, (string?)null);
+        await InsertHistoryAsync(conn, id, req.nid, "spec", "無連結確認", null,
+                                 "確認這筆沒有 Notes Link 可貼：「1_EMS規格確認」標記完成時不再要求連結。"
+                               + "（之後補上連結就會蓋掉這筆確認）",
+                                 actor, actorSrc, empty, empty, tx);
+    }
+
     tx.Commit();
     }
     catch
@@ -2639,11 +2682,11 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
     {
     // 目前的日期與狀態。稽核列要記「這個階段異動前後的值」，所以四階段的日期都要讀
     Requirement? cur = null;
-    string curStage = "", curStatus = "";
+    string curStage = "", curStatus = "", curNotesLink = "";
     DateTime? plannedEnd = null;
     // ⚠️ 四個 *ActualEnd 也要讀（第 68 批）：PrevPhaseEndOf() 拿它判「前一階段實際結束在哪一天」
     using (var readCmd = new SqlCommand($@"
-        SELECT NID, Status, StageCode, SpecStart, SpecEnd, SpecActualEnd, MsdConfirm, MsdConfirmActualEnd,
+        SELECT NID, Status, StageCode, NotesLink, SpecStart, SpecEnd, SpecActualEnd, MsdConfirm, MsdConfirmActualEnd,
                MsdStart, MsdEnd, MsdActualEnd, UatStart, UatEnd, UatActualEnd,
                {cols.EndCol} AS PlannedEnd
         FROM dbo.Controltable WHERE Id = @Id AND IsDeleted = 0", conn, tx))
@@ -2661,6 +2704,7 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
                 uat  = new Phase { start = ReadDate(r, "UatStart"), end = ReadDate(r, "UatEnd"), actualEnd = ReadDate(r, "UatActualEnd") }
             };
             curStage = ReadString(r, "StageCode");
+            curNotesLink = ReadString(r, "NotesLink") ?? "";
             curStatus = ReadString(r, "Status");
             int ord = r.GetOrdinal("PlannedEnd");
             if (!r.IsDBNull(ord)) plannedEnd = r.GetDateTime(ord);
@@ -2725,6 +2769,47 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
                     + $"{(string.IsNullOrWhiteSpace(NormStage(curStage)) ? "，由 Overall Status = Done 推斷" : "")}），不能再標記完成。\n\n"
                     + "重複標記會讓延期／提早次數多算一次。若這個階段真的要重做，請改用「規格回退」。"
         });
+
+    // ─── ① 標記完成一定要有 Notes Link（第 104 批，2026-10-04 使用者要求）───
+    // 使用者原話：「我希望 SPEC 確認提供日時，一定要有 Notes Link」。
+    // ⚠️⚠️ 擋在**這一刻**，不是擋在新增視窗：建單當下那份 SPEC 文件多半還不存在，連結沒地方指
+    //    （實測 64 筆只有 2 筆有值）。① 完成＝ SPEC 真的交給 MSD 了，那一刻它一定存在。
+    // ⚠️ 前端完成視窗裡有同一格欄位與同一道驗證（**鏡像，改了要兩邊一起改**），這裡是最後一道。
+    // ⚠️ **事後補記（backfill）不套**：那是在記錄一件早就發生的事，擋它只會讓既有資料
+    //    變成「有值卻永遠補不了」（第 14 批那條界線）。
+    // ⚠️ 既有資料完全不受影響：這一條只在「現在要按 ① 的完成」時才跑。
+    var specLinkIn = (body.notesLink ?? "").Trim();
+    var specLinkFinal = specLinkIn.Length > 0 ? specLinkIn : (curNotesLink ?? "").Trim();
+    if (phase == "spec" && !backfill)
+    {
+        if (specLinkIn.Length > FieldLimits.NotesLinkMax)
+            return Results.BadRequest(new
+            {
+                message = $"Notes Link 上限 {FieldLimits.NotesLinkMax} 字，目前 {specLinkIn.Length} 字。"
+            });
+        // ─── 唯一的出路：使用者已經確認過「這筆沒有連結可貼」（第 105 批，2026-10-04）───
+        // ⚠️⚠️ 這道豁免是**必要的，不是把第 104 批放寬**。在它之前，真的沒有連結的人只剩兩條路：
+        //    ①貼一個假網址（第 104 批自己的註解就寫著「只會換來一個貼假網址的欄位」，正是它要防的）；
+        //    ②去「⚙ 進階」手動把 StatusID 從 1 調到 2（H2 允許往前，所以這條路是通的）——
+        //    但那樣不會留下完成紀錄，① 會永遠停在「已略過此階段」（第 60 批那個最難收拾的狀態）。
+        //    **兩種都比一個誠實的、留得下稽核列的豁免糟。**
+        // ⚠️ 它是一筆稽核列（ChangeType = '無連結確認'），不是一個欄位 —— 作法與第 69 批的
+        //    PhasesWithEndEverSetAsync()、第 43 批的 phaseNotifiedEntry() 完全一樣：拿稽核表當狀態來源。
+        //    因此**這一批沒有任何 SQL 腳本**（ChangeType 是 NVARCHAR(20) 且無 CHECK，見 DB_table.md 第 295 行）。
+        // ⚠️ 基準線取「這一階段最後一次規格回退之後」（與 phaseNotifiedEntry 同一套）：規格重做了，
+        //    新的那一版可能真的有文件了 —— 讓一次確認永久有效，等於幫未來的自己做決定。
+        if (!IsLinkValue(specLinkFinal) && !await NoNotesLinkConfirmedAsync(conn, id, tx))
+            return Results.BadRequest(new
+            {
+                message = $"「{cols.Label}」要標記完成，必須先填 Notes Link（SPEC 文件的連結）。\n\n"
+                        + "這一關完成就代表 SPEC 已經交給 MSD 了，而 Notes Link 是下一棒打開文件的入口。\n\n"
+                        + (string.IsNullOrWhiteSpace(specLinkFinal)
+                            ? "請在完成視窗的「Notes Link」欄貼上 Notes://… 或 https://… 開頭的網址。"
+                            : $"目前填的是「{specLinkFinal}」，它不是一個開得起來的連結 —— 必須是 Notes://、https://、http://、file:// 或 ftp:// 開頭。")
+                        + "\n\n這筆真的沒有連結可貼的話，請到「我的待辦」的卡片上按「這筆沒有連結可貼」確認一次，之後這一關就不會再要求。",
+                fields = new[] { "notesLink" }
+            });
+    }
 
     // ─── 前置階段的日期必須齊全（2026-08-23 / 第 22 批）───
     // ⚠️ 這條規則在 A5 那批就已經寫好了（StagePrereqViolations），但**只掛在 POST / PUT**：
@@ -3007,6 +3092,27 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
     }
 
     var (actor, actorSrc) = ResolveActor(new Requirement { actorEmpId = body.actorEmpId, actorSource = body.actorSource });
+
+    // ─── 連同這次完成一起更新 Notes Link（第 104 批）───
+    // ⚠️⚠️ 寫在**同一個交易**裡：完成紀錄與它的 SPEC 連結是同一件事，分兩次寫就會做出
+    //    「連結存進去了但完成失敗」或反過來的半套狀態（第 21 批那條：寫入端點一律包在交易裡）。
+    // ⚠️⚠️ 真的不一樣才寫，而且要補一筆 `欄位異動` 稽核列 —— 第 84 批那條「非日期欄位被改掉
+    //    也要留得下紀錄」在這條路徑上一樣成立（在此之前只有 PUT 會寫這種列）。
+    // ⚠️ 沒帶 notesLink、或帶的值與主表相同時，這一段整個不跑（curl／測試腳本行為不變）。
+    if (phase == "spec" && !backfill && specLinkIn.Length > 0 && specLinkIn != (curNotesLink ?? "").Trim())
+    {
+        using (var linkCmd = new SqlCommand(
+            "UPDATE dbo.Controltable SET NotesLink = @L, UpdatedAt = SYSDATETIME() WHERE Id = @Id AND IsDeleted = 0", conn, tx))
+        {
+            linkCmd.Parameters.AddWithValue("@L", (object)specLinkIn);
+            linkCmd.Parameters.AddWithValue("@Id", id);
+            await linkCmd.ExecuteNonQueryAsync();
+        }
+        var noneTriple = ((string?)null, (string?)null, (string?)null);
+        await InsertHistoryAsync(conn, id, cur.nid, "field", "欄位異動", null,
+                                 null, actor, actorSrc, noneTriple, noneTriple, tx,
+                                 "notesLink", (curNotesLink ?? "").Trim(), specLinkIn);
+    }
 
     // ⚠️ 寫入順序 = 階段代號遞增、**主要階段最後** —— /api/history 是
     //    ORDER BY RequirementId, ChangedAt, Id，同一秒內只有 Id 分得出先後，
@@ -3735,6 +3841,35 @@ async Task<(string? Error, bool Uncertain, string Detail)> SendNotifyMailAsync(
 //     但 `sp_send_dbmail` 的 `@recipients` 本來就吃分號分隔的清單 —— dbmail 模式會
 //     **真的寄給兩個人**。同一份資料在兩種模式下結果不同，那是最難查的一種問題。
 // ⚠️ `MailAddress.TryCreate` 會連 `,` `;` `<` `@@` 這些一起擋掉（實測），正是要防的那些。
+// ─── 「這個值是不是一個開得起來的連結」（第 104 批）───
+// ⚠️ 與 app.jsx 的 isLinkVal() 是**鏡像，改了要兩邊一起改**。
+// ⚠️ 只認這五種 scheme：實際資料裡最多的是 Lotus Notes 的 Notes:// URI。
+//    放寬到「只要有冒號」就會把 javascript: 這種值放進 href（前端那一支是同一條界線）。
+static bool IsLinkValue(string? s) =>
+    !string.IsNullOrWhiteSpace(s) &&
+    Regex.IsMatch(s.Trim(), @"^(https?|notes|file|ftp)://", RegexOptions.IgnoreCase);
+
+// ─── 「這筆已經確認過沒有連結可貼」（第 105 批，2026-10-04）───
+// ⚠️⚠️ 狀態存在**稽核表**，不是欄位 —— 所以這一批沒有任何 SQL 腳本（`ChangeType` 是
+//    NVARCHAR(20) 且無 CHECK）。作法與第 69 批 PhasesWithEndEverSetAsync()、第 43 批
+//    phaseNotifiedEntry() 同一套：要問「這筆需求發生過什麼」就去問稽核表。
+// ⚠️ 基準線＝「① 最後一次規格回退之後」。規格重做了就要重問：新的那一版可能真的有文件。
+//    ⚠️ 一定要按 Phase = 'spec' 過濾（第 43 批那條：跨階段取 MAX(Id) 會誤判）。
+// ⚠️ 與 app.jsx 的 noLinkConfirmOf() 是**鏡像，改了要兩邊一起改**。
+// ⚠️ 用 Id 比先後不用 ChangedAt（同一秒內只有 Id 分得出來，與全檔其他地方同一條）。
+static async Task<bool> NoNotesLinkConfirmedAsync(SqlConnection conn, int reqId, SqlTransaction? tx = null)
+{
+    using var cmd = new SqlCommand(@"
+        SELECT CASE WHEN EXISTS (
+            SELECT 1 FROM dbo.Controltable_History
+            WHERE RequirementId = @Id AND ChangeType = N'無連結確認'
+              AND Id > ISNULL((SELECT MAX(Id) FROM dbo.Controltable_History
+                               WHERE RequirementId = @Id AND Phase = 'spec' AND ChangeType = N'規格回退'), 0)
+        ) THEN 1 ELSE 0 END", conn, tx);
+    cmd.Parameters.AddWithValue("@Id", reqId);
+    return Convert.ToInt32(await cmd.ExecuteScalarAsync() ?? 0) == 1;
+}
+
 static bool IsValidMailAddress(string? addr)
 {
     var a = (addr ?? "").Trim();
@@ -5186,6 +5321,10 @@ public class Requirement
     // ─── 以下三個只在寫入時由前端帶上來，不會回存到 dbo.Controltable ───
     // 各階段這次異動的原因分類與文字說明，key 為 spec / confirm / msd / uat
     public Dictionary<string, ChangeMeta>? changeMeta { get; set; }
+    // 「這筆沒有連結可貼」的確認（第 105 批，2026-10-04）。只有 PUT 會看，而且只寫一筆
+    // ChangeType = '無連結確認' 的稽核列 —— **主表一個欄位都沒加**（見 NoNotesLinkConfirmedAsync）。
+    // ⚠️ 沒帶就是 null，curl／測試腳本與既有呼叫端行為完全不變。
+    public bool? confirmNoNotesLink { get; set; }
     // 操作者的 Windows 帳號（前端從 /api/whoami 取得後附帶，作法對齊 C:\Gantt）
     public string? actorEmpId { get; set; }
     // 帳號來源：windows / simulated。模擬帳號一定要標記，不可假裝成真實登入者
@@ -5208,6 +5347,10 @@ public class DoneRequest
     // ⚠️ 沒帶就是空 —— curl／測試腳本行為與第 59 批完全一樣（沿用 completedAt 的作法）。
     // ⚠️ 前端送什麼一律不看，每一筆後端都自己再驗一次（範圍、有沒有日期、是不是已經完成過）。
     public List<DoneAlso>? alsoComplete { get; set; }
+    // ① 這一關的 SPEC 文件連結（第 104 批，2026-10-04 使用者要求）。
+    // ⚠️ 只有 phase = spec 且**不是**事後補記時會被看；沒帶就是沿用主表上原本的值。
+    // ⚠️ curl／測試腳本：主表上原本就有合法連結的話，不帶這個欄位行為完全不變。
+    public string? notesLink { get; set; }
     // 事後補記（第 70 批，2026-09-12 使用者選的）：這個階段 **StatusID 早就走過了**、卻從來沒有完成紀錄
     //（匯入資料、手動把 StatusID 往前調、第 60 批之前直接按後面的階段）—— 畫面上一直停在灰字「已略過此階段」。
     // true 時：只接受「已經走過」的階段（沒走過的回 400，請走一般路徑）、**StatusID 與 Status 一律不動**、
@@ -5462,8 +5605,8 @@ public static class FieldLimits
         //    寫入的是 FormatYearMonth(req.yearMonth)，而那一支「認不出來就原樣留著」——
         //    直接打 API 送一段長字串就是 HTTP 500（實測過）。第 82 批補上
         (r => r.yearMonth,        "年月 (YearMonth)",      50),
-        (r => r.mainCat,          "專案名稱 (MainCat)",   100),
-        (r => r.subCat,           "子項目分類 (SubCat)",  100),
+        (r => r.mainCat,          "類型分類 (MainCat)",   100),
+        (r => r.subCat,           "子分類 (SubCat)",  100),
         (r => r.emsOwner,         "EMS 負責人",            50),
         (r => r.msdOwner,         "MSD 負責人",            50),
         (r => r.remark,           "需求補充 (Remark)",    500),
@@ -5479,4 +5622,8 @@ public static class FieldLimits
     // ⚠️ InsertHistoryAsync() 另有一道「夾到 1000」的保險。**兩道都要留**：
     //    有這個 400 在前面，那道夾永遠不會真的切到使用者打的字（在此之前它會，而且沒有出聲）。
     public const int NoteMax = 500;
+
+    // Notes Link 的上限（第 104 批）。⚠️ 與上面 Text 裡那一列、DB 欄位定義、
+    //    app.jsx 的 FIELD_LIMITS **是同一個數字，改了要一起改**。
+    public const int NotesLinkMax = 500;
 }

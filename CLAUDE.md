@@ -1,395 +1,640 @@
 # Controltable Project Overview
 
+> **這份檔案只留「不可違反的鐵律」與**一句話**的理由。**
+> 完整的實測數字、每一批的來龍去脈、被否決過的做法在 `memory.md`；欄位語意在 `FIELD_SPEC.md`；資料庫綱要在 `DB_table.md`。
+> 條目後面的 `(N)` 是批次編號，要查原始量測與證據就去 `memory.md` 第 7 節找那一批。
+> 2026-10-03 整理過一次：砍掉實測數字、測試流水與「在此之前…」的敘事，**⚠️ 的規則一條都沒有刪**。
+
 ## 專案架構 (Architecture)
-這個專案是一個以 **.NET 9 API** 作為後端，搭配 **React (無打包工具的輕量化架構)** 與 **Tailwind CSS** 作為前端的 SPA 應用程式。
+**.NET 9 API** 後端 ＋ **React（無打包工具）** ＋ **Tailwind CSS** 的 SPA。
 
 ### 後端 (Backend)
-- **框架**: .NET 9 (Minimal API)
-- **主要檔案**: `Program.cs` (所有 API 端點、資料庫邏輯、Excel 匯入/匯出都在此單一檔案中)。
-- **資料庫**: MS SQL Server (`dbo.Controltable`, `dbo.Controltable_History`, `dbo.Assignee`)
-- **資料庫綱要文件**: 見 `DB_table.md`。**架構變更一律寫新的累加腳本** (`01_xxx.sql`, `02_xxx.sql`…)，嚴禁修改 `schema.sql`。
-- **⚠️⚠️ 啟動時的四段 bootstrap 一律 best-effort，不可以讓它們擋住啟動**（第 83 批，2026-09-28，`Bootstrap()` 這個 local function）。在此之前那四段各自 `new SqlConnection(...).Open()` 而且**完全沒有保護**，又跑在 `app.Run()` 之前 —— 「SQL Server 沒起來／連線字串錯／權限被改」的結果不是某一支端點失敗，是**整個 App 啟動失敗**（實測 `Unhandled exception … at Program.<Main>$ … Program.cs:line 136`）。掛在 IIS 上就是全站 **500.30**，連 `GET /manual` 都打不開，而那頁什麼線索都沒有。這與專案自己立的界線矛盾 —— `AppDiag` 與 `13_nid_unique.sql` 刻意不做啟動時 bootstrap，理由正是「啟動時多做一件可能失敗的事，代價是 App 起不來」。
-  - 實測改完（故意指一個連不到的主機）：首頁 **200**、`/manual` **200**、`/api/requirements` 回**中文的 500**「讀取需求清單失敗：…找不到或無法存取伺服器…」，畫面上是瀏覽權限那道 fail-closed 的「**瀏覽權限檢查失敗 ＋ 重試**」而不是一片空白。
-  - ⚠️ **不可以改成「失敗就 throw」** —— 那就是把上面那個症狀原封不動搬回來。bootstrap 是 idempotent 的補丁、不是任何端點的前提（正常環境四段全是 no-op），DB 恢復之後**不必重啟**就會自己好。
-  - ⚠️ 四段**共用同一條連線**（`bootstrapConn`），連不上就整批跳過並只記一筆：分四條的話是 4 × 連線逾時（預設 15 秒）＝ 60 秒的啟動延遲，而 ANCM 的啟動逾時預設只有 120 秒；四段各記一筆則是同一件事在 log 裡重複四次。
-- **回應壓縮：`AddResponseCompression()` + `UseResponseCompression()`**（第 83 批）。在此之前全站**完全沒有壓縮**（實測帶 `Accept-Encoding: gzip` 進去，回應沒有 `Content-Encoding`）。實測：`/api/requirements` **48,141 → 6,003 B**、`/api/history` **70,449 → 3,682 B**（兩支**每次載入、每次存檔／完成／回退／刪除之後的重抓都會再送一次**，是全 App 重複次數最多的流量）、`app.js` 491,810 → **149,672 B**、`app.css` **22,850 B**、`/manual` 202,546 → **64,341 B**。內建在 shared framework，**沒有引入新的 NuGet**。
-  - ⚠️ 中介軟體要掛在 `UseStaticFiles()` 與那段 index.html 中介軟體**之前**，否則那些回應早就寫出去了。
-  - ⚠️⚠️ **壓縮等級一定要自己設 `CompressionLevel.Optimal`**：兩個 provider 的預設都是 `Fastest`（Brotli 品質 1），實測那等於大部分效益沒拿到 —— `app.js` 223,989 → 130,383、`/api/requirements` 13,047 → 4,742。**這是「看起來有生效（`Content-Encoding` 真的有）、其實只做一半」的設定，只量標頭量不出來，一定要量 bytes。**
-  - ⚠️ 選 `Optimal` **不選 `SmallestSize`**（Brotli 品質 11）：這個中介軟體**每次回應都重壓一次、沒有快取**，496 KB 的 `app.js` 用 q11 要幾百 ms。Optimal 實測整支請求 16~56 ms，而且 `app.js` 平常是 **304**（ETag 仍然正常，實測帶 `If-None-Match` 回 304 空 body）。
-  - ⚠️ `MimeTypes` 要另外補 **`text/javascript`**：.NET 的靜態檔中介軟體把 `.js` 送成這個型別，而它**不在預設清單裡** —— 少了那一行，最大的 `app.js` 剛好是唯一沒被壓到的（實測過）。
-  - ⚠️ `EnableForHttps` 刻意設 `true`（預設 false）：留預設在這裡等於「站台哪天換成 https 就靜靜不生效」。前提是回應裡**沒有任何 token**（身分走 Negotiate 標頭、不在 body 裡）—— **日後若在回應裡放了 CSRF token，請回來改回 false**。
-- **⚠️⚠️ 500 一律回 `{ message }`，不可以用 `Results.Problem`**（第 84 批，2026-09-28，`ServerError()`）。在此之前 12 支端點用 `Results.Problem("中文訊息", statusCode: 500)`，而那支把第一個參數放進 **`detail`**、`title` 一律填成 .NET 的預設英文句 `An error occurred while processing your request.`。前端各處讀的是 `j.message || j.title`（全站的 400／409 都是 `{ message }`），**`j.detail` 在 `app.jsx` 出現 0 次** —— 於是那 12 句寫得很仔細的中文診斷**一句都到不了畫面**。
-  - 實測（把連線字串指到連不到的主機）：body 裡有完整的「讀取需求清單失敗：…找不到或無法存取伺服器…（若訊息是 Invalid column name，代表累加腳本還沒全部執行）」，而瀏覽器上整頁只有一行 **「權限檢查失敗：An error occurred while processing your request.」**。改完同一個情境印的是那句中文。
-  - ⚠️ 這與第 83 批 A3 是同一件事的兩半：那批讓「DB 掛掉時 App 照樣起得來」變成**正常狀態**，而使用者落在的那一頁正是上面那句英文。第 82 批的 `AppDiag` 解的是「事後查得到」，這一條解的是「當下看得懂」。
-  - ⚠️ **不要改成「在 `Results.Problem` 上補 `title:`」** —— 那只是讓兩種形狀（`{message}` 與 ProblemDetails）繼續並存，下一個人照樣會挑錯欄位。全站統一一種形狀。
-  - ⚠️ `GET /manual` 的 404 **刻意維持 `Results.Problem`**：那支是使用者直接在分頁裡開的，看到的是 raw JSON，而它的 `title` 本來就寫了中文。
-  - ⚠️ 前端配套三處：①`errFrom(res)` 把 body 的訊息接出來並掛 `status` 與 **`fromServer`** 旗標，`fetchReqs` / `fetchHistory` / `fetchAssignees` 三支改成印它（在此之前一律 `throw new Error('HTTP ' + status)`，body 整包丟掉）；②瀏覽權限那四處的 `j.message || j.title` 補上 `j.detail`；③`AccessGateScreen` 不再前綴「權限檢查失敗：」（標題已經寫著同樣四個字）。
-  - ⚠️⚠️ **`fromServer` 這個分辨不可以拿掉**：`fetch` 自己掛掉時 `err.message` 是瀏覽器的英文（`Failed to fetch`），印出來只是噪音，那時要退回原本那句「請確認後端服務與資料庫連線是否正常」。與 `writeFailText` 的「有 status／沒 status 措辭不可混用」是同一條界線。
-- **後端錯誤日誌：`AppDiag` → `dbo.AppLog` ＋ IIS 的 stdout log**（第 82 批，2026-09-25）。在此之前 13 處 `Console.WriteLine($"... failed: {ex}")` 與 `app.Logger.LogError` 在正式主機上**等於不存在** —— SDK 產生的 web.config 預設 `stdoutLogEnabled="false"`，而專案沒有任何檔案／DB 日誌。使用者回報「按了沒反應」時現場什麼都查不到。最傷的一筆是 `notify-audit`（「信已經寄出去了，但稽核列沒寫進去」）—— 那筆之後會被 `phaseNotifiedEntry()` 判成「還沒通知」再問一次，而唯一的紀錄就在那行 Console 裡。
-  - **兩條路互補，不是二選一**：①`web.config`（專案根目錄，**publish 會沿用它並只覆寫 processPath/arguments**）把 stdout log 打開 —— 「**App 根本起不來**」（CLAUDE.md 記著一次：`DELETE` 少寫 `EmptyBodyBehavior.Allow` 讓整個 App 一啟動就掛，而 `dotnet build` 不報錯）與「**DB 掛了**」這兩種最難查的失敗，只有它留得下堆疊；②`dbo.AppLog`（`20_add_applog.sql`）—— 他本來就在用 SSMS，這是最容易查的地方。
-  - ⚠️ `AppDiag.Error(source, message, ex, actor, requirementId)` 取代那 13 處，**Console 那一行照樣印**（stdout log 要吃它）。
-  - ⚠️⚠️ 最有價值的是 `AppDiag.DbLoggerProvider`（掛在 `builder.Logging`，**必須在 `builder.Build()` 之前**）：它收框架自己記的 `Error`／`Critical`，也就是**沒有人寫 catch 的那些失敗**。實測就是這樣抓到 `YearMonth` 超長那個 500 的（2885 字堆疊，那條路上一行 `Console.WriteLine` 都沒有）。只收 Error 以上 —— Warning 在 ASP.NET Core 很吵，收進來會把真正的錯誤淹掉。
-  - ⚠️⚠️ **日誌不可以反過來變成故障源**，所以每個環節都是 best-effort：寫不進去（**含資料表還不存在**）一律靜靜跳過絕不往上拋（所以 `20_add_applog.sql` 沒跑的環境行為與加這段之前完全一樣）／用**自己的連線**不吃呼叫端那個正在回捲的交易／`Connect Timeout=3` ＋ 指令 5 秒／**斷路器**：寫失敗後 60 秒內不再嘗試（DB 掛掉時每個請求都會產生錯誤紀錄，少了它就變成每筆請求再多等 3 秒）／**重入防護**（從 DB 寫入路徑冒出來的 log 不可以再觸發一次 DB 寫入）。
-  - ⚠️ `dbo.AppLog` **不是稽核表**：`Controltable_History` 記「業務上發生了什麼」（要保留、要對帳），`AppLog` 記「程式出了什麼錯」（可以定期清，沒有自動清理）。兩者不要混用。
-  - ⚠️ `logs\.gitkeep` 與 csproj 裡那個 `<Content>` 不可以拿掉 —— **ANCM 不會自己建 `logs` 資料夾，不存在時 stdout log 是靜靜不產生的**。
-- **欄位長度上限：`FieldLimits`（檔尾）＋ `TooLongFields()` / `TooLongNotes()` / `NoteTooLong()`**（第 82 批）。在此之前前後端都**沒有任何長度檢查**：超過 DB 欄位長度時 SQL Server 丟「字串或二進位資料將會截斷」→ 沒有人接 → **HTTP 500**（實測需求補充 600 字即觸發；Production 連那句 SQL 訊息都不會回，畫面上只剩「儲存失敗：HTTP 500」）。現在 `POST`／`PUT` 一律回 **400 並講明哪一欄、上限幾字、目前幾字**；`/rollback`、`/undo-done`、`DELETE` 的說明欄走 `NoteTooLong()`；`/api/assignees` 走 `ValidateAssignee()`（`NAME` 100／`EMPO` 20，**`EMAIL` 不驗** —— 那欄唯讀、SQL 根本不寫它）。
+- **框架**: .NET 9 Minimal API。`Program.cs` 單一檔（所有端點、DB 邏輯、Excel 匯入匯出）。
+- **資料庫**: MS SQL Server (`dbo.Controltable`, `dbo.Controltable_History`, `dbo.Assignee`)。綱要見 `DB_table.md`。
+  **架構變更一律寫新的累加腳本**（`01_xxx.sql`, `02_xxx.sql`…），**嚴禁修改 `schema.sql`**。
+- **套件**: `System.Data.SqlClient`（Raw SQL）、`ClosedXML`（Excel）。**沒有引入其他 NuGet**（壓縮與寄信都走內建）。
+
+#### 啟動與基礎設施
+- **⚠️⚠️ 啟動時的四段 bootstrap 一律 best-effort，不可以讓它們擋住啟動**（83，`Bootstrap()`）。
+  沒有保護時 SQL Server 連不上 = **整個 App 啟動失敗**，掛在 IIS 上是全站 500.30、連 `GET /manual` 都打不開。
+  - ⚠️ **不可以改成「失敗就 throw」**。bootstrap 是 idempotent 的補丁、不是任何端點的前提，DB 恢復後**不必重啟**就會自己好。
+  - ⚠️ 四段**共用同一條連線**（`bootstrapConn`），連不上就整批跳過並**只記一筆**：分四條是 4 × 連線逾時（60 秒）而 ANCM 啟動逾時只有 120 秒；各記一筆則是同一件事重複四次。
+  - ⚠️ **`13_nid_unique.sql`（NID 唯一索引）與 `AppDiag` 刻意不做啟動時 bootstrap**：有重複資料時建索引會失敗 —— **啟動時多做一件可能失敗的事，代價是 App 起不來**。那條界線正是上面這一整段的由來。
+- **回應壓縮**（83）：`AddResponseCompression()` + `UseResponseCompression()`。
+  - ⚠️ 中介軟體要掛在 `UseStaticFiles()` 與 index.html 中介軟體**之前**，否則那些回應早就寫出去了。
+  - ⚠️⚠️ **壓縮等級一定要自己設 `CompressionLevel.Optimal`**：兩個 provider 的預設都是 `Fastest`，那等於大部分效益沒拿到。**這是「`Content-Encoding` 真的有、其實只做一半」的設定，只量標頭量不出來，一定要量 bytes。**
+  - ⚠️ 選 `Optimal` **不選 `SmallestSize`**：這個中介軟體**每次回應都重壓一次、沒有快取**，q11 會花掉幾百 ms。
+  - ⚠️ `MimeTypes` 要另外補 **`text/javascript`**：.NET 靜態檔中介軟體把 `.js` 送成這個型別，而它不在預設清單裡 —— 少了那一行，最大的 `app.js` 剛好是唯一沒被壓到的。
+  - ⚠️ `EnableForHttps` 刻意設 `true`。前提是回應裡**沒有任何 token**（身分走 Negotiate 標頭）—— **日後若在回應裡放了 CSRF token，請回來改回 false**。
+- **⚠️⚠️ 500 一律回 `{ message }`，不可以用 `Results.Problem`**（84，`ServerError()`）。`Results.Problem` 把訊息放進 `detail`、`title` 填成英文預設句，而前端讀的是 `j.message || j.title` —— 寫得再仔細的中文診斷都到不了畫面。
+  - ⚠️ **不要改成「在 `Results.Problem` 上補 `title:`」** —— 那只是讓兩種形狀繼續並存，下一個人照樣會挑錯欄位。全站統一一種形狀。
+  - ⚠️ `GET /manual` 的 404 **刻意維持 `Results.Problem`**：那支是直接在分頁裡開的，看到的是 raw JSON，而它的 `title` 本來就寫了中文。
+  - ⚠️ 前端配套三處：①`errFrom(res)` 把 body 訊息接出來並掛 `status` 與 **`fromServer`**，`fetchReqs`/`fetchHistory`/`fetchAssignees` 改成印它；②瀏覽權限四處的 `j.message || j.title` 補 `j.detail`；③`AccessGateScreen` 不再前綴「權限檢查失敗：」。
+  - ⚠️⚠️ **`fromServer` 這個分辨不可以拿掉**：`fetch` 自己掛掉時 `err.message` 是瀏覽器的英文（`Failed to fetch`），那時要退回「請確認後端服務與資料庫連線是否正常」。與 `writeFailText` 同一條界線。
+- **後端錯誤日誌：`AppDiag` → `dbo.AppLog` ＋ IIS stdout log**（82）。單靠 `Console.WriteLine` 在正式主機上等於不存在（ANCM 預設 `stdoutLogEnabled="false"`）。
+  - **兩條路互補，不是二選一**：①`web.config`（專案根目錄，publish 會沿用）把 stdout log 打開 —— 「**App 根本起不來**」與「**DB 掛了**」這兩種只有它留得下堆疊；②`dbo.AppLog`（`20_add_applog.sql`）—— 使用者本來就在用 SSMS。
+  - ⚠️ `AppDiag.Error(source, message, ex, actor, requirementId)`，**Console 那一行照樣印**（stdout log 要吃它）。
+  - ⚠️⚠️ `AppDiag.DbLoggerProvider` 掛在 `builder.Logging`，**必須在 `builder.Build()` 之前**。它收框架自己記的 `Error`／`Critical`，也就是**沒有人寫 catch 的那些失敗**。只收 Error 以上 —— Warning 在 ASP.NET Core 很吵，會把真正的錯誤淹掉。
+  - ⚠️⚠️ **日誌不可以反過來變成故障源**，每個環節都 best-effort：寫不進去（**含資料表還不存在**）靜靜跳過絕不往上拋／用**自己的連線**不吃呼叫端正在回捲的交易／`Connect Timeout=3` ＋ 指令 5 秒／**斷路器**（寫失敗後 60 秒內不再嘗試）／**重入防護**。
+  - ⚠️ `dbo.AppLog` **不是稽核表**：`Controltable_History` 記「業務上發生了什麼」，`AppLog` 記「程式出了什麼錯」（可以定期清）。不要混用。
+  - ⚠️ `logs\.gitkeep` 與 csproj 那個 `<Content>` 不可以拿掉 —— **ANCM 不會自己建 `logs` 資料夾，不存在時 stdout log 是靜靜不產生的**。
+- **欄位長度上限：`FieldLimits`（檔尾）＋ `TooLongFields()` / `TooLongNotes()` / `NoteTooLong()`**（82）。`POST`／`PUT` 超長一律回 **400 並講明哪一欄、上限幾字、目前幾字**；`/rollback`、`/undo-done`、`DELETE` 的說明欄走 `NoteTooLong()`；`/api/assignees` 走 `ValidateAssignee()`（`NAME` 100／`EMPO` 20，**`EMAIL` 不驗** —— 那欄唯讀）。
   - ⚠️⚠️ **不可以改成「靜靜截斷」** —— 那是把他剛打的字丟掉又不告訴他。
-  - ⚠️ 數字有**三份且必須一致**：DB 欄位定義（`DB_table.md`）→ `FieldLimits`（`Program.cs` 檔尾）→ `FIELD_LIMITS`／`NOTE_MAX`（`app.jsx`，鏡像）。**改了要三邊一起改。**
-  - ⚠️ `currentStatus`（現況描述）是 `NVARCHAR(MAX)`，**刻意沒有上限**，不要順手補一個 —— 它同時是所有「這段話太長」訊息指過去的出路。
-  - ⚠️ **這條不套「只在被改動時才驗」那條界線**（第 14 批）：超長的值本來就進不了 DB，既有資料一定都在上限內，被擋下的必然是這次新打的字，不存在「有值卻永遠改不動」。
-  - ⚠️ 理由／說明的上限是 **500，只有 `History.Note`（1000）的一半** —— 那一欄還要裝系統組的前綴。`InsertHistoryAsync()` 那道「夾到 1000」**兩道都要留**：有 400 在前面，那道夾永遠不會真的切到使用者的字（在此之前它會，而且**沒有出聲**）。
-  - ⚠️ 匯入是**第五道前置檢查**（排在 `BeginTransaction` 之前，與前四道同一個理由）。交易本來就會回捲，所以少了它不會匯進壞資料 —— **這一道的價值全在訊息上**：原本使用者拿到的是一句 SQL 英文，不知道是哪一列哪一欄，得在 64 列 × 22 欄裡自己找。現在列出「第 N 列（NID x）的 Remark：上限 500，目前 600」，最多 20 條。
-- **套件**: 
-  - `System.Data.SqlClient` (直接使用 ADO.NET 撰寫 Raw SQL)
-  - `ClosedXML` (處理 Excel 匯入與匯出)
-- **核心功能 API**:
-  - `GET /api/requirements`: 讀取需求清單
-  - `POST /api/requirements`: 新增需求
-  - `PUT /api/requirements/{id}`: 更新需求 (負責處理三個階段的時程儲存、附加歷史異動軌跡)
-  - `DELETE /api/requirements/{id}`: 刪除需求
-  - `POST /api/import` & `GET /api/export`: Excel 匯入匯出
-  - `GET/POST/PUT/DELETE /api/assignees`: **指派人員主檔** `dbo.Assignee`（工號 `EMPO`／姓名 `NAME`／部門 `DEPT`／`IsActive`）。編輯視窗 EMS / MSD 負責人下拉的唯一來源。**還被指派中的人不可刪除，也不可改名／改部門**（都回 `409`，請改用「停用舊的 + 新建正確的」）—— 控表存的是姓名字串、沒有外鍵，動完之後那些需求的負責人欄位不會變動，下拉裡卻再也找不到那個名字，**刪除與改名的後果一字不差**。兩支共用 `AssigneeUsageAsync()`；`PUT` 只在 `NAME`/`DEPT` 真的被改動時才驗（否則按「停用」都會被擋），`EMPO` 與 `IsActive` 不受限。⚠️ 刻意**不做**連動 `UPDATE dbo.Controltable` —— 那會靜靜改掉既有需求且沒有稽核列可查。舊的 `/api/personnel` 端點與 `dbo.Personnel` 資料表已於 2026-08-21 移除（`12_drop_personnel.sql`）。
-    **`EMAIL` 欄是唯讀的**（2026-08-31，`15_add_assignee_email.sql`）：`GET` 回傳，`POST`／`PUT` 的 SQL **刻意不寫**，名單由使用者直接在 SSMS 維護（他的原話：「若有新增或修改的，我直接從 DB 端修改就好」）。⚠️ 前端拿到後會原樣送回，所以**日後有人把 `EMAIL` 加進 `UPDATE` 就會靜靜把使用者手動維護的信箱覆寫掉** —— 要改成可編輯必須同時動 `POST`／`PUT` 的 SQL 與 `ValidateAssignee()`，並先問過使用者。編輯視窗 EMS／MSD 下拉底下的 `✉` 灰字（`OwnerEmailHint`）就是它唯一的出口；比對 `(dept, name)` 兩邊都 `trim`、**不濾 `isActive`**（問的是「這個名字的信箱」，不是「可不可以指派給他」）
-  - `POST /api/requirements/{id}/notify-unset`：**通知下一棒來壓日期**（第 39 批，2026-08-31）。觸發狀態就是第 33 批的「⚠ 未壓日期」。**收件者＝那一階段的負責人，副本＝另一邊的負責人**（①④ 是 EMS、②③ 是 MSD），信箱查 `dbo.Assignee` 的 `(DEPT, NAME)`，兩邊都 trim、**不濾 `IsActive`**（與前端 `assigneeEmailOf()` 同一套）。
-    ⚠️ **收件者、階段、主旨、內文一律由後端自己算（`UnsetPhaseOf()`），前端送什麼都不看** —— 這一支會真的把信寄出去，收件者若能由呼叫端指定，任何網頁都能借系統的名義寄信給指派名單上的人。`UnsetPhaseOf()` / `StagePassed()` 是 `app.jsx` 的 `unsetDuePhase()` / `isPhasePassed()` 的**鏡像，改了要兩邊一起改**。
-    ⚠️ 順序是 **先寄信、再寫稽核列**（`ChangeType='通知寄送'`）。反過來寄失敗就會留下一筆「已通知」的假紀錄，而收件者什麼都沒收到；稽核列寫失敗時**不可以回失敗**（信已經送出去了，使用者會再按一次而對方收到第二封）。`通知寄送` **不進 `isDateChange`**、不動三個計數欄。
-    ⚠️ **寄不出去一律回 400／502 講清楚原因，不可以靜靜當成寄成功**：`Mail:Host`/`Mail:From` 沒設定、收件者沒指派、收件者在 `dbo.Assignee` 沒有 `EMAIL`（那欄唯讀，只能在 SSMS 補）。**副本查不到信箱時照樣寄給主要收件者**，只在回應裡標 `ccMissing`。這一支也套 `IsCrossSiteRequest()`（有對外副作用，寄錯的信收不回來）。
-    ⚠️ **存檔後的自動詢問只在「真的寄得出去」時才跳；使用者自己按 ✉ 則一律要出聲**（第 42 批，2026-09-02 使用者要求：「有信箱時才詢問」）。第 42 批把 ① 的結束日改成選填之後，這條路從「按過完成才偶爾走到」變成「每建一筆沒壓日期的需求都會走到」—— 收件者沒信箱時原本會在每一次新增的最後一步跳一個他當下修不了的錯誤視窗（`EMAIL` 欄唯讀，只能在 SSMS 補）。判斷走 `notifyPreview(fresh).problem`（收件者沒指派／沒有 `EMAIL`）。⚠️ **這不是把失敗吞掉**：那一列的「⚠ 未壓日期」徽章與 `✉` 照樣在，按下去仍然會看到「無法寄出通知」與該去補什麼。差別在**誰起的頭** —— 他自己按 ✉ 是在問「寄了沒」，非講不可；存完檔是系統插話，講一件他此刻無能為力的事只是噪音。
-    ⚠️ **`通知寄送` 不進「時程變更軌跡」的時間軸，收成面板上方一行摘要**（第 45 批，2026-09-03 使用者要求）。這個面板的其他每一筆回答的是「這個日期為什麼變了」，而通知回答的是「催過了沒」—— 它早就被排除在 `isDateChange` 與 ⚠N 之外，卻還是被畫成同一種卡。⚠️ 實測 7 筆通知的代價：軌跡總高 365px → **951px**，通知獨佔 **586px（62%）**，而面板可視高度只有 224px。改成摘要後**收合 47px、展開 177px**（每列 22px）。⚠️ **第 35 批的 `changeGroups` 對它完全沒用**：合併條件含「時間相同」與「說明相同」，而每次通知的時間必然不同 —— 催五次就是五張卡，一張都併不掉。⚠️ **精簡的是顯示、不是紀錄**：稽核列一筆都沒少，完整 Note 掛在每一行的 `title`；「未確認送出」**一定要在畫面上看得見**（那是「到底通知了沒」唯一的依據，收進 tooltip 等於看不到）。⚠️ 「已通知 N 次」這個計數本身是訊號 —— 催了五次還沒壓日期是該升級處理的事，做成計數遠比做成五張卡看得出來。⚠️ 時間軸空不空要看 `hasTimeline`（`changeEntries` + `initEntries`，第 72 批起），**不可以再用 `hasHist`** —— 通知抽走之後「只有通知、沒有任何時程變更」是做得出來的，沿用 `hasHist` 會畫出一個空白捲動區。⚠️ 展開狀態 `notifyOpen` **不寫進 localStorage**（那是一次性的查看動作，不是偏好）；toggle 鈕要 `stopPropagation`（外層 `<tr>` 有展開／收合的 onClick）。
-    ⚠️ **明細列的「時程變更軌跡」是「一個階段一行」的收合摘要，逐筆明細在「完整軌跡 ↗」視窗；不可以再把逐筆時間軸畫回明細列**（第 72 批，2026-09-13 使用者要求：「變更一個步驟可能都會佔很大的版面」「我不想下拉一堆卷軸才能知道變更軌跡」）。時間軸這種畫法的高度與筆數成正比，壓每筆的高度只是延後爆掉；實測舊版三筆（延期完成→撤銷→日期異動）就 265px 而面板可視高只有 224px。摘要每行＝`筆數 · 淨效果`（最早的原訂 End → 現在，「現在」＝ `actualEnd || end`）＋ 日期鏈（每一跳對應一筆稽核列、完整內容在 tooltip；✓ 完成、↶ 撤銷、起 只動開始日、未填 回退清空），**沒有 max-height、沒有捲軸**。視窗（`histModal`）最新在上、`groupAdjacentEntries()` 合併回退的四筆快照、階段篩選只列有紀錄的階段、使用者填的理由截一行點開展開、**系統組的說明（`SYSTEM_NOTE_TYPES`）收成「說明 ⓘ」、使用者打的理由（日期異動／規格回退／手動調整／刪除）一律印在畫面上**。⚠️ 精簡的是顯示不是紀錄：稽核列一筆都沒少。⚠️ 使用者明講**這些不列印**、鏈上的時間一律完整 `YYYY-MM-DD HH:mm`（只有鏈上的**日期**縮成 `MM-DD`）。⚠️ 通知紀錄維持第 45 批那一行摘要，視窗裡只在標題計數。⚠️ 被否決的中間方案（不要再提）：只把每筆壓成一行（改 30 次仍 30 行）、只做依階段收合但展開留在明細列（展開兩階就又要捲）。
-    ⚠️ **同一階段、同一個收件者通知成功過一次，存檔後就不再自動詢問**（第 43 批，2026-09-02 使用者要求：「只要同一個狀態寄信一次成功、我就不強迫每次儲存都會跳出視窗詢問，只寄信一次盡到通知的責任」）。判斷走 `phaseNotifiedEntry()`，**與第 42 批是同一條原則再往前一步** —— 停在同一個未壓日期的階段時，原本每存一次檔就再問一次同一件已經做過的事。⚠️ **重複跳窗的代價不是煩，是把真正該響的那一次一起消音**：手會學會看到這個視窗就按取消，等到 ③ 變成新的未壓階段（收件者換人、是真的該寄的一封）也會被一秒關掉。⚠️ **只收掉自動詢問**：「⚠ 未壓日期」徽章、`✉` 手動鈕、`需關注` 計數、`dueRank=0` 排最前全部不動 —— 持續的催辦壓力本來就在那些地方，不在這個視窗上。
-    ⚠️ `phaseNotifiedEntry()` 的四條界線少一條就會**靜靜吞掉一封該寄的信**：①判定鍵是 **(需求, 階段)** 不是需求（② 通知過後推進到 ③，收件者是另一個人）；②基準線是**同一階段最後一次 `規格回退` 之後**（回退會把日期清成 NULL、要重壓一次；**必須按 `phase` 過濾**，跨階段取 `MAX(Id)` 會把沒被清的階段一起判成要重通知）—— 與 `phaseDoneEntry()` 同一套，連「用 `id` 不用 `changedAt` 比先後」都一樣；③依據是**稽核列**（後端寄成功才寫的 `通知寄送`），**不可以放 localStorage／component state**，否則 A 寄過而 B 在另一台存檔還是會被問、重整後答案又不一樣；④**收件者換人就重問**（2026-09-02 使用者原話：「變更的負責人沒收過信件，完全不知道有這件事。我一定要盡到有通知的責任」），比對稽核 `Note` 裡 `收件者 … <email>` 的信箱。
-    ⚠️ **判不出來時一律當成「還沒通知」**（Note 格式對不上、信箱空、`queued` 未確認送出都往這邊倒）。這一支的兩種失敗方向差很多：多問一次只是吵，**少問一次是下一棒完全不知道有這件事**。`未確認送出` 不算寄過也是同一個理由（使用者的用詞是「寄信一次**成功**」，而 dbmail 那一列刻意標了這句話就是為了分得出來）。
-    ⚠️ **`fetchHistory()` 必須回傳剛抓到的那一份**，存檔後那條路要吃它、不可以讀 `historyEntries`／`historyMap` —— `setState` 非同步，`await` 之後讀到的還是抓取前的值（與同一段的 `fresh` 是同一個坑）。
-    ⚠️ **手動 ✉ 一律不擋**，只在視窗上多一行「已經在 X 通知過 Y 了，這會是第二封」。走到那裡就代表他是自己按的，多半正是「對方沒回，我要再催一次」；擋下來等於把「通知過了沒」這個他唯一查得到答案的地方改成一道關卡。
-    ⚠️ **寄件者是「按下按鈕的那個人本人」**（2026-08-31 使用者要求）：Windows 帳號剝掉網域就是工號 → `dbo.Assignee.EMPO` → `EMAIL`（`AssigneeByEmpNoAsync()`）。收件者因此可以直接**回信**給他，信的落款也跟著改口（本人 →「可以直接回覆本信」／系統信箱 →「請勿直接回覆」）。**`EMPO` 是這張表與登入者之間唯一的接點**，使用者 2026-08-31 把 13 筆的工號與信箱都補齊了就是為了這件事。
-    ⚠️⚠️ **只有 `actorSource == "windows"` 才可以用本人身分寄信**。模擬帳號（`AllowSimulation`）走這條路等於讓任何人挑一個名字用他的身分把信寄出去 —— 那是真的冒名，比稽核列標一個 `simulated` 嚴重得多。模擬／取不到帳號／工號不在名單上，一律退回設定檔的 `Mail:From`（**後備**用，可留空）；兩邊都沒有才回 400。稽核列的 `Note` 一定要把寄件者也記進去（「這封信是誰的名義寄的」只有那裡查得到）。
-    ⚠️⚠️ **寄信前一定要先做那個 `TcpClient` 連線探測，不可以拿掉**（第 40 批，2026-09-01）。`SmtpClient.Timeout` **管不到 TCP 連線建立那一段** —— 實測 `Timeout` 設 8 秒、連一個會把封包丟掉的位址，整整 **22 秒**才回來（那是作業系統的 SYN 重試，設定檔怎麼調都沒用），而預設值是 **100 秒**。使用者實際回報「點了寄信 icon 沒反應」就是卡在這裡。加上探測之後同一個情境 **8.4 秒**回來。這也是「`Mail:TimeoutSeconds` 這個設定要真的算數」的唯一辦法 —— 留一個調了卻管不到最常見那種失敗的設定，比沒有更難查。
-    ⚠️ **失敗訊息要講「下一步去查什麼」**（`MailFailureHint()`）：`.NET` 的例外永遠是那句「Failure sending mail.」，分不出位址錯／防火牆擋／relay 不讓這台轉信 —— 而那三種**都不在程式這一側**，要找的人還不一樣（開 port vs 加 IP 白名單）。判斷一律看 `SocketException`，並把 `Test-NetConnection` 指令連同「一定要在跑網站的那台主機上跑」一起印出來。前端另外要有「寄送中…」的 toast：寄信是這個 App 裡唯一要等網路對方回應的動作。
-    ⚠️ **兩種送信方式，`Mail:Mode` 切換**（第 41 批，2026-09-01）。`smtp`＝這台主機自己連 relay；`dbmail`＝呼叫 DB 主機的 `msdb.dbo.sp_send_dbmail`，**借用「DB 主機 → relay」那條已經通的路**（網站在 p58esiap12、DB 在 p58esiap08，而 relay 是依來源 IP 白名單放行的，p58esiap08 早就在清單裡）。**信的內容、收件者、副本、寄件者規則兩種完全共用**，換的只有最後怎麼送出去；`dbmail` 不需要 `Mail:Host`（傳輸就是本來那條 SQL 連線）。前置作業是 `16_grant_dbmail_permission.sql`。
-    ⚠️⚠️ **`dbmail` 一定要輪詢 `sysmail_allitems` 確認 `sent_status`，那一段不可以拿掉**。`sp_send_dbmail` 是丟進 Service Broker 佇列就回傳 —— 它回的是「已排入」不是「已送出」，**寄失敗會躺在 `sysmail_faileditems`，不會回到 API 也不會回到畫面**。少了它，畫面顯示「已寄出通知」而下一棒其實什麼都沒收到。確認不到時（還在重試／沒有 msdb 查詢權限）一律回 `queued: true`，前端改用彈窗且**措辭不可以是「已寄出」**，稽核列也要標「未確認送出」——「到底通知了沒」日後只靠那一列。
-    ⚠️⚠️ **`SmtpClient.Timeout` 對 `SendMailAsync` 完全無效，那個 `CancellationTokenSource` 不可以拿掉**（第 44 批，2026-09-02）。實測：`Timeout` 設 3 秒、對一個「接受 TCP 連線之後就不回話」的假 relay 寄信，**60 秒後仍然沒有返回**（看不出上限）。⚠️ **上面那個 `TcpClient` 探測攔不到這一種** —— 它只涵蓋「TCP 連線建立」，連上之後 relay 不講話完全在守備範圍外（實際會發生：payload 被 IPS 吃掉、relay 過載沒送 220、白名單外的來源被靜默 hold）。後果不只是等很久：前端那次 `fetch` 也跟著無限等，而整段包在 `runExclusive()` 裡 —— **那個分頁的儲存／完成／回退／刪除會一起被鎖死**，只能重新整理。⚠️ 用 `SendMailAsync(msg, cts.Token)` 而不是 `.WaitAsync()`：兩種都會在時限內返回（實測 3.05 vs 3.00 秒），但 `WaitAsync` 只是不等了、底層作業還會繼續佔著連線跑。⚠️ 前端對應的 **90 秒 `AbortController` 保險絲也不可以拿掉**，它是「不會鎖死整個分頁」的最後一道。
-    ⚠️ **逾時不可以當成「確定失敗」**：對話是被我們自己切斷的，relay 若早就把信收下了（卡在最後那個 250），信其實已經送出去了。所以 smtp 逾時走**與 dbmail 完全相同的「未確認送出」那條路**（`SendNotifyMailAsync` 回 `Uncertain`）：照樣寫稽核列並標明、畫面用彈窗、措辭不可以是「已寄出」。回「寄信失敗」→ 不寫稽核列 → 使用者再按一次 → **對方收到第二封**。同理前端 `AbortError` 的文案也**不可以說「沒有寄出」**。⚠️ 稽核 `Note` 裡「**未確認送出**」那四個字是兩種狀態日後唯一分得出來的依據，`phaseNotifiedEntry()`（第 43 批）也靠它判斷「不算寄過」—— 兩種傳輸方式都必須寫進去。
-    ⚠️ **收件者／副本／寄件者的信箱格式一律在端點層先驗**（`IsValidMailAddress()`，第 44 批）。`dbo.Assignee.EMAIL` 是使用者**自己在 SSMS 手動維護**的，打錯是可預期的。⚠️ 不可以只靠 `System.Net.Mail` 自己丟例外：那會變成一句英文（「The specified string is not in the form required for an e-mail address.」），而 `MailFailureHint()` 對它回空字串（只認 `SocketException`／`SmtpException`）—— 使用者不知道是誰的信箱、也不知道去哪裡改。⚠️ **更要緊的是兩種模式行為不一樣**：`a@x.com;b@y.com` 這種值 smtp 會被 .NET 擋下，但 `sp_send_dbmail` 的 `@recipients` 本來就吃分號清單、**dbmail 會真的寄給兩個人**。⚠️ **收件者**壞掉回 400（含目前的值）；**副本**壞掉降級成沒有副本、照樣寄（理由走 `ccReason`，「沒填」與「格式錯」要分得出來）；**寄件者本人**壞掉**退回 `Mail:From`、不可以直接失敗**（與「查不到 EMPO」同一條界線 —— 為了寄件者擋掉整封通知是本末倒置）。⚠️ 前端 `isMailAddr()` 是同一套但**刻意寬鬆**（誤判會擋掉一封其實寄得出去的信）：**不可以要求網域裡有點**（公司信箱長得像 `Chih_Kuan_Chang@UMCG`），而且要接受 Outlook 的「姓名 <位址>」（.NET 收，實測）。格式壞掉也要算進 `notifyPreview().problem`，否則存檔後的自動詢問又會問一件他當下修不了的事。
-    ⚠️⚠️ **這一整條寄信路徑已於 2026-09-02 由使用者在公司 IIS 主機（p58esiap12）實測通過，未經指示一律不要更動。** 生效的組合是 `Mail:Mode = "smtp"` + relay `10.13.2.221:25`、`UseSsl=false`、`From` **刻意留空**（寄件者是按按鈕的本人，`Mail:From` 只是後備 —— 看到空字串**不要以為是漏填而順手補上**）。保護範圍：`Mail:*` 的讀取段、`notify-unset` 端點、`UnsetPhaseOf()` / `StagePassed()` / `AssigneeByEmpNoAsync()` / `MailFailureHint()` / `TcpClient` 連線探測 / `dbmail` 的 `sysmail_allitems` 輪詢，以及 `appsettings.json` 的 `Mail` 區塊。**改到附近時也不要順手「整理」這些**。這條路徑跨了主機、relay 的來源 IP 白名單、`dbo.Assignee` 的 `EMPO`／`EMAIL` 對應三個都不在程式裡的環境條件 —— 在開發機上看起來一樣的改動，到 IIS 上壞掉時的症狀是「按了沒反應」或「顯示已寄出但對方沒收到」，而**信寄錯了收不回來**。真的要動，改完必須回 IIS 上重測一次（開發機測得過不代表那裡會過）。
-    ⚠️ **第 62 批（2026-09-11，使用者要求）在上面那條保護範圍內動了兩處，兩處都已在本機用假 relay 抓下整封原始信驗過，但還沒回 IIS 重測**：①**按按鈕的本人也收一份副本**（`selfCcEmail`）—— 信是這台主機送出去的、不會出現在他的寄件匣，在此之前他自己完全沒有留底。**只在 `fromIsSelf` 時加**（退回 `Mail:From` 那條路根本不知道他是誰），本人已經是收件者或副本時不重複；走 **CC 不走 BCC**（收件者看得到「發信的人自己也在副本裡」）。稽核 `Note` 只在**寄件者後面**多「（本人亦收副本）」—— 前端 `NOTIFY_TO_RE` 抓的是「收件者」後第一個 `<…>`，**不可以插到它前面**。②**信同時附 HTML 版**（純文字裡的網址在 Notes 點不動，使用者實際回報）：`mailHtml` 由同一個 `lines` 轉出來、內容一字不差，只把網址包成 `<a href>`，**每一行都先 `HtmlEncode`**（現況描述是使用者自由輸入的）。⚠️ smtp 的 `Body` 放純文字、`AlternateViews` 放 HTML，**順序不可以反過來** —— .NET 把 `Body` 排成 multipart/alternative 的第一段，客戶端依 RFC 2046 偏好**最後一段**，反寫收到的仍是純文字版；dbmail 只能擇一，`@body_format` 改成 `'HTML'`。實測抓到的原始信：`Cc: James_CH_Li@UMCG, Sariel_Lin@UMCG`、`text/plain` 在前 `text/html` 在後、`<b>` 被轉成 `&lt;b&gt;`。
-    郵件設定在 `appsettings.json` 的 `Mail` 區塊，走內建的 `System.Net.Mail`，**沒有引入新的 NuGet 套件**。**要讓功能能用只有 `Mail:Host` 是必填**（`mailReady` 只看 Host —— 拿不到寄件者是「那一次呼叫」的問題，不是整個功能沒開）；`AppUrl` 是信裡那行網址。已確認**不需要帳密與 SSL**（內網 relay 匿名）。⚠️ 日後真的要密碼請放 User Secrets 或 `Mail__Password` 環境變數。
-  - **頁面瀏覽權限卡控**（第 74 批，2026-09-21，做法對齊 `C:\Gantt`）：`GET /api/access-status`（匿名，只回開關）、`GET /api/access-check`（Negotiate；`?testEmpId=` 只給管理者測別人）、`GET/POST /api/access-rules`、`DELETE /api/access-rules/{id}`、`PUT /api/access-control`、`POST /api/access-admins`、`DELETE /api/access-admins/{id}`（後六支都 Negotiate ＋ 只有管理者 ＋ 寫入的套 `IsCrossSiteRequest()`）。資料表 `dbo.AccessRules` / `dbo.AppSettings`（`AccessControlEnabled`，**預設 false**）/ `dbo.AccessLog`（`18_add_access_control.sql`）/ `dbo.AccessAdmins`（`19_add_access_admins.sql`）。規則：**同一條內有填的欄位全部符合（AND），多條之間任一符合即放行（OR）**；只填工號＝白名單不查名冊。名冊 `[WEB].[dbo].[notes_person]`（`Access:PersonView`，串進 SQL 前有 regex 白名單）。
-    ⚠️ **與 Gantt 刻意不同的三件事，不要「對齊回去」**（使用者 2026-09-21 拍板）：①**工號由後端從 `ctx.User` 讀，不收前端參數** —— Gantt 收 `?empId=`，改網址就能冒名；模擬帳號（`AllowSimulation`）因此也過不了門。②**管理者＝ `dbo.AccessAdmins` ∪ `appsettings` 的 `Access:Admins`**（第 75 批起 DB 是正式的、面板維護、進 `AccessLog`；設定檔那份只是**後備**，正式主機平常留空），不是「自己選主管登入」；**管理者一律可瀏覽、不受規則限制** —— 規則設錯時的出路不能只剩 SSMS。③**只擋畫面**：`/api/requirements` 等端點維持匿名，curl／測試腳本／寄信路徑完全不受影響。
-    ⚠️⚠️ **`Access:Admins` 不要再寫進 `appsettings.Development.json`**（第 75 批，2026-09-21 使用者實際踩到）：.NET 設定檔的 JSON 陣列跨檔是**依索引覆寫、不是合併** —— Development 的 `["yu-tinglin"]` 把 appsettings 的第 0 筆 `00002732` 靜靜蓋掉，面板測他顯示「會被擋下」而兩個檔案看起來都沒寫錯。這正是清單搬進 DB 的原因。`ConfigAdmins()` 另接受字串寫法 `"a, b"`（字串是整個值覆寫，看得出來）。`POST/DELETE /api/access-admins`：**不能刪自己、不能刪掉最後一位（設定檔後備的算進去）**，兩道少一道，手滑之後唯一的出路就是 SSMS。
-    ⚠️ 前端 fail-closed：檢查完成前只有載入畫面，**通過了才 `fetchReqs()`**（被擋的人不該連資料都先收到）；逾時（15 秒）／4xx／5xx 一律「錯誤畫面＋重試」不放行，只有 fetch 丟 `TypeError`（連不上）才放行。**401 不是錯誤**（非網域拿不到工號）→ 改問 `/api/access-status`：開關沒開放行、開著擋下。閘門的 early return **一定在 App 所有 hooks 之後、主 `return` 正前面**。⚠️ 名冊查詢失敗時**含部門條件的規則一律不成立**、純工號規則照常，訊息要講「名冊查詢失敗」不是「你不在名單上」（找的人不同）。⚠️ 頁首 🔐 只給管理者看，卡控開著時套 `ctl-on` 並印「卡控中」—— 藏入口不是安全邊界，每支端點自己的 403 才是。
-  - **查詢端點一律要有 try/catch，而且前端要看得出「讀取失敗」與「沒有資料」的差別**（第 24、25 批）。
-    - `GET /api/history`（第 24 批）：DB 出事時原本回一個沒有訊息的 `500`，而前端 `fetchHistory()` 的 catch 只是靜靜清空清單 —— 畫面上的結果是「⚠N 全部消失、統計報表『時程異動』變 0、每一列都是無變更紀錄」，也就是**主管會看到「這批需求從來沒被改過」**。前端同步加 `historyError`：KPI 卡顯示 `—`（不是 0）、圖例列與軌跡面板都明講「讀取失敗，不代表沒有變更」
-    - `GET /api/assignees` 與 `GET /api/export`（第 25 批）：第 24 批立下這條規則時漏了這兩支，而當時的文件還寫著「`/api/history` 是唯一沒有的」。`fetchAssignees()` 更是 `if (res.ok) { … }` —— 非 200 時**連 `console.error` 都沒有**。後果比稽核表那個更硬：負責人下拉一個名字都沒有，而 **EMS 負責人是必填**，新增需求根本存不進去，畫面上卻只寫「必填欄位未完成」。前端加 `assigneeError`（掛在兩個下拉底下），**失敗時不清空 `assigneeList`** —— 舊名單過期了還能用，與 `historyEntries`（錯的數字會騙人）相反
-  - **判斷 `Status` 是不是某個值一律走 `StatusIs()`**（第 25 批）。它先 `Trim()` 再比大小寫。`/done` 與 `/rollback` 原本是 `curStatus.Equals("Done", OrdinalIgnoreCase)`，空白沒收 —— `"Done "` 這種舊值會讓前端不給按的需求「直接打 API 卻整個放行」，計數欄憑空 +1。第 23 批的 `IsValidStatus` 只管寫入，**讀取側不可以假設寫入側已經收乾淨**
+  - ⚠️ 數字有**三份且必須一致**：DB 欄位定義 → `FieldLimits` → `FIELD_LIMITS`／`NOTE_MAX`（`app.jsx`）。**改了要三邊一起改。**
+  - ⚠️ `currentStatus` 是 `NVARCHAR(MAX)`，**刻意沒有上限** —— 它同時是所有「這段話太長」訊息指過去的出路。
+  - ⚠️ **這條不套「只在被改動時才驗」**（14）：超長的值本來就進不了 DB，被擋下的必然是這次新打的字。
+  - ⚠️ 理由／說明上限 **500，只有 `History.Note`（1000）的一半** —— 那一欄還要裝系統組的前綴。`InsertHistoryAsync()` 那道「夾到 1000」**兩道都要留**。
+  - ⚠️ 匯入是**第五道前置檢查**（排在 `BeginTransaction` 之前）。交易本來就會回捲 —— **這一道的價值全在訊息上**（列出第幾列、哪一欄、上限多少，最多 20 條）。
+
+#### 核心 API
+- `GET /api/requirements`／`POST`／`PUT /{id}`／`DELETE /{id}`
+- `POST /api/import` & `GET /api/export`（Excel）
+- `GET/POST/PUT/DELETE /api/assignees`：**指派人員主檔** `dbo.Assignee`（`EMPO`／`NAME`／`DEPT`／`IsActive`）。編輯視窗 EMS / MSD 負責人下拉的唯一來源。
+  - **還被指派中的人不可刪除，也不可改名／改部門**（都回 `409`，請改用「停用舊的 + 新建正確的」）—— 控表存的是姓名字串、沒有外鍵，動完之後下拉裡再也找不到那個名字，**刪除與改名的後果一字不差**。兩支共用 `AssigneeUsageAsync()`；`PUT` 只在 `NAME`/`DEPT` 真的被改動時才驗（否則按「停用」都會被擋）。
+  - ⚠️ 刻意**不做**連動 `UPDATE dbo.Controltable` —— 那會靜靜改掉既有需求且沒有稽核列可查。
+  - **`EMAIL` 欄是唯讀的**（`15_add_assignee_email.sql`）：`GET` 回傳，`POST`／`PUT` 的 SQL **刻意不寫**，名單由使用者直接在 SSMS 維護。⚠️ 前端拿到後會原樣送回，**日後有人把 `EMAIL` 加進 `UPDATE` 就會靜靜覆寫掉手動維護的信箱**；要改成可編輯必須同時動 `POST`／`PUT` 的 SQL 與 `ValidateAssignee()`，並先問過使用者。`OwnerEmailHint` 的 `✉` 灰字是它唯一的出口；比對 `(dept, name)` 兩邊都 `trim`、**不濾 `isActive`**。
+  - 舊的 `/api/personnel` 與 `dbo.Personnel` 已於 `12_drop_personnel.sql` 移除。
+
+#### `POST /api/requirements/{id}/notify-unset`：通知下一棒來壓日期（39）
+觸發狀態＝「⚠ 未壓日期」。**收件者＝那一階段的負責人，副本＝另一邊**（①④ EMS、②③ MSD），信箱查 `dbo.Assignee` 的 `(DEPT, NAME)`，兩邊都 trim、**不濾 `IsActive`**（與前端 `assigneeEmailOf()` 同一套）。郵件設定在 `appsettings.json` 的 `Mail` 區塊，走內建 `System.Net.Mail`。**只有 `Mail:Host` 是必填**（`mailReady` 只看 Host）；`AppUrl` 是信裡那行網址。內網 relay 匿名、不需要帳密與 SSL。⚠️ 日後真要密碼請放 User Secrets 或 `Mail__Password` 環境變數。
+
+- ⚠️ **收件者、階段、主旨、內文一律由後端自己算（`UnsetPhaseOf()`），前端送什麼都不看** —— 收件者若能由呼叫端指定，任何網頁都能借系統的名義寄信。`UnsetPhaseOf()` / `StagePassed()` 是 `app.jsx` 的 `unsetDuePhase()` / `isPhasePassed()` 的**鏡像，改了要兩邊一起改**。
+- ⚠️ 順序是 **先寄信、再寫稽核列**（`ChangeType='通知寄送'`）。反過來寄失敗就會留下假紀錄；稽核列寫失敗時**不可以回失敗**（信已送出，使用者會再按一次）。`通知寄送` **不進 `isDateChange`**、不動三個計數欄。
+- ⚠️ **寄不出去一律回 400／502 講清楚原因，不可以靜靜當成寄成功**。**副本查不到信箱時照樣寄給主要收件者**，只在回應裡標 `ccMissing`。這一支也套 `IsCrossSiteRequest()`。
+- ⚠️ **存檔後的自動詢問只在「真的寄得出去」時才跳；使用者自己按 ✉ 則一律要出聲**（42）。判斷走 `notifyPreview(fresh).problem`。**這不是把失敗吞掉**：徽章與 `✉` 照樣在。差別在**誰起的頭** —— 他自己按 ✉ 是在問「寄了沒」；存完檔是系統插話，講一件他此刻無能為力的事只是噪音。
+- ⚠️ **同一階段、同一個收件者通知成功過一次，存檔後就不再自動詢問**（43，`phaseNotifiedEntry()`）。**重複跳窗的代價不是煩，是把真正該響的那一次一起消音**。**只收掉自動詢問** —— 徽章、`✉`、`需關注` 計數、`dueRank=0` 全部不動。
+- ⚠️ `phaseNotifiedEntry()` 的**四條界線少一條就會靜靜吞掉一封該寄的信**：①判定鍵是 **(需求, 階段)** 不是需求；②基準線是同一階段最後一次 `規格回退` 之後（**必須按 `phase` 過濾**，跨階段取 `MAX(Id)` 會誤判）；③依據是**稽核列**，**不可以放 localStorage／component state**；④**收件者換人就重問**（比對 Note 裡 `收件者 … <email>`）。
+- ⚠️ **判不出來時一律當成「還沒通知」**（Note 格式對不上、信箱空、`queued` 未確認送出）。多問一次只是吵，**少問一次是下一棒完全不知道有這件事**。
+- ⚠️ **`fetchHistory()` 必須回傳剛抓到的那一份**，存檔後那條路要吃它、不可以讀 `historyEntries`／`historyMap`（`setState` 非同步）。
+- ⚠️ **手動 ✉ 一律不擋**，只在視窗上多一行「已經在 X 通知過 Y 了，這會是第二封」。
+- ⚠️ **寄件者是「按下按鈕的那個人本人」**：Windows 帳號剝網域＝工號 → `dbo.Assignee.EMPO` → `EMAIL`（`AssigneeByEmpNoAsync()`）。收件者因此可以直接**回信**，落款跟著改口。
+  ⚠️⚠️ **只有 `actorSource == "windows"` 才可以用本人身分寄信**。模擬帳號走這條路是真的冒名。模擬／取不到帳號／工號不在名單，一律退回 `Mail:From`（**後備**用，可留空）；兩邊都沒有才回 400。稽核 `Note` 一定要把寄件者記進去。
+- ⚠️⚠️ **寄信前一定要先做那個 `TcpClient` 連線探測，不可以拿掉**（40）。`SmtpClient.Timeout` **管不到 TCP 連線建立那一段**（那是作業系統的 SYN 重試）。它也是「`Mail:TimeoutSeconds` 這個設定要真的算數」的唯一辦法。
+- ⚠️ **失敗訊息要講「下一步去查什麼」**（`MailFailureHint()`）：.NET 的例外永遠是「Failure sending mail.」，分不出位址錯／防火牆擋／relay 不讓這台轉信，而那三種都不在程式這一側、要找的人還不一樣。判斷看 `SocketException`，並印出 `Test-NetConnection` 指令連同「一定要在跑網站的那台主機上跑」。前端另外要有「寄送中…」的 toast。
+- ⚠️ **兩種送信方式，`Mail:Mode` 切換**（41）：`smtp` 這台主機自己連 relay；`dbmail` 呼叫 DB 主機的 `msdb.dbo.sp_send_dbmail`（借用「DB 主機 → relay」那條已通的路）。**內容、收件者、副本、寄件者規則兩種完全共用**；`dbmail` 不需要 `Mail:Host`，前置作業是 `16_grant_dbmail_permission.sql`。
+  ⚠️⚠️ **`dbmail` 一定要輪詢 `sysmail_allitems` 確認 `sent_status`**。`sp_send_dbmail` 回的是「已排入」不是「已送出」，**寄失敗會躺在 `sysmail_faileditems`，不會回到 API 也不會回到畫面**。確認不到時一律回 `queued: true`，前端改用彈窗且**措辭不可以是「已寄出」**，稽核列標「未確認送出」。
+- ⚠️⚠️ **`SmtpClient.Timeout` 對 `SendMailAsync` 完全無效，那個 `CancellationTokenSource` 不可以拿掉**（44）。上面那個 `TcpClient` 探測**攔不到這一種** —— 它只涵蓋「TCP 連線建立」，連上之後 relay 不講話完全在守備範圍外。後果是前端那次 `fetch` 跟著無限等，而整段包在 `runExclusive()` 裡 —— **那個分頁的儲存／完成／回退／刪除會一起被鎖死**。用 `SendMailAsync(msg, cts.Token)` 而不是 `.WaitAsync()`（後者只是不等了、底層還在佔著連線）。⚠️ 前端對應的 **90 秒 `AbortController` 保險絲也不可以拿掉**。
+- ⚠️ **逾時不可以當成「確定失敗」**：對話是被我們自己切斷的，relay 可能早就把信收下了。smtp 逾時走**與 dbmail 完全相同的「未確認送出」那條路**（`SendNotifyMailAsync` 回 `Uncertain`）。回「寄信失敗」→ 不寫稽核列 → 使用者再按一次 → **對方收到第二封**。前端 `AbortError` 的文案也**不可以說「沒有寄出」**。⚠️ 稽核 `Note` 裡「**未確認送出**」那四個字是兩種狀態日後唯一分得出來的依據，`phaseNotifiedEntry()` 也靠它判斷，**兩種傳輸方式都必須寫進去**。
+- ⚠️ **收件者／副本／寄件者的信箱格式一律在端點層先驗**（`IsValidMailAddress()`，44）。`EMAIL` 是使用者自己在 SSMS 手動維護的，打錯是可預期的。不可以只靠 `System.Net.Mail` 丟例外（那是一句英文，而 `MailFailureHint()` 對它回空字串）。⚠️ **更要緊的是兩種模式行為不一樣**：`a@x.com;b@y.com` smtp 會被擋，但 `sp_send_dbmail` 的 `@recipients` 吃分號清單、**dbmail 會真的寄給兩個人**。
+  ⚠️ **收件者**壞掉回 400；**副本**壞掉降級成沒有副本、照樣寄（理由走 `ccReason`，「沒填」與「格式錯」要分得出來）；**寄件者本人**壞掉**退回 `Mail:From`、不可以直接失敗**。⚠️ 前端 `isMailAddr()` 是同一套但**刻意寬鬆**：**不可以要求網域裡有點**（公司信箱長得像 `Chih_Kuan_Chang@UMCG`），而且要接受 Outlook 的「姓名 <位址>」。格式壞掉也要算進 `notifyPreview().problem`。
+- ⚠️ **本人也收一份副本**（`selfCcEmail`，62）：信是這台主機送出去的、不會出現在他的寄件匣。**只在 `fromIsSelf` 時加**，本人已是收件者或副本時不重複；走 **CC 不走 BCC**。稽核 `Note` 只在**寄件者後面**多「（本人亦收副本）」—— 前端 `NOTIFY_TO_RE` 抓的是「收件者」後第一個 `<…>`，**不可以插到它前面**。
+- ⚠️ **信同時附 HTML 版**（`mailHtml`，62）：純文字裡的網址在 Notes 點不動。由同一個 `lines` 轉出來、內容一字不差，只把網址包成 `<a href>`，**每一行都先 `HtmlEncode`**。⚠️ smtp 的 `Body` 放純文字、`AlternateViews` 放 HTML，**順序不可以反過來**（客戶端依 RFC 2046 偏好最後一段）；dbmail 只能擇一，`@body_format` 改成 `'HTML'`。
+- ⚠️⚠️ **這一整條寄信路徑已於 2026-09-02 由使用者在公司 IIS 主機（p58esiap12）實測通過，未經指示一律不要更動。** 生效組合是 `Mail:Mode = "smtp"` + relay `10.13.2.221:25`、`UseSsl=false`、`From` **刻意留空**（看到空字串**不要以為是漏填而順手補上**）。保護範圍：`Mail:*` 讀取段、`notify-unset` 端點、`UnsetPhaseOf()` / `StagePassed()` / `AssigneeByEmpNoAsync()` / `MailFailureHint()` / `TcpClient` 探測 / `dbmail` 輪詢，以及 `appsettings.json` 的 `Mail` 區塊。**改到附近時也不要順手「整理」這些。** 這條路徑跨了主機、relay 的來源 IP 白名單、`EMPO`／`EMAIL` 對應三個都不在程式裡的環境條件 —— 開發機上看起來一樣的改動，到 IIS 上壞掉的症狀是「按了沒反應」或「顯示已寄出但對方沒收到」，而**信寄錯了收不回來**。真的要動，改完必須回 IIS 重測。
+  ⚠️ 上面第 62 批那兩處（本人收副本、HTML 版）已在本機用假 relay 抓下整封原始信驗過，但**還沒回 IIS 重測**。
+
+#### 頁面瀏覽權限卡控（74/75）
+端點：`GET /api/access-status`（匿名，只回開關）、`GET /api/access-check`（Negotiate；`?testEmpId=` 只給管理者）、`GET/POST /api/access-rules`、`DELETE /api/access-rules/{id}`、`PUT /api/access-control`、`POST /api/access-admins`、`DELETE /api/access-admins/{id}`（後六支 Negotiate ＋ 只有管理者 ＋ 寫入套 `IsCrossSiteRequest()`）。
+資料表 `dbo.AccessRules` / `dbo.AppSettings`（`AccessControlEnabled`，**預設 false**）/ `dbo.AccessLog`（`18_add_access_control.sql`）/ `dbo.AccessAdmins`（`19_add_access_admins.sql`）。
+規則：**同一條內有填的欄位全部符合（AND），多條之間任一符合即放行（OR）**；只填工號＝白名單不查名冊。名冊 `[WEB].[dbo].[notes_person]`（`Access:PersonView`，串進 SQL 前有 regex 白名單）。
+
+- ⚠️ **與 Gantt 刻意不同的三件事，不要「對齊回去」**：①**工號由後端從 `ctx.User` 讀，不收前端參數**（Gantt 收 `?empId=`，改網址就能冒名；模擬帳號因此也過不了門）；②**管理者＝ `dbo.AccessAdmins` ∪ `appsettings` 的 `Access:Admins`**（DB 是正式的、面板維護、進 `AccessLog`；設定檔那份只是**後備**，正式主機平常留空），**管理者一律可瀏覽、不受規則限制** —— 規則設錯時的出路不能只剩 SSMS；③**只擋畫面**：`/api/requirements` 等端點維持匿名，curl／測試腳本／寄信路徑完全不受影響。
+- ⚠️⚠️ **`Access:Admins` 不要再寫進 `appsettings.Development.json`**：.NET 設定檔的 JSON 陣列跨檔是**依索引覆寫、不是合併**，會把 appsettings 的那一筆靜靜蓋掉而兩個檔看起來都沒寫錯。這正是清單搬進 DB 的原因。`ConfigAdmins()` 另接受字串寫法 `"a, b"`（字串是整個值覆寫，看得出來）。
+- ⚠️ `POST/DELETE /api/access-admins`：**不能刪自己、不能刪掉最後一位（設定檔後備算進去）**，兩道少一道，手滑之後唯一的出路就是 SSMS。
+- 前端：模組層的 `checkAccess()` / `AccessGateScreen` / `AccessDeniedScreen` / `AccessPanel` ＋ App 的閘門。
+- ⚠️ 前端 fail-closed：檢查完成前只有載入畫面，**通過了才 `fetchReqs()`**（`accessPassed` 為 true 才起第一次抓取，`dataStartedRef` 保證只起一次；被擋的人不該連資料都先收到）；逾時（15 秒）／4xx／5xx 一律「錯誤畫面＋重試」不放行，只有 fetch 丟 `TypeError`（連不上）才放行。**401 不是錯誤**（非網域拿不到工號）→ 改問 `/api/access-status`。閘門的 early return **一定在 App 所有 hooks 之後、主 `return` 正前面**。
+- ⚠️ 名冊查詢失敗時**含部門條件的規則一律不成立**、純工號規則照常，訊息要講「名冊查詢失敗」不是「你不在名單上」（找的人不同）。
+- ⚠️ 頁首 🔐 只給管理者看，卡控開著時套 `ctl-on` 並印「卡控中」—— 藏入口不是安全邊界，每支端點自己的 403 才是。
+
+#### 查詢端點
+- **⚠️ 查詢端點一律要有 try/catch，而且前端要看得出「讀取失敗」與「沒有資料」的差別**（24、25）。
+  - `GET /api/history`：靜靜清空清單的後果是**主管會看到「這批需求從來沒被改過」**（⚠N 全消失、統計「時程異動」變 0）。前端 `historyError`：KPI 卡顯示 `—`（不是 0）、圖例列與軌跡面板明講「讀取失敗，不代表沒有變更」。
+  - `GET /api/assignees` 與 `GET /api/export`：`fetchAssignees()` 失敗時負責人下拉一個名字都沒有，而 **EMS 負責人是必填** → 新增根本存不進去，畫面上卻只寫「必填欄位未完成」。前端加 `assigneeError`（掛在兩個下拉底下），**失敗時不清空 `assigneeList`**（舊名單過期了還能用，與 `historyEntries` 相反 —— 錯的數字會騙人）。
+- **⚠️ 判斷 `Status` 是不是某個值一律走 `StatusIs()`**（25）：先 `Trim()` 再比大小寫。`"Done "` 這種舊值會讓前端不給按的需求「直接打 API 卻整個放行」，計數欄憑空 +1。`IsValidStatus` 只管寫入，**讀取側不可以假設寫入側已經收乾淨**。
 
 ### 前端 (Frontend)
-- **架構**: 並未使用 Create React App 或 Vite 或 Next.js 等框架。前端的 React 程式碼寫在 `ClientApp/app.jsx`，然後透過 Babel 直接編譯為純 JS 檔案 (`wwwroot/app.js`) 提供給瀏覽器。
-- **主要檔案**: 
-  - `ClientApp/app.jsx`: 所有的 React 視圖與業務邏輯都在這裡（包含列表、修改 Modal、時程解鎖更新邏輯、圖表統計等）。
-  - `ClientApp/input.css`: Tailwind CSS 的原始檔。
-  - `wwwroot/index.html`: 首頁，引入 **`wwwroot/vendor/` 底下的 React 18.3.1（本機檔案）**以及打包好的 `app.js` 與 `app.css`。
-    ⚠️⚠️ **React 不可以改回 CDN**（第 82 批，2026-09-25）。在此之前是 `https://unpkg.com/react@18/umd/react.development.js`，三個問題：①**那是全站單點失效** —— unpkg 連不到（IT 封 CDN、代理掛掉、unpkg 自己出過幾次事故）→ `app.js` 第一行 `const { useState … } = React` 立刻 ReferenceError → **整個網頁一片空白**，而畫面上唯一的線索是那句英文 `React is not defined`；這個 App 跑在工廠內網，對外網路不是它該依賴的東西。②**development build 實測 1.19 MB**（react 109,931 B + react-dom 1,080,227 B），production.min 兩支合起來只有 **142,586 B**。③`react@18` 會解析成當下最新的 18.x，等於版本沒鎖。
-    ⚠️ 檔名自帶版本（`react-18.3.1.production.min.js`）＝ 自己就是 cache buster，所以這兩支**刻意不帶 `?v=`**；要升版就是換檔名 ＋ 改 index.html，是看得見的動作。走 `__BASE__` 所以子路徑部署照樣對。它們在 `wwwroot` 底下，`dotnet publish` 預設就會帶，不必動 csproj。
-    ⚠️ 另有一段 guard：React 真的沒載進來時，`#error-log` 會印一段**看得懂的中文**（含「該告訴管理員哪個檔載不進來」），不再只有那句英文。
-    ⚠️⚠️ **字型不可以改回 Google Fonts**（第 83 批，2026-09-28）。移除的是 `<link rel="preconnect">` ＋ `fonts.googleapis.com/css2?family=Inter…&family=Noto+Sans+TC…` 那支樣式表，字型堆疊改寫在 `input.css` 的 `body`（`-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft JhengHei', 'PingFang TC', 'Noto Sans TC', 'Helvetica Neue', Arial, sans-serif`）。理由與上面 React 那條**完全相同，而且這一支更嚴重**：①`<link rel="stylesheet">` 是 **render-blocking** 的 —— `display=swap` 只管「字型檔還沒到先用備用字」，**管不到這支 CSS 自己**，連不到 CDN 而且是「封包被丟掉」那種時，瀏覽器要等自己的網路逾時才畫第一格；②實測那支 CSS **166,952 B / 230 ms**，比 react-dom（131,835）還大（567 個 `@font-face`，Noto Sans TC 被切成上百個 unicode-range 子集，載入後實際用掉 96 個），之後還要再去 `fonts.gstatic.com` 抓子集檔；③React 搬下來之後它是全站**最後一個對外相依**，拿掉之後實測**外部請求 0 支**、`document.fonts.size` 567 → **0**、`loadEventEnd` 330 → **119 ms**。
-    ⚠️ **順帶把版面預算變鬆了，不是變緊** —— 1280 寬、16 欄的 A/B 實測（把舊的 CDN 字型暫時載回來比）：`page-shell` **1299.1 → 1267.7px**、整頁橫捲量 **34 → 2px**、表格 min-content **1249 → 1218px**；1366／1440 橫捲量都是 **0**，頁首 65px、工具列 60px、階段那排 60px 三條全部仍是單行。**`memory.md` 第 6 節那個 1256px 已過期，改讀 1218px。**
-    ⚠️ `docs/使用者手冊.html` 一直都是這樣做的（只列本機字型、沒有任何 CDN），這次只是讓 App 跟它一致。
-- **⚠️⚠️ `<App/>` 一定要包在 `AppErrorBoundary` 裡**（第 83 批，2026-09-28，`app.jsx` 檔尾）。在此之前**完全沒有這道防線**：App() 底下任何一次 render 例外，React 18 會把整棵樹卸載 —— 實測（在真的那棵樹上把 `React.createElement('tbody')` 改成丟 `TypeError`）`#root` 直接變成空的，畫面上唯一的線索是 `index.html` 那個 error 監聽器印的一句英文，而且**行號指的是 `react-dom…js:198`**，連是哪一段程式都看不出來。這正是第 82 批 A1 要防的那個畫面（「整頁空白 ＋ 一句英文」），但那一批只補了「React 沒載進來」那一種。
-  - 實測加上之後：`#root` 仍有 1 個子節點，出現白底紅框的中文卡「畫面發生錯誤，沒有辦法顯示 / 資料庫沒有任何變動 / 重新整理」，`<details>` 裡的堆疊第一行變成 **`at App (…/app.js:1749)`**（自己的程式，不再是 react-dom）。
-  - ⚠️ 第二顆鈕「**清掉網址上的篩選條件再重新整理**」只在網址真的有 query 時出現：篩選與排序全部寫在網址上（第 28 批），壞掉的原因若正好是某個篩選值，直接「重新整理」會用同一條網址再炸一次，那個書籤等於永久壞掉。
-  - ⚠️ 樣式**刻意不吃任何 CSS 變數與 Tailwind 類別**（走 inline style，白底深色字，與 index.html 那段 React guard 同一種長相）：走到這裡代表畫面已經不可信，再依賴一層樣式系統只是多一個可能一起壞掉的東西。
-  - ⚠️ 它**只負責讓失敗看得懂，不負責修好任何東西** —— 不要在這裡加重試或「跳過壞掉的那一列」，那會把一次真的資料問題靜靜藏起來。`console.error` 那條要留著（F12 的堆疊比卡片上那段完整）。
-- **建置指令**: 
-  - `npm run build`: 同時執行 JSX 編譯與 Tailwind CSS 編譯。
-  - `npm run watch:js` / `npm run watch:css`: 可用來監聽檔案變更自動編譯。
-  - **重要提醒**: 每次修改 `app.jsx` 或 `input.css` 後，**必須執行 `npm run build`** (或開啟 watch)，否則瀏覽器讀到的 `wwwroot/app.js` 還是舊的。
-  - **絕對路徑禁用（子路徑部署）**: 這個 App 會掛在 IIS 的子應用程式底下（例如 `http://host/Controltable/`）。前端**不可**再寫死開頭的 `/`：
-    - API 一律用 `api('/api/xxx')` 這個 helper（定義在 `app.jsx` 最上方），它會接上 `window.APP_BASE`。直接寫 `fetch('/api/xxx')` 在子路徑底下必定 404。
-    - `index.html` 的靜態資源用 `__BASE__app.css` / `__BASE__app.js`。`__BASE__` 由 `Program.cs` 的中介軟體在回傳 index.html 時換成實際的 `Request.PathBase`（根站台是 `/`）。所以 index.html 不走 `UseDefaultFiles`，是由該中介軟體攔下來的。
-    - 後端路由維持 `/api/...` 寫法即可，ASP.NET Core 的路由本來就是相對 PathBase，不用改。
-  - **版本號一律更新**: build 完**接著就要**把 `wwwroot/index.html` 內 `app.css?v=` 與 `app.js?v=` 的版本號往上帶（格式 `YYYYMMDD` + 三位流水號，例 `20260818014`，兩處必須一致）。不要等到「發現沒生效」才補 —— 瀏覽器拿到舊檔是靜默失敗，看起來會像功能壞掉或只改了一半。
-- **工具列的 `<select>` 固定 140px，而且不可以把說明接在 option 文字後面**（第 34→36→37 批，2026-08-27，同一個坑收拾了三次）。⚠️ **原生 `<select>` 的寬度是由「最長的那個 option」撐出來的**，不是由選中的值 —— 第 34 批在「警示」的選項後面補了一句 22 字的說明，那顆立刻從 ~140px 變成 **365px**，八個控制項塞不進 1217px 的工具列，`Excel` 與「＋新增需求」被擠到第二行（工具列 60px → 102px）。⚠️ 第二個理由：**option 的文字同時是「選中之後顯示在收合狀態」的文字**，補述會被截成半句。**選項名稱講不清楚時，正解是把名稱改對**（`有執行延期` → `有延期完成`，那是稽核表實際寫入的 `ChangeType`，詞裡就含著按鈕名「完成」），補充說明放 `<select>` 的 `title` 與圖例列。⚠️ 版面預算（1217px 工具列）：`搜尋 220 + 漏斗 34 + 分隔 1 + 140×5 + 動作 168 + 8 個 gap×8 = 1187`，**只剩 30px** —— 動任何一項都要回來重算，那種破版是靜默的。
-- **資料列裡新加的東西一律疊在既有元素「下面」，不可以貼在它右邊**（第 39 批，2026-08-31）。「⚠ 未壓日期」那顆 `✉`（`NotifyMailButton`）實測：內嵌在徽章右邊 → 16 欄表格的最小寬度 **1254 → 1265px（多 11px）**；疊在徽章下一行 → `max(徽章, 按鈕) = 徽章寬`，**一個 px 都不多**。那一格本來就是最矮的一種（沒有到期標籤、也沒有實際完成日那行），多一行剛好與旁邊逾期的格子一樣高，列高完全不受影響。⚠️ 這條與下面第 31 批的 1237px 預算是同一件事 —— **欄寬是由那一欄裡最寬的一格撐出來的**，加寬一格就是加寬整張表。
-- **「⚠ 未壓日期」徽章本身是按鈕：點下去開編輯視窗並聚焦那一階段的日期欄**（第 54 批，2026-09-05）。在此之前它是 `cursor-help` 的 `<span>`，而旁邊的 `✉`（催**別人**壓）反倒是唯一按得動的東西 —— 「自己去壓」得關掉精簡模式 → 找那一列 → `✎` → 在四個區塊裡自己找出是哪一階段，而 `unsetDuePhase()` 早就算出來了。⚠️ **就地換元素，class 與 style 一個字都不改**：實測 `<span>` 與 `<button>` 都是 **61.99 × 21px**（font-size／weight／padding／border／line-height 全同），欄寬一個 px 都沒動 —— 這一格是 96px 欄寬的來源之一（第 39、52 批各實測過一次）。⚠️ 目標欄位一律是該階段的 **End**（`spec→spec.end`／`confirm→msd.confirm`／`msd→msd.end`／`uat→uat.end`，用 `data-ct-focus` 標記），與「Start 不重要、交件與否只由 End 決定」同一條。⚠️ 一定要 `stopPropagation`（外層 `<tr>` 會展開明細；實測列數 19→19 沒被展開）。⚠️⚠️ **那個聚焦的 effect 必須宣告在「沒人接手就聚焦視窗容器」那個 effect 之後** —— 兩個吃同一個 `openModalCount`，React 依宣告順序執行，寫在前面會被容器把焦點搶走，看起來就像這顆按鈕沒有作用。用 `focusPhaseRef`（**ref 不是 state**：做成 state 會讓 20 幾個欄位的編輯視窗在開起來之後再多 render 一次），進 effect 立刻清成 `null` —— 一次性，`✎` 走的一般路徑不可以被挾持（實測仍是聚焦視窗容器、`scrollTop` 0）。⚠️ **精簡模式刻意不傳 `onSetDate`**（`currentStageCell` 那一支），徽章維持不可點的 `<span>`：精簡模式是唯讀的主管檢視，「操作」欄整欄收起是**使用者刻意的設計**（2026-09-05 明講「主管瀏覽時使用精簡模式，不需要看到編輯或刪除的功能」，並要求日後不要再提修改）—— 在這裡放一個編輯入口等於把它從後門加回來。⚠️⚠️ **但精簡模式那顆 `<span>` 的 tooltip 一定要講出「這裡點不動、關掉精簡模式就點得動」**（第 57 批，2026-09-07）：兩種模式的徽章**長得一模一樣**，使用者因此回報「我之前不是已經修正了…這邊怎麼失效了?」。**刻意的限制沒有講出來，在使用者眼裡就等於壞掉** —— 與「讀取失敗一定要出聲」是同一條原則的另一面。（他當天再次確認**維持唯讀、不要做成可點**。）⚠️ gate 沒過時目標欄位是 `disabled`，`focus()` 無效但**照樣捲過去**（那顆鎖旁邊就寫著要先填完哪一階段）。順帶修掉一個可及性漏洞：原本的 `<span>` 鍵盤完全按不到，而它是全畫面最急的那顆標記。
-- **⚠️⚠️ 「已經發生的結果」與「要你按的動作」不可以長得一樣 —— `✓` 與 teal 只留給結果**（第 59 批，2026-09-10，使用者附截圖問「提早完成的圖示跟完成的圖示看起來都差不多…目前的顯示方式是否容易讓人混淆狀態?」）。在此之前階段標題旁那兩顆小藥丸是：**結果標籤** `color:var(--tone-good)` / `bg:rgba(15,118,110,0.1)` / `✓` / 無邊框；**動作鈕** `color:var(--tone-good)` / `bg:rgba(15,118,110,0.08)` / `✓` / 0.3 alpha 邊框 —— **同一個顏色、底色只差 0.02 alpha、同一個 `✓`**，唯一的差別是一條幾乎看不見的邊框。⚠️ 根本的矛盾是**「`✓` 與 teal 是『已經完成』的語言」，卻用在一顆「還沒完成、請你來做」的按鈕上**。⚠️ 第 58 批（完成日改成自己填）讓它更嚴重 —— 按下去不再只是「確定嗎」，而是一件要填日期的真工作。做法：動作鈕改 **indigo（`--brand`，全域主要動作色）＋拿掉 `✓`＋文字「標記完成…」**（`…` ＝ 會開視窗），**三個維度一起拉開**（顏色／圖示／文字）；結果標籤維持 teal `✓` 並**補上完成日**（`✓ 提早完成 · 09/02`，只印 `MM/DD`，完整日期在 tooltip）—— 第 58 批之後完成日可以自填，畫面上卻看不到記成哪一天。⚠️ **改了按鈕名就要改掉畫面上每一處提到它的字**（第 37 批：同一個概念只能有一組字）：`app.jsx` 12 處、手冊 6 處的「✓ 完成」全部改成「標記完成…」，否則使用者會去找一顆不存在的按鈕（第 34／37 批的「執行延期」就是這個坑）。⚠️ 視窗裡「準時」時**不可以印「由 X 更新為 X」**（同一個日期寫兩次讀起來像壞掉，而那正是補登最常見的情況）；下限的理由要講**實際生效的那一個**（被前一階段 End 抬高時要說是前一階段，不可以還寫「最多回推半年」）。
-- **搜尋比對哪幾欄，畫面上要說得出來；改了範圍就要一起改 placeholder 與 `title`**（第 55 批，2026-09-05）。`remark`（需求補充）原本不在比對範圍裡 —— 它是展開明細看得到、也印得出來的一整段文字，使用者拿裡面的字去搜卻是 **0 筆**，而畫面上沒有任何地方說得出比對到哪幾欄（placeholder 只寫「NID、項目、負責人...」，那個「...」還暗示著不只這些）。現在是七欄：`nid`／`mainCat`／`subCat`／`emsOwner`／`msdOwner`／`currentStatus`／`remark`，完整清單掛在搜尋框的 `title` 上。實測 `unhold`：改之前 0 筆、改之後 1 筆（NID 1）；`CMS`：3 → 4 筆，畫面上的 NID 與預期集合完全一致。⚠️ **`notesLink` 刻意不收**（存的是網址，比對只會撞到網域這種到處都有的字），**日期與 `Status`／`StatusID` 也不收**（那是漏斗＝欄位篩選的守備範圍；一個關鍵字同時比對日期字串只會做出巧合命中，例如打 `2026`）。
-- **匯出 Excel 不吃畫面上的篩選，那行說明一定要講明**（第 54 批，2026-09-05）。`/api/export` 只有 `WHERE IsDeleted = 0`，搜尋／篩選／排序一個都不套用；而那行字原本寫「把**目前的資料**下載成 .xlsx」—— 正上方才剛寫著「顯示 19 / 64 筆」，最自然的讀法就是「下載那 19 筆」。⚠️ 這是**下載檔案**，打開才會發現拿到 64 筆，屬於這個專案一路在防的那種靜默落差。現在寫「下載**全部 N 筆**成 .xlsx」，畫面上有篩選時再多一句警示色的「（不套用畫面上的篩選，畫面目前是 M 筆）」。⚠️ 筆數走 `requirementsData.length`，**不可以用 `sortedData.length`** —— 那正是不會被匯出的那個數字。⚠️ 這一段只改文案，**沒有動 `Program.cs`**；日後真要做「匯出目前篩選結果」是另一件事（要把可見的 id 清單帶給後端）。
-- **階段名只在「StatusID 欄講的不是這個日期」時才印**（第 52 批，2026-09-05 使用者問「三列是不是太浪費」）。精簡模式「目前階段時程」欄的 `unset` 分支原本無條件印一行階段名，而 `unset` 的定義就是「StatusID 走到哪一階段、那一階段自己沒壓日期」—— **印出來的必然與右邊 StatusID 欄一模一樣**。同一支 `compactScheduleCell` 底下早就立了這條規則（只有 `已結案` 與 `最急 · X`（`r.inferred`）才標），只有這個分支漏套。實測：三行 57px／列高 78px → 兩行 39px／列高 **60px**（與同欄的「逾期」格一樣高），**欄寬 96px 一個 px 都沒變**。階段名沒有消失 —— 徽章的 tooltip 就寫著。⚠️ 不要改成「把 ✉ 併到徽章右邊」來省那一行：徽章 82px + ✉ 24px > 96px 欄寬，而欄寬是由最寬的那一格撐出來的（第 39 批實測過）。
-- **⚠️⚠️ 畫面上的數字排除了東西，就要說排除幾件 —— 統計報表上半部補「另有 N 件不在此區間」**（第 84 批，2026-09-28）。`ymRange` 預設是「最近 12 個**有資料的**年月」，而且**不寫 localStorage、不進網址** —— 所以**每一次打開統計報表都是這個區間**。實測當天：KPI 那排寫著「總需求 62 / 進行中 16 / 已完成 46」，而正下方的交叉表合計只有 **50**、`5 結案` **37**，趨勢圖寫「共 50 件」。被擋在區間外的 12 件裡**有 3 件是進行中**（SQL 查到 NID **7／8／9**，全在 ③ MSD開發中、2025-09 註冊）—— 而 **NID 7 就列在同一頁「風險預警」卡上寫著「逾期 13 天」**。同一個畫面上一張卡說它逾期、上面那張表一件都沒算到它。
-  - 做法：`trendView` 多回 `inCount` / `outCount` / `outOngoing`，`renderYmOutside()` 一份標記給交叉表與趨勢圖**共用**（各寫一份的話日後只會改到一邊 —— 與第 50 批的 `renderChip()` 同一個理由）。⚠️ 它是**按鈕**（按下去 = `applyYmPreset(0)`），不是灰字 —— 講出「漏了 12 件」卻不給出路只會多一個看得到解不掉的問題。區間涵蓋全部時回 `null`（常駐一句「另有 0 件」只是噪音）。
-  - ⚠️ **「進行中」要單獨算**：那幾件是「還在跑、可能正在逾期」的，KPI 與風險預警都算得到它們，只有這兩張卡算不到。
-  - ⚠️ 這條規則專案早就立過兩次 —— 第 54 批的匯出說明（「下載全部 N 筆（不套用畫面上的篩選，畫面目前是 M 筆）」）與第 49 批的搜尋穿透（「另有 N 筆…」）。只有這兩張卡沒套。
-  - 實測 1280 寬：近 12 月「另有 12 件（含 3 件進行中）」、近 6 月「另有 41 件（含 6 件進行中）」、全部則不出現；三種情況 `docX` 都是 **0**（沒有多出任何橫捲）。
-- **統計報表的卡片順序：跟年月區間連動的全部排在上半部，不連動的「人員負載」排最後**（第 53 批，2026-09-05 使用者要求：「這兩個圖表幫我上下兌換一下，這樣上半部都是有連動的，下面才不連動」）。順序＝KPI → 風險預警 → 各年月 × 目前階段（帶區間選擇器）→ 各年月案件數（連動）→ **人員負載（不分區間）**。⚠️ 第 52 批補的那行「不分區間」是把話講清楚，這一批是把版面本身排對 —— **同一頁上有兩種口徑時，先把同一種口徑的排在一起，再標示差異**；夾在中間時使用者的第一眼反應是「這張壞了嗎」，那是版面自己造成的誤會。⚠️ 日後新增統計卡照這條放：連動的往上、不連動的往下。⚠️ 交叉表的副標「（同下方趨勢圖）」與趨勢圖的「區間與上方統計表連動」在換位後**仍然成立**（兩張現在直接相鄰）—— 動順序時要回頭確認這種指路文字。
-- **「人員負載」刻意不跟年月區間連動，但畫面上一定要講**（第 52 批，使用者問「這樣邏輯對嗎?」）。它回答的是「**現在**誰身上壓著幾件」（當下快照），而區間是依**註冊年月**分組 —— 套上去會變成「某段期間註冊、而且目前仍未結案」的混合數字，兩側加總也不再等於「進行中」KPI。⚠️ **邏輯對，錯的是沒標示**：它前後兩張卡都跟著區間走（上方交叉表帶著選擇器、下方趨勢圖寫著「區間與上方統計表連動」），只有夾在中間這張什麼都沒寫，看起來就像壞掉的那一個。標題右邊補一行「不分區間 · 目前未結案的 N 件」＋ tooltip 講原因。**同一頁上「有些卡跟區間、有些不跟」時，不跟的那張必須自己說出來。**
-- **⚠️ 階段那一排（`ALL` + 五顆 + 右側控制群）的寬度預算只有幾十 px，加東西之前一定要量**（第 51 批，2026-09-05，使用者截圖回報「變成兩行了!!」）。第 50 批往那一排塞了「✓ 圖例」（52px）與併過去的條件晶片（97px），需求從 **1218 → 1384px**，**1440 螢幕（可用 1425px）當場斷成兩行** —— 而那一排斷行的樣子比原本多一張卡還糟。實測基準（1440 螢幕、64 筆）：左邊 `ALL 64` + 五顆 ＝ **725px**（含 gap），右邊 `需關注 170` + `顯示 N/M 筆 81` + `精簡模式＋排序 168`。收回來的三刀：①圖例改成**純圖示 34px**（`ctl ctl-icon`，不可以改回帶文字的 `ToggleChip`）；②**不要把條件晶片併進這一排**（見下一條）；③右側那兩條 `ctl-div` 分隔線移除（含 gap 共 18px，而三群本來就靠顏色與形狀分得出來）。改完 need＝**1224px**，1280／1366／1440／1600 四個寬度都是單行（1280 還剩 34px；**第 63 批加了單選／複選開關 34px＋gap 8px 之後，1280 只剩 16px** —— 這一排已經沒有再放任何東西的空間）。
-- **StatusID 那五顆預設「單選」，旁邊一顆純圖示開關切成複選**（第 63 批，2026-09-11 使用者要求：「使用者的操作習性通常只需要單選…旁邊擺放一個可以決定要單選還是複選的開關」）。`stageMulti` state，**每次載入都是 `false`、刻意不寫 localStorage**（他的原話是「預設登入網頁後為單選，若要複選時再進行切換」）；唯一例外是網址 `stage` 本身帶兩個以上（別人分享的連結）→ 一開始就是複選，否則畫面亮著兩顆、開關卻寫著單選。單選模式：點一顆就只剩它、再點同一顆取消回 ALL；複選：原本的聯集。切回單選時若正選著多顆，**只留最後選的那一顆**（清空會讓清單無聲地跳回全部，全留則與開關矛盾）。⚠️ **開關一定要維持純圖示 34px**（`ctl ctl-icon`，放在 `5 結案` 右邊），與上一條的圖例開關同一個理由：實測 1280 螢幕加上它之後左右兩群中間只剩 **16px**，帶文字的晶片會把這一排推成兩行。1280／1440 都實測仍是 60px 單行。⚠️ ALL 的語意與第 49 批的兩條連動一個字都沒動。
-- **⚠️ 階段那一排不可以放任何「寬度隨資料變」的文字；`需關注` 只印總件數**（第 73 批，2026-09-13）。第 51／63 批量的預算是拿當天的件數量的，而 `需關注` 後面原本接著「· 未壓 N · 逾期 M」（各 38px、件數變兩位數更寬）—— 資料一變，1280 螢幕與 1920 布幕 × 1.5 倍投影（可用都是 ~1200px）就從 60px 斷成 **102px 兩行**，而沒有任何程式碼被改過。實測 1280：需求 1240px vs 可用 1221（16 欄）／1185（精簡）；拿掉那兩段後 `需關注` 170 → **82px**，兩種模式都回到 60px。三個細項的件數在 tooltip 與「逾期」下拉都有。⚠️ 同一條也適用於 `顯示 N / M 筆`（三位數筆數會再寬幾 px，目前預算吃得下）。
-- **編輯視窗每個階段底下的「異動紀錄」與明細列同一份畫法（`PhaseChainRow`），不可以做回逐筆的內嵌捲軸**（第 73 批）。原本是 110px 的 `overflow-y-auto`、一筆一行 —— 這個視窗本身已經在捲，裡面再套一層，實測 NID 62 的 ① 6 筆就要捲（內容 160px、可視 108px），正是第 72 批在明細列拿掉的那種畫法。逐筆明細改按那一格右邊的「完整軌跡 ↗」開 `histModal` 並**直接篩到那個階段**（`openHistFor(phaseKey)`）；⚠️ 篩過的視窗一定要留「全部」那顆（`phaseTabs.length > 1 || hm.phase !== 'all'`），否則篩到一個只有 init 的階段會停在「沒有變更紀錄」出不去。`PhaseChainRow` 是唯一一份「N 筆 · 淨效果 + 日期鏈」，兩邊共用。
-- **開著任何視窗時列印，視窗與遮罩都不印**（第 73 批）：`@media print` 裡 `[data-ct-modal]{display:none!important}`。它們是 `position:fixed`，部分瀏覽器會在每一頁疊印半透明黑底；視窗內容使用者明講不需要紙本（第 72 批）。
-- **匯入的確認視窗一定要列出「匯入之後會歸零的東西」**（第 73 批）：全部軌跡、四個實際完成日、三個計數欄、通知紀錄。匯出檔帶著 ActualEnd／Count 欄而匯入刻意不吃（`exportColumns` 那段註解），在此之前確認視窗只寫「清空所有需求並重建」—— 使用者 2026-09-12 剛重灌過一次，那些全被靜靜清掉而畫面上沒有一句話講過。
-- **「畫面更乾淨」＝先砍第一列資料上方的 489px，不是砍欄位**（第 50 批，2026-09-05 使用者要求）。實測：頁首 65 ＋ 工具列卡 60 ＋ 階段卡 60 ＋ **條件晶片卡 49** ＋ **圖例列 61** ＋ 兩層表頭 79 ＋ 四道間距 64 ＝ **489px**，而一列資料只有 79px —— 1080p 螢幕上看得到 5~6 列。三刀（**489 → 363px，多 1.6 列**）：①**圖例預設收起**（開關在階段卡右側，`ct.legendOpen`）；②**只剩「預設的進度」那一顆晶片時，晶片列在螢幕上整個不出現**（⚠️ 第 51 批修正：第 50 批原本是「併到『顯示 N / M 筆』旁邊」，但那 97px 是把那一排推成兩行的元兇之一，而且它與工具列那顆藍色的「進度：進行中 (19)」是同一個概念的兩組字 —— 那顆下拉自己就是移除的入口。⚠️ 這不違反第 28 批：那條規則是為了「條件的控制項被收起來或散在三個地方」而立的，`進度` 的控制項就在正上方一張卡的距離、是全畫面唯一的藍色實心控制項、數字也寫在上面。⚠️ **紙本仍然要印** —— 紙上沒有工具列，所以那張卡保留在 DOM 裡專供列印）；③~~沒生效的篩選下拉降成安靜樣式（`ctl-mute`）~~ **已於第 56 批整個移除，見下一條，不要再做回去**。
-  ⚠️ **收起的是螢幕，不是紙**：`.legend-strip.is-collapsed` 與 `.chips-print` 在 `@media print` 裡都會回來（`display:flex !important`）。紙上沒有 tooltip，⏰／🔄／⚠ 只剩圖例解釋得了；晶片列不印則會出現「64 筆只印了 19 筆」而沒有任何線索（第 28 批）。⚠️ 這兩條 CSS **一定要寫在 `@layer` 外面** —— unlayered 規則才贏得過 Tailwind 的 `flex` 工具類，寫進 layer 裡 `display:none` 會靜靜不生效。
-  ⚠️ **`historyError` 時強制展開圖例並停用那顆開關**（`legendShown = legendOpen || !!historyError`）：那句紅字就掛在圖例列裡，收起來等於讓第 24 批的「讀取失敗一定要出聲」回到靜默失敗。
-  ⚠️ 晶片的標記只有**一份**（`renderChip()`）給兩個位置共用；併進上一排時，晶片列那張卡**保留在 DOM 裡專供列印**（`chips-print`），而上一排那顆要標 `no-print`，否則紙上印出兩份。⚠️ 那三刀裡的 ③（`ctl-mute`）已經沒了，①②仍然有效。
-- **⚠️⚠️ 原生 `<select>` 的背景色一律要是不透明的實色，`transparent` 會把展開後的選項清單畫壞**（第 56 批，2026-09-07，使用者回報「下拉的視窗顏色跑掉了」）。第 50 批的 `ctl-mute` 給沒生效的四顆下拉套了 `background: transparent` + `border-color: transparent` —— **`<select>` 展開後的 popup 是瀏覽器自己畫的，它拿 `<select>` 自己的 `background-color` 當底**，給 transparent 就等於沒有底色可用，popup 落回系統淺色底，而底下 `select option` 又是深色底淺色字，兩邊對不起來。實測：四顆 mute 的 `background-color` 是 `rgba(0,0,0,0)`，生效那顆 `ctl-on` 是實心 `rgb(79,70,229)` —— **正好只有沒生效的那四顆會壞**。⚠️ 這與第 27 批「凍結欄的底色必須是不透明卡片色、不可以直接用半透明」是**同一類坑**：原生控制項與疊在別的東西上面的元素，底色一律要實色。⚠️ 第二個毛病是 `border-color: transparent` + `--text-muted` 讓那四顆**看起來像被停用**，而它們其實可以點。現在五顆一律吃 `.ctl` 的實心底（`--bg-input`）與可見框線，生效的那顆仍套 `.ctl-on` —— **「哪一顆在過濾」的訊號本來就由藍色實心那顆負責，不需要再靠把其餘四顆調暗來對比**。⚠️ 寬度完全沒動（仍是第 36 批的 140px×5），工具列在 1280／1366／1440 都仍是 60px 單行。
-- **需求列表預設「只看進行中」，而且要用現成機制、不可以再加一個新控制項**（第 49 批，2026-09-05 使用者要求）。63 筆裡 45 筆是 Done —— 預設畫面有 71% 的列是使用者今天不會處理的。⚠️ **提過的「未結案／已結案／全部」分段控制被否決並且不要再做回去**：它與 StatusID 那排的「5 結案 45」是同一群資料的兩組字（踩第 37 批），而且兩顆會互相打架（點了 `5 結案`、分段控制卻停在未結案 → 0 筆又看不出原因）。使用者的原話是「我上述五個按鈕的功能也要保留，會不會畫面太混亂?」—— **那五顆是主要導覽，要減的是列不是控制項**。做法：`progressFilter` 的預設值改成 `'ongoing'`，其餘完全沿用第 28 批的條件晶片（看得見、可單獨移除、會印出來）。⚠️ 白名單要含 `All`、網址的 `prog` **兩個方向都寫**，否則移掉晶片後重整它又自己回來（第 23 批那條坑）。⚠️ **StatusID 那排的數字一律不含進度篩選**（`matchExceptStage(item, ignoreProgress)`）：含進去的話 `5 結案` 永遠是 0，一顆寫著 0、按下去也沒東西的按鈕比看不到更糟。搭配兩條連動之後，每個數字剛好就是「按下去會得到幾筆」——①`ALL` 同時清階段與進度（所以它顯示的是不含進度的總數）；②選一個被進度整群擋掉的階段時自動解除進度篩選。⚠️ **搜尋要穿透**（`searchBlockedCount` → 晶片列的「另有 N 筆…／一併顯示」），否則「查詢時看不到已結案的資料」；但**不可以做成「一打字就自動改成全部」**——筆數自己跳動會讓人分不清當下的範圍，出聲、由使用者按。⚠️ 工具列那顆紅色「✕ 清除全部」改看 `hasNonDefaultFilter`（進度只認 `done`）：`ongoing` 是預設值不該掛紅鈕，而 `All` 正好等於清除後的結果、按下去畫面一格都不會變；**空狀態的說明仍用 `hasActiveFilter`**（那裡要回答「是被篩掉還是真的沒有」）。
-- **⚠️ 第 64 批（2026-09-11）把下一條的「記住關掉」拿掉了：「Done 置底」與「逾期優先」每次開啟網頁都是開的，不寫 localStorage**（使用者要求：「登入網頁後的預設排序：Done 置底還有逾期優先，兩個都幫我勾選」）。他這次看到「逾期優先沒勾」正是第 48 批那個「關掉之後重新整理它就是關著的」造成的 —— 某一天親手關過一次，之後每天開網頁都是關的。`readDuePriorityPref()` 現在固定回 `true`（名字留著是因為五處「歸位」都呼叫它），`toggleDuePriority()` 不再寫 storage，載入時順手 `removeItem('ct.duePriority')`。網址 `dp` 改成與 `dl` 同一套：**只在關掉時帶 `dp=0`**（預設現在是常數，不再需要兩個方向都寫）；所以「關掉 → 同分頁 F5」仍是關的、新分頁／書籤一律是開的。下一條裡「只記親手按的入口」「兩個方向都寫」「每台機器可能不同」三句已不成立，其餘（不可寫死 `false` 歸位、紅點條件）仍然有效。
-- **「逾期優先」預設開啟，而且只記使用者親手按的那兩個入口**（第 48 批，2026-09-05 使用者要求；**持久化部分已於第 64 批移除，見上一條**）。key 是**自己的** `ct.duePriority`（沒設定過＝開），寫入只發生在排序面板的晶片與精簡模式的「目前階段時程」表頭 —— 程式設的那幾處（需關注 KPI 卡／晶片、切進精簡模式、`openListWith`）一律不寫，那是「這一次點擊的副作用」，記起來帶到下一次開啟只會讓列序莫名其妙。⚠️ 這**不違反**第 23 批那條禁令：它禁的是「兩個偏好共用一個 key」（當時讀 `ct.compactMode`）與「關掉之後重新整理又自己回來」，兩件事這裡都避開了 —— 實測關掉 → 重整仍是關著的。⚠️ 程式要「歸位」時一律回到 `readDuePriorityPref()`，**不可以寫死 `false`** —— 那會讓「點一張 KPI 卡」變成一個把偏好悄悄關掉的隱藏開關。⚠️ 網址的 `dp` 改成**兩個方向都寫**（`dp=0` 也要）：預設值現在來自 localStorage、每台機器可能不同，只在非預設時帶參數（像 `dl`）會讓同一條連結在別人的瀏覽器上排出不同的列序。⚠️ 「排序」鈕的紅點條件同步改成 `!duePriority`（＝與預設不同），沿用 `duePriority` 會變成一進來就亮著、那顆點再也指不出任何東西。
-- **同一個概念在畫面上只能有一組字**（第 37 批）。`延期完成` 現在同時用於：稽核軌跡的 `ChangeType`、資料列 ⏰ 徽章的 tooltip、圖例列、條件晶片 `ALERT_FILTER_LABEL`、警示下拉、排序面板的 tooltip。使用者問過「我目前的網頁沒有延期的功能，怎麼會有延期的選項」—— 根因就是舊的「執行延期」在畫面上找不到對應的動作。
-- **⚠️ 判斷「版面放不放得下」一律問「16 欄的整頁需求 > 目前可用寬度」，不可以再用寫死的螢幕寬度（第 46 批第二段，2026-09-05，使用者要求「根治」）**。第一段做完之後使用者用 **Ctrl＋滾輪**放大，版面照樣破 —— 那條路**不經過任何按鈕**，`cycleUiScale()` 完全沒有機會介入。根因是第 29 批 `narrow` 的門檻本身設錯了：它猜的是「螢幕多大」（1024px），而該問的是「16 欄放不放得下」。**實測 16 欄 min-content = 1256px（整頁需求 1281px），於是 1024～1281 之間有一整段沒人管的空白帶**（1440 螢幕的瀏覽器縮放 110%~140% 全在裡面；縮到 150% 反而正常，因為那時才低於 1024）。這也是同一個「版面跑掉」被回報三次卻補不完的原因 —— 投影倍率、字級、視窗寬度、瀏覽器縮放是**四條各自為政的判斷，而它們影響的是同一個量**。
-  ⚠️⚠️ **但那一段的解法（自動收欄）已於同日被使用者否決、並且已經整段移除，不要再做回去** —— 見下一條。這一條保留的是**那個實測數字與空白帶的診斷**（它解釋了為什麼「版面跑掉」補了三次還在），不是它當時的作法。
-- **⚠️⚠️ 放大之後放不下時，要變寬的是「框架」，不是變少的「欄位」（第 46 批第三段，2026-09-05，使用者要求）**。這一批前後被否決過兩種做法，**兩種都不要再做回去**：①「按下 `Ａ` 塞不下就先問你（切精簡模式再放大／仍要放大）」；②「量到 16 欄放不下就自動把 `compact` 推成 true」。使用者的原話：「**這方式不行，非精簡模式下若我想要看到全貌、放大看還是會破圖**」「**我也不能夠強迫其他人若放大只能看精簡模式的資料**」。**放大是為了看清楚，不是為了少看七欄** —— 收欄等於把他要的東西拿走再說「這樣就不會破了」；而在放大時勸他切精簡模式，是同一件事換個說法。
-  真正壞掉的**從來不是表格，是框架**：`<header>` 與 `<main>` 都是一般區塊、寬度＝**視窗**寬，表格比視窗寬時只是溢出去。於是往右捲時看到的是「表格還在延伸，頁首那塊白底、工具列卡片、KPI 卡、圖例列卻切在半空中」—— 那道切齊視窗寬度的邊界就是使用者說的「破圖」。
-  解法是最外層容器（`.page-shell`，見 `input.css`）改用 shrink-to-fit：`width: fit-content` + `min-width: 100%`。內容比視窗寬時容器跟著長到內容寬度，`header` / `main` 是它的子區塊會自動跟上；內容放得下時 `min-width` 讓它維持滿版，**與改之前一模一樣**。
-  ⚠️ **不可以寫死寬度**（例如 `min-width: 1281px`）：欄位增刪與字級都會改變它，寫死的值一旦過期就是「永遠橫捲」或「又切回去」。`fit-content` 自己會算。
-  ⚠️ **不可以把表格包進 `overflow-x:auto`** —— 那會變成新的捲動容器，兩層 sticky 表頭與左側凍結欄整套失效（見 `app.jsx` 表格上方的註解）。
-  ⚠️ **列印時一定要還原成 `width:auto` / `min-width:0`**：紙張沒有捲軸，`fit-content` 撐出來的寬度會被直接裁掉。
-  ⚠️ 也**不要**改成「等比例放大整個畫面（含框架）」—— 使用者提過，但橫捲的條件是「表格需要的寬度 × 倍率 > 螢幕寬度」，把倍率調大是**題目本身不是解法**（瀏覽器縮放本來就是連框架一起放大的）。投影模式就是那個做法的完整實作，而它的結論反而是第 32 批的「必須先切精簡模式」。
-  ⚠️ 實測（1152 視窗、16 欄、63 筆）：shell / header / main 三者都是 **1306px**，捲到最右邊時 `header.right == main.right == 視窗寬`，沒有任何一條邊切在半空中；字級 130% 時 shell = **1688px**，結論相同。1920 視窗：shell = 視窗寬、main 仍是置中的 1600 —— **沒有回歸**。
-- **⚠️ 「⚠ 右邊被切掉」只出現在投影模式，平常一律不出現（第 46 批第四段，2026-09-05，使用者要求）**。使用者的原話：「有機會可以修正到完全不出現上述『右邊被裁掉』的提示嗎? **嚴重影響操作的 UX 體驗**」，並附截圖 —— **浮動那顆正好蓋在資料列的編輯／刪除鈕上面**，頁首那顆則白白佔掉工具列的寬度，而它出現的時機剛好是版面最擠的時候。
-  它存在的理由（第 30、31 批）是「整頁橫捲時頁首與工具列會滑走，使用者看不出原因」—— **第三段的 `.page-shell` 把那個現象消滅之後，這個理由就不成立了**：橫捲是完整、看得懂的畫面，而瀏覽器自己的橫向捲軸已經在說「右邊還有東西」。這時候再跳一顆紅色警告，等於在說「你的畫面壞了」，而畫面其實好好的。
-  ⚠️⚠️ **投影模式是唯一保留的例外，不要順手一起拿掉** —— 第 30 批的原話：「台上的人看自己的螢幕，不會發現布幕右邊少了幾欄」。那裡沒有人會去捲，捲軸也不在觀眾的視線裡，少掉的欄位是**靜靜地**消失的。投影一定是精簡模式（第 32 批）而精簡模式沒有「操作」欄，所以浮動那顆在投影下不會蓋到任何按鈕。
-  ⚠️ `clipPx` 的量測也跟著只在 `present` 時跑（省掉每次 resize 的一次強制排版），動作只剩「降投影倍率」一種（`stepUiScaleDown` 因此整支移除）。
-  ⚠️ 投影下這個數字會**略為低估**（實測 131 vs 實際 267）：頁首那顆按鈕自己也有寬度，出現之後會把 `.page-shell` 的 fit-content 再撐寬一點。**不要把 `clipPx` 加進相依陣列去「修正」它** —— 那會做出「沒有按鈕就不溢出 → 顯示按鈕 → 溢出 → 隱藏按鈕」的無窮翻轉。這裡要的只是「右邊還有東西、大概多少」。
-- **橫捲之後那顆要改成畫面右下角的浮動鈕**（第 46 批，`renderClipWarning(floating)` + `scrolledX`）。它原本掛在頁首裡，而**頁首自己就是會被橫捲帶走的東西** —— 使用者往右捲去看被切掉的欄位時，那顆解釋兼修正的鈕跟著滑出畫面左邊，最需要它的那一刻反而看不到。兩個位置**同時只會有一顆**，文案與動作共用同一支（複製一份出去改，日後一定只會改到其中一邊）。浮動那顆一定要渲染在 `.present` 那一層（`header`／`main` 之外）—— zoom 掛在那兩個上面，包進去就會被縮放、甚至讓 `position:fixed` 改成相對它定位而又變成會被捲走的東西。⚠️ 底色要**不透明卡片色 + 疊上警示色**（`--tone-alert-bg` 是 0.08／0.12 的半透明，浮在資料列上會透出底下的字）—— 與凍結欄同一招。⚠️ 它的措辭在第三段改過：框架會跟著變寬之後，它不再是「版面壞了」的警報，而是「右邊還有東西，記得捲過去看」——「頁首與工具列會跟著滑走」那句已經不成立，留著就是畫面上的假話。
-  ⚠️ `scrolledX` 存的是**布林不是捲動量**：底下掛著 63 列 × 16 欄，每個 scroll 事件都 setState 一次數字的話連垂直捲動都會整片重繪。
-- **任何會放大畫面的功能，都必須顧到「可用寬度 = 視窗寬 ÷ 倍率」（第 31 批，2026-08-24）**：需求列表 16 欄的表格壓縮到極限是 **1237px**，低於這個數字就會整頁橫捲，而**整頁捲動時頁首與工具列會一起滑出畫面左邊**（那是 2026-08-19 拍板的結構，見下一條）—— 使用者看到的就是「UI 跑掉」。**（第 46 批第三段起，框架會跟著內容一起變寬 —— 見上面的 `.page-shell`：橫捲時整頁一起平移、每一塊卡片都完整，這一條的「跑掉」已經不會發生，但下面那個寬度預算仍然要算。）**已經踩過兩次：投影倍率（第 30 批）、**字級**（第 29 批加的，使用者回報的第二次）。實測 1440 螢幕 / 16 欄：100% → overflow 0、115% → 30px、130% → **216px**；9 欄（901px）在任何倍率都塞得下。⚠️ 新增任何 zoom 類功能時，一律接上 `clipPx` 那顆「⚠ 右邊被切掉」指示（`activeView === 'table'` 時量 `scrollWidth - clientWidth`），並給一個**依情境最有效**的一鍵修正（投影中→降倍率／字級>100%→降字級／其餘→切精簡模式）。⚠️ **不要自動幫使用者改設定** —— 放大是他自己按的，靜靜把欄位收起來更難理解。
-- **投影模式的前置條件（第 32 批，2026-08-24，使用者要求）**：**只有精簡模式、而且在需求列表頁，才能開投影模式**；投影中不給關精簡模式（`ToggleChip` 的 `disabled`＋`toggleCompact()` 最後一道 `if (present) return`）；**切到統計報表自動退出投影**（`activeView` 的 effect），切回來**不會**自動再開。載入時若 localStorage 組出 `present && !compact`（兩個偏好是分開存的），**直接退出投影**回到正常版面。⚠️ 在此之前是「按下投影就順手幫你打開精簡模式」（借用），而那個借用製造了兩次「版面跑掉」的回報（第 30、31 批）—— **只要「投影 + 16 欄」在任何一條路徑上組得出來，可用寬度就一定小於 16 欄的 1237px**。改成硬性前置條件之後，那個組合在畫面上根本組不出來。⚠️ 淺色底**仍然是借用**（投影機黑階偏灰），離開時還原；`beforePresent` 因此只剩 `{ dark }`。
-- **投影模式的兩條不變量（第 30 批，2026-08-24）**：
-  - **「借用精簡模式」必須在載入時也套一次**，不能只寫在 `togglePresent` 裡。`present` 是從 `localStorage` 復原的 —— **投影模式開著時按 F5／隔天再打開**，借用不會跑到，畫面就落在「投影 1.5 倍 + 16 欄」這個投影模式從來沒有被設計過的狀態（**使用者實際回報的「版面跑掉」就是這個**）。實測 1440 螢幕 × 150%：可用寬度只剩 950px，16 欄表格最小 1238px → 整頁橫捲 470px，而頁首與工具列是**整頁**的一部分、會一起滑出畫面左邊，只有表格左側凍結欄留在原地。切 9 欄（901px）overflow 立刻是 0。載入時的借用要一併把「進來之前」記進 `beforePresent`，離開投影才還得回去。
-  - **投影模式下不套 `max-w` 上限**：那時候的可用寬度是「視窗寬 ÷ 倍率」，1600 這個上限只有在寬螢幕（2560 ÷ 1.25 = 2048）才會生效 —— 而那正是最需要把表格攤開的場合。另外投影時若真的還是塞不下（小螢幕配高倍率），要主動顯示「⚠ 右邊被切掉」並讓它一鍵降倍率：**台上的人看自己的螢幕，不會發現布幕右邊少了幾欄**。⚠️ 量 `scrollWidth - clientWidth` 要**同步量，不可包 `requestAnimationFrame`** —— 分頁在背景時 rAF 不會被呼叫，警告會靜靜地永遠不出現（實測 overflow 710px 卻沒有任何提示）。
-- **可及性與顯示的四條不變量（第 29 批，2026-08-24）**：
-  - **展開明細要有真的 `<button>`**（`No` 欄那顆三角形，帶 `aria-expanded` 與含 NID 的 `aria-label`）。在此之前只有 `<tr onClick>`，**鍵盤完全展不開任何一列**。⚠️ 刻意**不**把 `role="button"` + `tabIndex` 掛在 `<tr>` / `<th>` 上 —— 那會讓表格在無障礙樹上失去列／欄結構。可排序表頭同理走 `sortProps()`（`tabIndex` + Enter/Space + `aria-sort`，不覆寫 `columnheader`）；**Space 一定要 `preventDefault`**，否則按下去會順便捲一頁。
-  - **六個 Modal 共用一份焦點管理**（`data-ct-modal` + `role="dialog"` + Tab trap + 關閉後焦點歸位）。⚠️ 「開窗前的焦點」**不可以在視窗開起來之後才讀 `document.activeElement`** —— React 的 `autoFocus` 在 commit 階段就套用了，比 `useEffect` 早，讀到的會是視窗裡等一下就要被卸載的輸入框，於是還原永遠失敗（而且失敗得很安靜）。改用一直記錄「最後一個不在視窗裡的焦點」（`lastOuterFocusRef` + `focusin`）。⚠️ 也**不要**去搶已經 `autoFocus` 的焦點，沒人接手時聚焦視窗容器本身（`tabIndex={-1}`）就好 —— 硬搶會踩到「編輯時不可聚焦 NID」那條。
-  - **放大一律用 CSS `zoom`，不去動那 121 個 `text-[10px]/[11px]`**。字級（`ui-zoom`，1/1.15/1.3）與投影模式（`present-zoom`）是同一套機制，⚠️⚠️ **兩者都掛在 `<header>` 與 `<main>` 上，而且一律同一個倍率**（第 81 批，2026-09-25 使用者回報「那一列跟底下的畫面比例不對」）—— 字級原本只掛 `<main>`，理由寫著「要放大的是資料列，不是頁首與標題」，但實測 130% 時頁首標題 15px 實際就是 15px，而表格裡 12px 的輸入框放大後是 **15.6px**：**頁首比它底下的內文還小**。投影模式一直都是兩邊一起放大，字級是唯一漏掉的那一個。⚠️ 沒有版面代價：A/B 實測 1280 + 130%（16 欄）橫捲量 **417 → 417**、整頁寬 1682 → 1682；精簡模式 1280 + 130% **0 → 0**、1265 → 1265；頁首右緣與 `<main>` 右緣仍然切齊。100% 時兩邊都不掛 class，與改動前一模一樣。⚠️ **兩個 class 不可同時掛在同一個元素上**（zoom 會相乘，1.3×1.5=1.95，右邊整片被切掉）。⚠️ 改了倍率就要重量表頭吸附位置與 `--frz-2`（`uiScale` 已在那個 effect 的相依裡）。
-  - **⚠️ 量測跨過 zoom 邊界時一律用 `getBoundingClientRect()` 再除以倍率，不可以用 `offsetHeight`／`offsetWidth`**（第 47 批，2026-09-05）。`sticky` 的 `top` 是在 **zoom 之後**的座標系裡計算的，而**頁首在 `<main>` 外面**（當時字級只掛 `<main>`，第 81 批起兩邊同倍率）—— `measure()` 原本拿頁首的 `offsetHeight`（元素自己座標系的值，放大後**不會變**，一直是 65）當 `--head-top-group`，到了 1.15 倍的 `<main>` 裡就落在畫面的 74.75px，而頁首底緣還在 65px：**中間那條縫會漏出正在捲動的資料列**（使用者原話：「看起來像是網頁哪邊壞了」）。實測 100% → 0px、**115% → 9.75px、130% → 19.5px**。投影模式踩不到（頁首與 `<main>` 掛同一個 `.present-zoom`，倍率相同）—— **第 81 批把字級也改成兩邊同倍率之後，這個坑現在兩種都踩不到了，但那個 `÷ 倍率` 的寫法一行都不可以拿掉**：它同時是「兩邊倍率萬一又分家」的唯一防線，實測改完 130% 仍是刻意疊的 **−0.5px**、兩層表頭 0 縫。⚠️ 群組表頭也要改用 rect 高度：`offsetHeight` 會四捨五入成整數（實測本地 38.93 → 39），兩層表頭中間會多出 0.08~0.16px 的細縫。⚠️ 刻意讓表頭往上多疊 **0.5px**：頁首 z-50 蓋在表頭 z-20 上面，疊進去看不出來，而差半個像素就是一條會跟著捲的縫 —— 這種對位**寧可疊、不可留縫**。⚠️ 相依陣列要含 `presentZoom`：`measure()` 現在會拿倍率去除，而 `ResizeObserver` 回報的是**本地**尺寸，投影倍率改了它根本不會叫。
-  - **窄螢幕（≤1024px）自動套精簡模式**，用 `compactPref || narrow` 這種**衍生值**，⚠️ **不可以** `setCompactPref(true)` —— 那會把使用者的偏好蓋掉並寫進 `localStorage`，視窗拉寬之後回不去。斷點取 1024 而非 1440：1366/1440 的筆電是主要工作機，那裡要看的是完整 16 欄（第 27 批的左側凍結就是為它做的）。⚠️ `matchMedia` 的 `change` **一定要配一個 `resize` 備援**（實測有環境寬度變了、`matches` 也翻了，但 `change` 從頭到尾沒送出來）。
-- **篩選狀態的兩條不變量（第 28 批，2026-08-24）**：
-  - **每一個生效中的條件都要在畫面上看得見、而且可以單獨移除**（表格正上方的條件晶片列，`activeChips`）。⚠️ 尤其是 `colFilters`：精簡模式收起的欄位（`Status`／註冊日期／`MP Saving`／四個階段時程）與一般模式沒有的（目前階段時程／現況描述），**它們的篩選值照樣在過濾**（`filteredData` 不分模式）—— 那些晶片一定要標成警示色。判定走 `colFilterHidden()`，與篩選列實際 render 的條件共用 `COL_FILTER_META` 這一份定義，**不可以各寫一份**。
-  - **篩選與排序寫進網址**（`replaceState` 單向：state → 網址）。⚠️ **只在載入當下讀一次**網址（每次 render 都讀會與 state 互相蓋，打字打到一半被回捲）；⚠️ **不可改成 `pushState`**（搜尋框每打一個字就是一次變更，會把上一頁鍵洗成一個字一個字退）；⚠️ 路徑用 `window.location.pathname`（子路徑部署）；⚠️ **認不得的值一律退回預設**（見 `urlOne` / `urlList`）—— 放進 state 只會做出一個永遠 0 筆、畫面上又找不到原因的清單。參數表在 `FIELD_SPEC.md`。
-- **表格版面的三條不變量（第 27 批，2026-08-24）**：
-  - **左側 No / NID 兩欄橫向凍結**（`.frz` / `.frz-1` / `.frz-2`，見 `input.css`）。⚠️ 只能凍**連續的前綴欄**：一般模式的欄序是 No→NID→Status→StatusID→註冊日期→Main Cat→Sub Cat，**Main Cat 不與 NID 相鄰**，想一起凍就必須先改欄序（那會動到 `FIELD_SPEC.md` 的資料列顯示順序，要先問過使用者）。第二欄的 `left` 由 `app.jsx` 量測 No 欄實際寬度後用 `--frz-2` 傳進來，**不可寫死 44px**（實測：資料還在載入時是 37px、載入後 42px、投影模式 41px）。量測的相依陣列一定要含 `requirementsData.length` 與 `showColFilters` —— `ResizeObserver` 對 `<th>` 這種 table-cell 不回報寬度變化。
-  - **凍結欄的底色必須是「不透明卡片色 + 疊上列底色」**，不可以直接 `background: var(--row-bg)`。三個列底色有兩個是**半透明**的（`--bg-row-done` = `rgba(30,41,59,0.45)`、深色的 `--bg-table-expanded` = 0.5），而 62 列裡有 45 列是 Done —— 半透明的凍結欄等於沒凍，右邊捲過來的欄位會直接透出來變成兩層字疊在一起。hover 色同理（`--bg-table-hover` 兩種佈景都是半透明）。
-  - **資料列的底色與 hover 一律走 CSS**（`.row-main` / `.row-exp` + `--row-bg`），不可退回 `<tr>` 上的 `onMouseEnter` / `onMouseLeave` 寫 inline style —— 凍結欄有自己的 background，JS 只改 `tr` 會做出「中間亮、左邊兩格沒亮」。舊寫法另有一個 bug：`onMouseLeave` 寫回的是 render 當下閉包裡的 `rowBg`。
-  - 需求列表頁寬 `max-w-[1600px]`、統計報表維持 `max-w-[1440px]`（`pageWidth`，頁首與 `<main>` 吃同一個值）。⚠️ 兩個都必須是完整字面量，**不可拼成 `max-w-[${w}px]`** —— 拼出來的 class Tailwind 掃不到、靜靜不生效。
-  - 頁首的**重新整理鈕**（`handleRefresh`）：`fetchReqs()` 與 `fetchHistory()` **一定要一起抓**（只抓需求的話 ⚠N 與統計報表的「時程異動」會停在舊數字，兩邊對不起來，與刪除／匯入同一條理由）；⚠️ **不可包進 `runExclusive()`** —— 那是給寫入用的互斥鎖，唯讀的重抓包進去會變成「存檔中不能重整、重整中不能存檔」。頁首同時分開顯示「資料更新」（資料的 `UpdatedAt`）與「畫面」（`lastFetchedAt`，只在抓取**成功**時更新）—— 別人存了檔而你的分頁開著時，前者不會有任何變化。
-- **「今天」不可以算死成模組層 const**（第 67 批，2026-09-11）。`TODAY`／`TODAY_ISO`／`formatToday` 是 `let`，由 `refreshToday()` 在 **App 每次 render 開頭**重算，另有每分鐘一次的 `setInterval` 只在日期字串真的翻過去時 `setTodayTick` 逼一次 re-render（同一天內完全不 setState，不會讓 65 列每分鐘白白重繪）。在此之前分頁開過午夜，完成視窗的上限選不到今天、逾期天數少算一天、7 日窗慢一天進 —— 主管的分頁常常開一整天。⚠️ **拿 `TODAY` 算的 `useMemo`（`dueAlerts`／`dueInfo`）相依一定要含 `todayTick`**，否則資料沒變 memo 不重算，「需關注」會停在昨天的答案；下游 `filteredData`／`sortedData` 吃 `dueInfo` 會跟著重算，不必各自再掛。⚠️ 新增任何從 `TODAY` 衍生的模組層常數都會把這個坑挖回來 —— 要用就在函式裡讀。實測：把頁面的 `Date` 換成明天，不碰畫面等 98 秒，頁首「以今天 … 為基準」自己翻成 09/12。
-- **欄位長度：`FIELD_LIMITS` / `FIELD_MAX` / `NOTE_MAX` / `LenHint`**（第 82 批，2026-09-25；後端 `FieldLimits` 的鏡像，**改了要兩邊一起改**）。三件事：①六個輸入框加 `maxLength`（NID 50／Main Cat 100／Sub Cat 100／MP Saving 50／需求補充 500／Notes Link 500）＋四個說明欄 `NOTE_MAX`（異動理由／回退說明／撤銷說明／刪除原因）；②`LenHint` 在**達到上限 80% 之後**才出現（`405 / 500` 警示色、`500 / 500` 紅色）—— 每一欄都常駐計數器只是噪音，真正需要它的時刻是「我打不進去了，為什麼」；③`validateEdit()` 也算一次（就地標紅 ＋ 彈窗一次列完），擋的是 `maxLength` 沒套到的路徑。
-  ⚠️ 實測：405 字 → `405 / 500`（`rgb(180,83,9)`）、500 字 → `500 / 500`（`rgb(185,28,28)`）、100 字 → 不顯示。
-  ⚠️ `yearMonth` 列在 `FIELD_LIMITS` 裡但**沒有輸入框**（由註冊日期反推），純粹是為了與後端那一份對得起來。
-- **⚠️ ① 的 `(可不填)` 標記只在新增視窗出現，編輯視窗不印**（第 91 批，2026-10-01 使用者要求）。第 42 批把 ① 結束日改成選填之後，那三個字在**編輯**視窗裡是錯的：需求建好之後留空就是「⚠ 未壓日期」，而第 88 批的框就擺在**正上方**寫著「預計什麼時候完成？ 填寫「End Date」」—— 同一個畫面自己打自己。②③④ 四個日期欄本來就沒有任何標記，拿掉之後編輯視窗四個階段才一致。
-  - ⚠️ **只改標籤、不改規則**：`specEndRequired` 與 `requiredFieldsFor()` 一個字都沒動 —— 原本就空著的照樣存得進去（規格回退後要重壓那條路靠它），原本有值的仍然是紅星。
-  - ⚠️ 下面那行灰字「留空的話這筆會標成『⚠ 未壓日期』，存檔後會問你要不要寄信通知…」**要留著**：它才是「留空會怎樣」的答案，而且少了 `(可不填)` 之後它是唯一還在講這件事的地方。
-  - ⚠️ Start Date 的 `(可不填)` 一併照同一條（只在新增出現）—— 編輯時它底下的 `StartDefaultHint` 已經在講「沒填會自動帶成 End」。
-  - 實測：**新增**視窗 `Start Date (可不填)` / `End Date (可不填)`（不變）；**編輯**（NID 99，① End 空）兩個標籤都是乾淨的，整個視窗 `可不填` 出現 **0** 次，第 88 批的框與那行灰字都還在；**編輯**（NID 2，① End 有值）仍是 `End Date *`。
-- **⚠️⚠️ EMS 登入者一進來預設只看自己的需求，但「對不到名字就不套」**（第 87 批，2026-09-29，使用者要求：「若登入者為 EMS 人員，就預設篩選該 EMS 人員」）。工號 → `dbo.Assignee` 的 `EMPO` → `NAME`／`DEPT`，是 EMS 就 `setEmsFilter(NAME)`。
-  - ⚠️⚠️ **這件事 2026-09-05 被否決過一次**（`memory.md` 第 3 節：「我沒有用全名，用篩選無效」＋「有時候登入的人可能是主管」）。當時是拿工號去名冊**猜**控表負責人欄裡的字串；這一批查的是 `dbo.Assignee`（使用者 2026-08-31 為了寄信把 13 筆的 `EMPO` 全部補齊了），而那張表的 `NAME` 正好就是編輯視窗負責人下拉寫進控表的同一份字串。**日後不要把這一條當成「又做回被否決過的東西」，也不要拿它去推翻第 86 批那條「編輯視窗依階段分、不依身分分」** —— 那是兩件事（看到哪幾**列** vs 一筆需求裡展開哪一**階段**）。
-  - ⚠️⚠️ **五道界線少一道就會變回當年那個「一片空白又看不出原因」**：①`dbo.Assignee` 查不到工號 → 什麼都不做（主管／外部人員／還沒建檔的新人一律看全部）；②`DEPT` 必須是 `EMS`（MSD 在需求列表要看全部，所以**這一支**不對 MSD 套 `msd=`。⚠️ 這只管需求列表的自動篩選 —— **第 90 批起 MSD 有「我的待辦」頁籤**，不要拿這一條去把那個頁籤關掉，使用者 2026-10-01 明講兩者不衝突）；③**那個名字在 `requirementsData` 裡至少要對得到一筆，否則不套** —— 兩張表之間**沒有外鍵**，本機就有現成的例子（主檔 `00019246 桂豪`／控表寫 `桂瑮`，實測不套用、看到的是完整清單）；④網址已經帶 `ems=` 的不覆蓋；⑤同一個工號只套一次（`autoEmsRef`）且只在 `emsFilter === 'All'` 時 —— 按掉晶片之後不可以自己回來（第 23 批那條坑）。
-  - ⚠️ 出路走**現成的條件晶片**（第 28 批），刻意不做新控制項（第 49 批：要減的是列不是控制項）。晶片前面多一個 `👤`、tooltip 講明是依帳號自動套的；`renderChip()` 的 `c.note` 是那一份說明**唯一**的來源。
-  - ⚠️ 套用時的 toast **刻意不印筆數**：這裡數得到的是「他名下的全部」（實測 20 筆），而畫面預設只看進行中當下只有 3 列 —— 一句話講 20、正下方寫著 3，正是專案一路在防的那種靜默落差（第 54、84 批同一條）。
-  - ⚠️ 模擬帳號也適用（唯讀、沒有副作用），與「只有 `actorSource == windows` 才可以用本人身分寄信」那條**不是同一件事**，不要順手對齊。
-- **⚠️⚠️ 編輯視窗一打開就捲到「現在輪到」的那一階段，並用字寫出「現在該做什麼」**（第 87 批，使用者原話：「我點選 NID:35 的編輯，目前需要決定是否已完成的人是該帳號人員…可以特別標記讓他知道目前要填寫已完成 or 改日期（**目前版面這邊提示好像不清楚**）」）。第 86 批已經讓目前這一階段是唯一展開的那個，但視窗仍然停在最上面的 NID，而且**畫面上只有顏色在講這件事** —— 四個階段標題長得一樣，「🔓 已鎖定，點此修改」＋「標記完成…」更是每一個壓過日期的階段都有。
-  - 做法三件：①`openEdit(item)` 沒指名 phaseKey 時把 `focusPhaseRef` 設成 `currentPhaseOf(item)`（結案／`StatusID` 推不出來／新增一律不跳）；②那個 effect 捲的是 **`[data-ct-phase]` 整個區塊**（`block:'start'`）不是 `<input>` —— 只把日期欄捲到正中間的話，上面那顆「標記完成…」與說明剛好被切在視窗上緣外面；③`CurrentPhaseNotice` ＋ 標題上的 `現在輪到` 藥丸。
-  - ⚠️⚠️ 說明**只講兩個動作**：做完了 →「標記完成…」／還沒做完、日期要改 →「已鎖定，點此修改」。還沒壓日期時走警示色（與資料列那顆「⚠ 未壓日期」同一個顏色），其餘走 `--brand` —— **teal 與 `✓` 只留給已經發生的結果**（第 59 批）。四種可能性都列出來就等於沒有講（第 86 批引的那句「EMS 人員完全不懂網頁這些功能操作」）。
-  - ⚠️⚠️ **「要不要提『標記完成…』」一律問 `donePanelKind()`**（第 87 批從 `donePanel()` 抽出來的同一份判斷，回 `done`／`button`／`past`／`prereq`／`order`／`hint`／`none`）。那顆鈕**不是每次都在**，兩邊各判一次遲早會叫使用者去按一顆畫面上沒有的按鈕（與第 50 批 `renderChip` 只留一份同一個理由）。
-  - ⚠️ 藥丸掛在 `PhaseFoldHead`（標題）不是只掛在說明框裡：使用者可以把這一段收起來，收起來之後畫面上就再也沒有地方說「該做的是這一段」。
-  - ⚠️ 前置還沒完成的階段（跳空資料）不畫說明框 —— 旁邊的 `GateLock` 已經在講「請先完成 ○○ 的日期」。
-  - 實測（1440×900）：NID 35（StatusID 4）進來 `scrollTop` 496、④ 區塊完整可見、說明印「目前排定 2026-09-02（已逾期 27 天）」；NID 61（④ 未壓）焦點落在 `data-ct-focus="uat"`、說明是紅色的「還沒壓日期」；NID 1（結案）`scrollTop` 0、沒有藥丸也沒有說明框；「⚠ 未壓日期」徽章那條路**沒有回歸**（焦點仍在日期欄、列沒有被展開）；新增視窗仍是 471px、`scrollTop` 0、焦點在 NID。
-- **⚠️⚠️ 那個框裡放的是**按鈕**不是說明 —— 兩顆動作鈕從標題列搬進框內**（第 88 批，2026-09-29，使用者附圖：「目前這個版面好像有點複雜，有更簡單的 UX 設計嗎?」）。第 87 批的框是**四行說明**，而它們在講的那兩顆鈕就在正上方的標題列裡：說明得寫「按**上面的**…」把眼睛送回去，長度是按鈕的十倍，而標題列同時擠著 4 個控制項（▾、`現在輪到`、解鎖、標記完成…）。做法：標題列在「現在輪到」那一階段只留 `▾ 階段名 ＋ 現在輪到`，`DoneButton` 與 `UnlockButton` 搬進框裡，說明整段刪掉。
-  - 版面＝**兩行**：①事實（`結束日 2026-09-02` ＋ `⚠ 已逾期 27 天` ＋ 右側負責人）②動作（`完成了嗎？`［標記完成…］`｜ 要改日期？`［🔒 已鎖定，點此修改］）。**「已逾期 N 天」升到第一行** —— 第 87 批它夾在第二行的括號裡，而它是整個框裡最急的一句。
-  - ⚠️⚠️ **兩顆鈕一律沿用原本的元件與原本的字**（`DoneButton`「標記完成…」／`UnlockButton`「已鎖定，點此修改」）。第 59 批為了那顆鈕的名字改過 `app.jsx` 12 處＋手冊 6 處，在這裡另取一個名字（「已經完成了」之類）就是同一個概念兩組字（第 37 批）；**也不可以順手補回 `✓`**（第 59 批：`✓` 與 teal 只留給已經發生的結果）。
-  - ⚠️⚠️ **標題列那兩顆要同時藏起來**（`noticePhase`：這一次 render 把框畫在哪一階段，四個標題列都比對它）—— 兩邊都畫就是同一顆鈕在畫面上出現兩次。**已完成的 `✓` 藥丸與「撤銷」不受影響**（`kind==='done'` 時框本來就不畫）。
-  - ⚠️ `prereq`／`order`（按不了完成）兩種**仍然沿用 `donePanel()` 用的同一組灰字元件**（`DonePrereqHint`／`DoneOrderHint`）塞進 `doneSlot`，不要另寫一句 —— 那兩條界線各寫一份遲早只會改到一邊。
-  - ⚠️ 已經解鎖過（或本來就沒鎖）時 `unlockSlot` 是 null，**要改印一句灰字**「下面的『End Date』可以直接改」；空著的話那一行會停在「要改日期？」沒有下文。
-  - ⚠️ 未壓日期那一種：第二行是`預計什麼時候完成？`＋一顆`填寫「End Date」`（`focusPhaseEnd()`：鎖著就先 `handleUnlock()`，再把游標送到 `data-ct-focus`）。**解鎖是 setState，`<input>` 要等下一次 render 才不是 disabled**，所以 focus 排在 `setTimeout 0`；⚠️ 不可以用 `requestAnimationFrame`（第 30 批那個坑）。灰字要保留「存檔後這裡會出現『標記完成…』」——那正是被藏起來的 `DoneHint` 那句話。
-  - 實測（本機 https://localhost:7127）：NID 35 框高 **69px**、標題列剩「▾ 4_EMS驗收 現在輪到」、框內「結束日 2026-09-02 ⚠ 已逾期 27 天 … 完成了嗎？標記完成… ｜ 要改日期？已鎖定，點此修改」；按下解鎖後同一格翻成「下面的『End Date』可以直接改」且 `data-ct-focus="uat"` 的 `disabled` 變 false；NID 61（④ 未壓）框內是「⚠ 這一階段還沒有結束日 … 填寫「End Date」」，按下去 `document.activeElement` 就是 `data-ct-focus="uat"`；同一筆的 ①②③ 標題列**一個字都沒變**（仍有「已鎖定，點此修改」「✓ 提早完成 · 09/12」「撤銷」）；「⚠ 未壓日期」徽章那條路沒有回歸（列數 18→18、焦點在日期欄）；1280 寬時框仍是兩行（19＋24px）、`docX` 2（與改動前相同）。
-- **⚠️⚠️ 編輯視窗的三塊收合：階段區塊只展開「目前這一階段」／`⚙ 進階` 在最下面／新增時的「選填欄位」**（第 86 批，2026-09-29，使用者要求：「**EMS 人員完全不懂網頁這些功能操作、他們也不想了解這麼多東西**…若需要用到太複雜功能，可以請 MSD 人員代為操作」）。在此之前一個視窗攤開 20 幾個欄位與四個階段區塊，而**任何人在任何時間點真正要動的只有一個階段**。實測（1440×900）：NID 20 內容高 1599 → **1065px**、NID 61 **1700 → 993px**、新增 **786 → 471px**（視窗可視高 680px）；新增視窗剩 7 個標籤、4 個必填全部可見。
-  - ⚠️⚠️ **依階段分，不可以改成依登入身分分**（「①④ 屬 EMS、②③ 屬 MSD」）：①`memory.md` 第 3 節記著「用登入身分篩」2026-09-05 已被否決（「我沒有用全名，用篩選無效」＋「登入的可能是主管」）；②**依身分反而更差** —— EMS 在等 MSD 開發（StatusID=3）時會展開 ①④、收起 ③，把他**正在等的那一格**收起來，而把還沒輪到的 ④ 攤開。依階段分則兩種身分各自都對，而且不必知道使用者是誰。
-  - ⚠️ `defaultOpenPhases()` 依 `savedStage()` 對應 1→spec／2→confirm／3→msd／4→uat；**5 結案四階全收**（沒有「目前這一階段」）；**`StatusID` 推不出來（0，舊資料）一律全部展開，不猜**（第 33 批那條「空白一律不推斷」）。
-  - ⚠️⚠️ **三塊都是收合不是隱藏，而且標題一定要把裡面有什麼講出來**（第 57 批：刻意的限制沒講出來就等於壞掉）。階段收合那一行必印 **日期 ＋ ✓ 完成 ＋「● 有未儲存的修改」**（`PhaseFoldSummary`，讀的是 `editingData` 不是已儲存的值）；`⚙ 進階` 那一行必印 **目前階段 · Status**，標題必須寫出「StatusID／Status／規格回退」—— 少了那幾個字就等於把「🔄 規格回退」從畫面上刪掉。
-  - ⚠️⚠️ **`revealProblemSections()` 不可以拿掉**：驗證彈窗最後一句寫著「有問題的欄位已在編輯視窗中標紅」，而紅框畫在收合起來的 DOM 裡等於沒有畫 —— 那句話會變成畫面上的假話（第 82 批「不可以靜靜」在收合上的對應）。`FIELD_TO_PHASE` 注意 **`msd.confirm` 屬 `confirm` 不是 `msd`**；`reason.xxx` 取後半；`stage`／`status`／`reason.stage` 開 `⚙ 進階`；`mpSaving`／`notesLink`／`msdOwner` 開「選填欄位」。
-  - ⚠️⚠️ **`openEdit(item, phaseKey)` 一定要展開 `phaseKey`** —— 收合起來的話 `data-ct-focus` 的 `<input>` 根本不在 DOM 裡，`querySelector` 撲空，**第 54 批那顆「⚠ 未壓日期」徽章就靜靜失效**。
-  - ⚠️ `phaseShown = openPhases[pk] || unlockedSections[pk]`、`advShown = advOpen || stageUnlocked`（沿用第 50 批 `legendShown` 的寫法）：**解鎖之後就不准再收起來**，否則會把一個還沒填的異動理由欄藏起來，變成「按了儲存說要填理由，畫面上卻找不到那一欄」。
-  - ⚠️ 三個旗標（`openPhases`／`advOpen`／`addMoreOpen`）**都不寫 localStorage**：那是「這一次打開這一筆」的狀態不是偏好，記起來會讓下一筆需求用上一筆的收合狀態開場，而每一筆卡在的階段都不同。
-  - ⚠️ `PhaseFoldHead` 的顏色 class 由呼叫端傳**完整字面量**（`text-amber-500`／`text-violet-500`／`text-blue-500`／`text-pink-500`），不可拼成 `text-${c}-500`（Tailwind 掃不到，靜靜不生效）。
-  - ⚠️ **新增時的「選填欄位」只收新增這一邊**（`!editingData.isNew || addMoreOpen`）：編輯時那四欄一律直接顯示 —— 既有資料本來就有值，收起來會變成「有值卻看不到」，比多幾個空欄嚴重得多。②③④ 三個階段區塊在新增時**本來就整段不渲染**（第 86 批之前就有），不要重複做。
-  - ✅ **乙組「我的待辦」第三個頁籤已於 2026-10-01（第 89 批）做掉** —— 使用者 2026-09-29 知道它與 2026-08-19 那條否決的衝突、當時只挑甲組；**2026-10-01 他自己重新提了同一件事**（並加上「預設為登入者的預設頁面」）。那一批的鐵律與實測見本檔前端段最後一條。
-- **編輯視窗有未存變更時，F5／關分頁／上一頁也要攔一次**（第 84 批，2026-09-28，`beforeunload`）。在此之前**只有 Esc 與關閉鈕**會問「要放棄未儲存的變更嗎」（`closeEdit`），而那三條路一個字都不問 —— 20 幾個欄位（含沒有字數上限的現況描述）當場全沒，而且沒有任何地方留下他打過的字。這與 `closeEdit` 是同一件事的兩半，缺的那一半剛好是最容易誤觸的那幾個鍵。
-  - ⚠️ **只在真的 dirty 時才掛 listener**：常駐的 `beforeunload` 會讓每一次重新整理都跳確認框，那是純噪音，而且使用者會學會無視它（與第 43 批「重複跳窗會把真正該響的那一次一起消音」同一條）。實測：沒開視窗 → 不攔；開了但沒改 → 不攔；改過一欄 → `defaultPrevented === true`。
-  - ⚠️ 文案由瀏覽器決定（現代瀏覽器一律忽略自訂字串），所以 handler 只設 `e.returnValue = ''`。**不要在那裡寫一段中文然後以為畫面上會出現** —— 真正講得出「哪一筆、改了什麼」的是 `closeEdit` 那個視窗。手冊也照實寫了「那是瀏覽器自己的確認框，沒辦法改成中文」。
-  - ⚠️ 相依放 `editingData`（不是 ref）：每打一個字重掛一次 listener 成本極低，而用 ref 會讓「從 dirty 變回乾淨」時解除不掉。
-- **⚠️⚠️ 寫入失敗一律走「要按掉才會消失」的彈窗，不可以退回 toast**（第 82 批，2026-09-25）。在此之前 400／409 走 `setAlertModal`（擋住畫面、必須按掉），但 **500／連線中斷／逾時走 `showToast(..., 'error')`，而 `TOAST_MS` 對那種長度的訊息算出 5 秒**就消失 —— 同一件事（沒存成功）有兩種強度，而且**比較嚴重的那一種比較安靜**。這條原則早就寫在匯入那一支的註解裡（「一個會自己消失的 toast 不足以讓他確定資料到底還在不在」），卻只套在 400/403 上，**同一支 handler 的 `catch` 仍是 toast**。共 14 處改掉（儲存／完成／補記／撤銷／回退／刪除／匯入／指派人員四支／瀏覽權限面板六支）。
-  - 一律走 `alertWriteFail(title, err)`；`AccessPanel` 是模組層元件，靠 `onError` 這個 prop 拿到同一支（它改的是「誰看得到這個網頁」，尤其「切換卡控」失敗的 toast 消失後，管理者會以為卡控已經開了而它其實沒有）。`alertModal` 與那個面板同 z-index 但在 DOM 裡排在後面 → 疊在上面；Esc 順序（`alertModal` 排第一）與焦點管理（取 DOM 最後一個 `data-ct-modal`）本來就已經對。
-  - ⚠️⚠️ **「有拿到 HTTP 狀態碼」與「沒拿到」是兩件不同的事，措辭不可以混用**（`writeFailText`）：有 status ＝ 伺服器真的回覆了，所有寫入端點都包在 `SqlTransaction` 裡、例外一律回捲 → 可以明講「資料庫沒有變動」；**沒有 status ＝ `fetch` 自己失敗，那時請求可能已經送達並 commit、只是回覆掉了** → 只能說「無法確認有沒有寫進去，請先重新整理看一下」。講成「沒有寫入」就是畫面上的假話。這與 dbmail／smtp 逾時一律標「未確認送出」是**同一條界線**。`httpErr(res)` 就是為了把 status 掛上去（`jsonReq` 也同樣掛）。
+- **架構**: 沒有 CRA / Vite / Next.js。React 寫在 `ClientApp/app.jsx`，Babel 編成 `wwwroot/app.js`。
+- **主要檔案**: `ClientApp/app.jsx`（所有 React 視圖與業務邏輯）、`ClientApp/input.css`（Tailwind 原始檔）、`wwwroot/index.html`。
+- **建置**: `npm run build`（JSX + Tailwind）；`npm run watch:js` / `npm run watch:css`。
+  **⚠️ 每次修改 `app.jsx` 或 `input.css` 後必須執行 `npm run build`**，否則瀏覽器讀到的 `wwwroot/app.js` 還是舊的。
+- **⚠️ 版本號一律更新**: build 完**接著就要**把 `wwwroot/index.html` 內 `app.css?v=` 與 `app.js?v=` 往上帶（格式 `YYYYMMDD` + 三位流水號，兩處必須一致）。不要等到「發現沒生效」才補 —— 瀏覽器拿到舊檔是靜默失敗。
+- **⚠️ 絕對路徑禁用（子路徑部署）**: 這個 App 會掛在 IIS 子應用程式底下。
+  - API 一律用 `api('/api/xxx')`（接上 `window.APP_BASE`）。直接寫 `fetch('/api/xxx')` 在子路徑底下必定 404。
+  - `index.html` 的靜態資源用 `__BASE__app.css` / `__BASE__app.js`，由 `Program.cs` 的中介軟體換成實際的 `Request.PathBase`。所以 index.html 不走 `UseDefaultFiles`。
+  - 後端路由維持 `/api/...`（ASP.NET Core 路由本來就相對 PathBase）。
+- **⚠️⚠️ 兩種「靜靜不生效」的字串拼接，全檔一律禁止**：
+  - **Tailwind class 不可拼接**（`bg-${clr}-500/10`、`max-w-[${w}px]`、`text-${c}-500`）—— 靜態掃描看不到就完全不生成那個 class，**不報錯、就是沒有樣式**。一律傳完整字面量。
+  - **CSS 值也不可拼接**：`${color}1a` 這種寫法遇到 CSS 變數會拼成 `var(--x)1a` 這種無效值，**底色靜靜變透明**。要半透明就用 `color-mix()` 或預先定義好的 `--tone-*-bg`。
+- **⚠️ 深色模式一定要宣告 `color-scheme`**（`.dark` 掛在 `document.body` 上，會繼承下去所以有效）—— 沒宣告時 `<select>` 的 option 變白底淺灰字、**看起來像被停用**。查「選不到」先量 option 的 computed 色與 `disabled`。
+- **⚠️ 套了 `.ctl` 這類 class 就不要再寫 inline 的 `background`/`border`/`color`**（inline 會把 `.ctl-on` 整個蓋掉）；`<select>` 要補 `select.ctl{display:inline-block}`（替換元素套 `inline-flex` 無效）。
+
+#### 對外相依與全站防線
+- **⚠️⚠️ React 不可以改回 CDN**（82）。三個理由：①**那是全站單點失效** —— CDN 連不到 → `app.js` 第一行 `const { useState … } = React` 立刻 ReferenceError → **整個網頁一片空白**，唯一的線索是一句英文；這個 App 跑在工廠內網。②development build 是 1.19 MB，production.min 只有 142 KB。③`react@18` 會解析成當下最新的 18.x，等於版本沒鎖。
+  ⚠️ 檔名自帶版本（`react-18.3.1.production.min.js`）＝ 自己就是 cache buster，所以這兩支**刻意不帶 `?v=`**；升版就是換檔名 ＋ 改 index.html。走 `__BASE__` 所以子路徑部署照樣對。
+  ⚠️ 另有一段 guard：React 真的沒載進來時 `#error-log` 印一段**看得懂的中文**（含「該告訴管理員哪個檔載不進來」）。
+- **⚠️⚠️ 字型不可以改回 Google Fonts**（83）。字型堆疊寫在 `input.css` 的 `body`。理由與 React 那條**完全相同，而且這一支更嚴重**：`<link rel="stylesheet">` 是 **render-blocking** 的 —— `display=swap` 只管字型檔，**管不到這支 CSS 自己**，連不到 CDN 時要等網路逾時才畫第一格。拿掉之後全站**外部請求 0 支**。
+  ⚠️ 順帶把版面預算變**鬆**了：16 欄表格 min-content **1218px**（`memory.md` 第 6 節舊的 1256px 已過期）。
+- **⚠️⚠️ `<App/>` 一定要包在 `AppErrorBoundary` 裡**（83，`app.jsx` 檔尾）。沒有它時 App() 底下任何一次 render 例外，React 18 會把整棵樹卸載 —— `#root` 變空，而行號指的是 `react-dom`，連是哪一段程式都看不出來。
+  - ⚠️ 第二顆鈕「**清掉網址上的篩選條件再重新整理**」只在網址真的有 query 時出現：篩選與排序全寫在網址上（28），壞掉的原因若正好是某個篩選值，直接重新整理會再炸一次，那個書籤等於永久壞掉。
+  - ⚠️ 樣式**刻意不吃任何 CSS 變數與 Tailwind 類別**（走 inline style）：走到這裡代表畫面已經不可信，再依賴一層樣式系統只是多一個可能一起壞掉的東西。
+  - ⚠️ 它**只負責讓失敗看得懂，不負責修好任何東西** —— 不要在這裡加重試或「跳過壞掉的那一列」。`console.error` 那條要留著（F12 的堆疊比卡片上那段完整）。
+
+#### 寫入與錯誤呈現
+- **⚠️⚠️ 寫入失敗一律走「要按掉才會消失」的彈窗，不可以退回 toast**（82）。400／409 走 `setAlertModal`，而 500／連線中斷／逾時原本走 toast 5 秒就消失 —— 同一件事（沒存成功）有兩種強度，而**比較嚴重的那一種比較安靜**。共 14 處走 `alertWriteFail(title, err)`；`AccessPanel` 是模組層元件，靠 `onError` prop 拿到同一支。
+  - ⚠️⚠️ **「有拿到 HTTP 狀態碼」與「沒拿到」是兩件不同的事，措辭不可以混用**（`writeFailText`）：有 status ＝ 伺服器真的回覆了，寫入端點都包在 `SqlTransaction` 裡 → 可以明講「資料庫沒有變動」；**沒有 status ＝ `fetch` 自己失敗，請求可能已經送達並 commit** → 只能說「無法確認有沒有寫進去，請先重新整理看一下」。講成「沒有寫入」就是畫面上的假話。與 dbmail／smtp 逾時標「未確認送出」是**同一條界線**。`httpErr(res)` 就是為了把 status 掛上去。
   - ⚠️ 儲存失敗時**編輯視窗刻意不關** —— 他剛打的 20 幾個欄位還在裡面。
-  - ⚠️ 純表單驗證的提示（「請填寫工號」「至少填寫一個條件欄位」）**維持 toast**：那時候什麼都還沒送出去，而輸入框就在旁邊。
-  - ⚠️ 這些訊息是**純文字彈窗**，不可以用 `**` 之類的 markdown 記號（畫面上不會變粗體，只會原樣多出兩個星號 —— 寄信逾時那段註解記著同一條，這一批自己也踩過一次）。
-- **前端的三條不變量（第 26 批，2026-08-24）**：
-  - **每一個寫入動作都要包在 `runExclusive()` 裡，按鈕同時 `disabled`**（儲存／完成／回退／刪除／匯入）。⚠️ 一定要有 `submittingRef`：兩次點擊落在同一個 tick 時，第二次讀到的 `isSubmitting` 還是舊值（`setState` 非同步），**只靠 state 擋不住真正的連點**。實測連按三下「確認新增」在此之前會送出 3 個 POST（1 筆建立 + 2 個 409「NID 重複」——使用者剛剛明明是第一次建這筆）。
-  - **`fetchReqs()` 分「首次載入」與「重抓」兩條路**（`loadedOnceRef`）。只有首次才 `setIsLoading(true)`（tbody 換成「資料載入中…」）；儲存／刪除／完成／匯入之後的重抓一律走 `refreshing`（表格淡化 + 頁首標「更新中…」）。⚠️ 不可退回「一律 `setIsLoading(true)`」—— 那會讓每存一次檔 62 列就整片消失再長回來，捲動位置與展開狀態的視覺連續性全斷掉。
-  - **儲存前的驗證一次算完**：規則集中在 `validateEdit()`，回傳 `{fields, groups}` —— `groups` 讓彈窗一次列出**全部**問題，`fields` 讓對應欄位就地標紅（`errOf()` / `errBorder()` / `<FieldErrorHint>`）。⚠️ 不可退回「一段一個 `return`」：缺三個必填就要按三次儲存、看三次彈窗，而且關掉彈窗後畫面上沒有任何一格是紅的。紅字只在按過儲存後才顯示（`showSaveErrors`），而且是每次 render 重算 —— 使用者改好一欄，那一欄的紅字就自己消失。**每條規則的界線（誰該驗、什麼時候才驗）一律照舊**，那些界線都是為了避開「既有資料有值卻永遠改不動」，後端的 `MissingRequiredFields` / `PhaseOrderViolations` / `PhaseGatingViolations` / `StagePrereqViolations` 是同一套。
+  - ⚠️ 純表單驗證的提示（「請填寫工號」）**維持 toast**：那時候什麼都還沒送出去，而輸入框就在旁邊。
+  - ⚠️ 這些訊息是**純文字彈窗**，不可以用 `**` 之類的 markdown 記號（畫面上只會原樣多出兩個星號）。
+- **編輯視窗有未存變更時，F5／關分頁／上一頁也要攔一次**（84，`beforeunload`）。與 `closeEdit` 是同一件事的兩半，缺的那一半剛好是最容易誤觸的那幾個鍵。
+  - ⚠️ **只在真的 dirty 時才掛 listener**：常駐的 `beforeunload` 會讓每一次重新整理都跳確認框，那是純噪音，而且使用者會學會無視它（與 43 批「重複跳窗會把真正該響的那一次一起消音」同一條）。
+  - ⚠️ 文案由瀏覽器決定（現代瀏覽器一律忽略自訂字串），handler 只設 `e.returnValue = ''`。真正講得出「哪一筆、改了什麼」的是 `closeEdit` 那個視窗。
+  - ⚠️ 相依放 `editingData`（不是 ref）：用 ref 會讓「從 dirty 變回乾淨」時解除不掉。
+- **前端的三條不變量**（26）：
+  - **每一個寫入動作都要包在 `runExclusive()` 裡，按鈕同時 `disabled`**（儲存／完成／回退／刪除／匯入）。⚠️ 一定要有 `submittingRef`：兩次點擊落在同一個 tick 時第二次讀到的 `isSubmitting` 還是舊值，**只靠 state 擋不住真正的連點**。
+  - **`fetchReqs()` 分「首次載入」與「重抓」兩條路**（`loadedOnceRef`）。只有首次才 `setIsLoading(true)`；寫入之後的重抓走 `refreshing`（表格淡化 + 頁首「更新中…」）。⚠️ 不可退回「一律 `setIsLoading(true)`」—— 那會讓每存一次檔整片消失再長回來，捲動位置與展開狀態的視覺連續性全斷掉。
+  - **儲存前的驗證一次算完**：規則集中在 `validateEdit()`，回傳 `{fields, groups}` —— `groups` 讓彈窗一次列出**全部**問題，`fields` 讓對應欄位就地標紅（`errOf()` / `errBorder()` / `<FieldErrorHint>`）。⚠️ 不可退回「一段一個 `return`」。紅字只在按過儲存後才顯示（`showSaveErrors`）且每次 render 重算。**每條規則的界線（誰該驗、什麼時候才驗）一律照舊**（後端的 `MissingRequiredFields` / `PhaseOrderViolations` / `PhaseGatingViolations` / `StagePrereqViolations` 是同一套）。
+- **欄位長度：`FIELD_LIMITS` / `FIELD_MAX` / `NOTE_MAX` / `LenHint`**（82；後端 `FieldLimits` 的鏡像，**改了要兩邊一起改**）。三件事：①六個輸入框加 `maxLength` ＋四個說明欄 `NOTE_MAX`；②`LenHint` 在**達到上限 80% 之後**才出現（每一欄都常駐計數器只是噪音，需要它的時刻是「我打不進去了，為什麼」）；③`validateEdit()` 也算一次（擋 `maxLength` 沒套到的路徑）。
+  ⚠️ `yearMonth` 列在 `FIELD_LIMITS` 裡但**沒有輸入框**，純粹是為了與後端那一份對得起來。
 
-- **⚠️⚠️ 第三個頁籤「我的待辦」：EMS 身分成立時是**預設頁**，而它是既有流程的路由、不是第二套版面**（第 89 批，2026-10-01，使用者要求：「我要讓不懂系統的 EMS 使用者可以無腦操作此網頁，但目前的網頁太複雜」「每個 EMS 負責人基本上只關心自己相關的專案，可以上來看進行到哪裡或是時間到上來壓時間」）。`activeView` 多一個 `'mytodo'`，版面分三區：**要你處理的**（卡片）／**等 MSD**（一行一筆、唯讀）／**我的全部 N 筆**（預設收起、含已結案）＋ 固定在最上面的 `＋ 新增需求`。沒有動 `Program.cs`、沒有動 DB。
-  - ⚠️⚠️ **使用者自己提的是「我的專案列表」，刻意改成「待辦」這個形狀**。量過本機 62 筆：8 位 EMS 負責人身上的**進行中**件數是 **4 / 3 / 2 / 2 / 1 / 1 / 0**（最忙的那位只有 4 筆），而 16 筆進行中裡**只有 ①＋④ 這 6 筆是 EMS 的球**，另外 10 筆在等 MSD。做成「列表」他還是得逐列自己判斷「這筆現在是誰要動」—— 而那個判斷 `currentPhaseOf()` 早就算得出來，只是第 87／88 批把它鎖在編輯視窗裡，要先點 `✎` 才看得到。**這一頁做的事就是把那個判斷搬到落地畫面上。**
-  - ⚠️⚠️ **這與 2026-08-19 否決「第二套版面／第三個頁籤」的理由不衝突，但那個代價是真的**。當年的理由是「不再維護第二套格式」，而真正的代價全在**重算**：這一頁**不准自己算任何東西、也不准自己寫入** —— 分組走 `DUE_PHASES` 自己帶的 `side`／`owner`、逾期走 `getPhaseAlert()`、徽章用 `UnsetDateBadge`、寄信用 `NotifyMailButton`、排序沿用 `dueRank` 那條（未壓最前、再按剩餘天數）。每一顆動作鈕都只是**把既有的視窗開到正確的位置**（`openEdit(item, phaseKey)` / `askNotifyUnset`）。一旦開始在這裡寫第二條寫入路徑，112 種擋下訊息、樂觀鎖、稽核列就會有一邊沒套到。
-  - ⚠️⚠️ **分邊看的是「負責人欄寫的是不是我的名字」，不是我的部門**（第 90 批，2026-10-01）。控表存的是**姓名字串、沒有外鍵**，部門則來自 `dbo.Assignee` —— 兩邊對不上的例子本機就有（主檔「桂豪」／控表「桂瑮」）。更實際的是某位 MSD 同時被填在某筆需求的「EMS 負責人」欄：用部門分邊的話那幾筆**他永遠看不到，而且畫面上不會有任何線索**。部門只用來決定頁籤出不出現。
-  - ⚠️⚠️ **分組只看「`StatusID` 那一階段」，不可以改用 `resolveFocusPhase()`**：那一支挑的是「最急的那一階段」，`StatusID=3`（還在等 MSD 開發）時它可能挑到 EMS 先壓好的 ④ —— 於是卡片寫著「要你處理」、點進去編輯視窗的「現在輪到」卻指著 ③，**畫面自己打自己**。`openEdit(item)` 不指名階段時跳的就是 `currentPhaseOf()`，這一頁的分組必須與它同一階段。也**不要另立「①④ 屬 EMS」這種第二份規則** —— `DUE_PHASES` 裡已經有 `side`。
-  - ⚠️⚠️ **頁籤與預設頁是同一個條件（`myTodoReady`）**：`dbo.Assignee` 查得到工號 ＋ **`DEPT ∈ {EMS, MSD}`**（第 90 批起含 MSD）＋ **名字在 `requirementsData` 的 `EmsOwner` 或 `MsdOwner` 對得到至少一筆**。三道同時也是「登入的可能是主管，不需要」（2026-09-05 使用者的話）的出口 —— 名下一筆需求都沒有的人不會被丟進一個永遠空的待辦頁。**主管**看不到這個頁籤（給他一個永遠空的頁籤只是噪音）。
-  - ⚠️⚠️ **預設頁的四道界線，少一道就是那種靜默失效**：①`myTodoReady` 不成立 → 什麼都不做，預設頁維持需求列表；②**網址指名過 `view` 就不覆蓋**（`urlHadViewRef`，與第 87 批的 `ems=` 同一條）；③同一個工號只套一次（`autoViewRef`）—— 他自己切去需求列表之後不可以又跳回來（第 23 批那條坑）；④**不寫 localStorage**（第 23／48／64 批同一個坑三次了）。
-  - ⚠️⚠️ **`urlHadViewRef` 只能在掛載當下問一次**：第 28 批之後每次 render 都會 `replaceState` 把 state 寫回網址，之後再問一律是 `true`，「別人分享的連結不可以被自動預設頁蓋掉」那道界線就會靜靜失效。
-  - ⚠️⚠️ **`view=table` 這個方向也要寫進網址**（`else if (myTodoReady)`）。預設頁自這一批起**不再固定是 `table`**，所以第 48 批那條一字不差地適用：「只在非預設時帶參數」會讓同一條連結在別人的瀏覽器上開出不同的頁，而更常踩到的是**EMS 在需求列表按 F5 又跳回待辦頁**。身分對不上的人不多帶這個參數。相依陣列要含 `myTodoReady`。
-  - ⚠️ **身分對不上時那一頁要自己說明原因，不可以靜靜退回需求列表、也不可以留白**：三種情況（工號不在主檔／部門不是 EMS／主檔姓名與控表的「EMS 負責人」對不起來，例：主檔 `桂豪`／控表 `桂瑮`）全部印在畫面上並講明要去 SSMS 補哪裡，加一顆「去需求列表看全部需求」。⚠️ `activeView === 'mytodo'` 時頁籤**照樣要畫出來**（`?view=mytodo` 的書籤而這次身分對不上），否則分段控制會停在「一顆都沒選中」。
-  - ⚠️ **「要你處理的」的空狀態是這一頁最重要的一格**（絕大多數時候他上來就是看到這裡）：只寫「沒有資料」不夠，一定要把「那其他幾筆在哪」一起講（「你名下有 N 筆還在進行，目前都在等 MSD —— 進度列在下面」），否則他會以為自己的需求不見了。
-  - ⚠️ **「等 MSD」那一區刻意不放主要動作鈕**：它只回答「進行到哪裡」。唯一的動作是 `✉`（MSD 那一階段沒壓日期時才出現）。⚠️ 那一區的 `UnsetDateBadge` **一定要傳 `onSetDate`**（＝可點）—— 不傳的那一支 tooltip 寫著「精簡模式是唯讀檢視…關掉精簡模式後點它」，在這一頁印出來是**畫面上的假話**（第 57 批那條的反面）。
-  - ⚠️ `myTodo` 這個 `useMemo` 的相依**一定要含 `todayTick`**（第 67 批）：`diffDays` 是拿 `TODAY` 算的，分頁開過午夜時資料沒變、memo 不重算，「逾期 N 天」會停在昨天的答案。
-  - ⚠️⚠️ `pageWidth` 給 `mytodo` 的是 **`max-w-[1600px]`（與需求列表同寬），不可以再收窄**（2026-10-01 修）。第 89 批原本寫 1100、理由是「卡片不需要攤開 16 欄」—— 使用者附截圖回報兩件事，而**兩件都是那一行造成的**：①他的視窗 **1500px**，`main` 只有 1100 → **右邊死掉 400px**（原話：「感覺很多空間沒使用到」）；②頁首吃同一個值，被收到 1100 之後右側控制項把分頁**擠到換行**（「需求列／表」）。實測修正後 1500 視窗 `main` 1500、**浪費 0px**；1280→1280、1920→1600（上限）、三個寬度 `docX` 全 0。⚠️ 統計報表維持 1440（圖表拉寬只會把圖拉扁）。
-  - ⚠️⚠️ **`.seg-item` 的 `white-space:nowrap` ＋ `flex-shrink:0` 不可以拿掉**（`input.css`，2026-10-01）。頁首是一條 flex，右側控制項一多就會壓縮 `.seg`，而分頁沒有 nowrap 時中文會斷字。⚠️⚠️ **這個在開發機重現不了** —— 沙箱沒有他機器上那套中文字型，同樣四個字量到的寬度偏小（實測這裡三顆共 216px、單行 26px，他那裡換行）。**所以這條解的是「結構上不可能換行」，不是把某個寬度調大；日後遇到中文寬度相關的版面問題，不要只信開發機的量測。**
-  - ⚠️ `myAllOpen`（「我的全部」收合）**不寫 localStorage**：那是「這一次打開這一頁」的狀態不是偏好（與第 86 批那三個收合旗標同一條）。
-  - 實測（本機 62 筆、1440×900，全程 DOM 量測、沒有截圖）：**侑憲**（00045896）→ 自動落在 `?view=mytodo`、「共 20 筆（進行中 3 · 已結案 17）」、三張卡（④ 逾期 29 天／④ 逾期 20 天／① 還有 91 天）；**建翰**（00057728）→ 兩張 `⚠ 這一階段還沒有結束日` 的卡，按 `填寫結束日 →` 之後編輯視窗開在 ④、`document.activeElement` 就是 `data-ct-focus="uat"`（`disabled` false）、①②③ 仍是收合的摘要行；**智寬**（00034018）→ ① 1 筆 ＋ 等 MSD 3 筆（逾期 31／31 天與 11-10，排序正確、寫著「等 MSD 政翰／詠裕」）；**明翰**（00010278）→「目前沒有要你處理的事 ／ 你名下有 1 筆還在進行，目前都在等 MSD」；**桂豪**（00019246，界線 ③）與**玉婷**（MSD）→ 說明卡；`?view=table` ＋ EMS 登入 → **停在需求列表**（界線 ②）。1280／1366／1440 三個寬度 `docX` 全是 **0**，需求列表仍是 20 個 `th`、統計報表無回歸，console 無錯誤。**全程沒有按過任何一次儲存／完成 —— 62 筆、265 筆稽核列、`MAX(UpdatedAt)` 與改之前完全相同。**
+#### 版面預算與縮放
+- **⚠️ 工具列的 `<select>` 固定 140px，而且不可以把說明接在 option 文字後面**（34→36→37，同一個坑收拾了三次）。**原生 `<select>` 的寬度是由「最長的那個 option」撐出來的**，不是由選中的值 —— 補一句說明就可能從 140px 變成 365px 而把整列擠成兩行。⚠️ 第二個理由：**option 的文字同時是收合狀態顯示的文字**，補述會被截成半句。**選項名稱講不清楚時，正解是把名稱改對**，補充說明放 `<select>` 的 `title` 與圖例列。⚠️ 版面預算只剩 30px —— 動任何一項都要回來重算，那種破版是靜默的。
+- **⚠️ 資料列裡新加的東西一律疊在既有元素「下面」，不可以貼在它右邊**（39）。**欄寬是由那一欄裡最寬的一格撐出來的**，加寬一格就是加寬整張表；疊下一行則 `max(徽章, 按鈕) = 徽章寬`，一個 px 都不多。
+- **⚠️ 階段那一排（`ALL` + 五顆 + 右側控制群）的寬度預算只有幾十 px，加東西之前一定要量**（51）。1280 螢幕目前只剩 16px，**這一排已經沒有再放任何東西的空間**。圖例與單選／複選開關一律維持**純圖示 34px**（`ctl ctl-icon`），**不可改回帶文字的 `ToggleChip`**；條件晶片**不要併進這一排**。
+- **⚠️ 階段那一排不可以放任何「寬度隨資料變」的文字；`需關注` 只印總件數**（73）。接上「· 未壓 N · 逾期 M」之後，資料一變（件數變兩位數）就會從單行斷成兩行，而**沒有任何程式碼被改過**。三個細項的件數在 tooltip 與「逾期」下拉都有。同一條也適用於 `顯示 N / M 筆`。
+- **⚠️ 判斷「版面放不放得下」一律問「16 欄的整頁需求 > 目前可用寬度」，不可以用寫死的螢幕寬度**（46-2）。舊的 `narrow` 門檻猜的是「螢幕多大」（1024px），而該問的是「16 欄放不放得下」—— 中間有一整段沒人管的空白帶（1440 螢幕的瀏覽器縮放 110~140% 全在裡面）。**投影倍率、字級、視窗寬度、瀏覽器縮放是四條各自為政的判斷，而它們影響的是同一個量。**
+  ⚠️⚠️ **但那一段當時的解法（自動收欄）已被使用者否決並整段移除，不要再做回去** —— 這一條保留的是**診斷**，不是作法。
+- **⚠️⚠️ 放大之後放不下時，要變寬的是「框架」，不是變少的「欄位」**（46-3）。被否決過兩種做法，**兩種都不要再做回去**：①「按下 `Ａ` 塞不下就先問你」；②「量到放不下就自動把 `compact` 推成 true」。使用者原話：「**非精簡模式下若我想要看到全貌、放大看還是會破圖**」「**我也不能夠強迫其他人若放大只能看精簡模式的資料**」。**放大是為了看清楚，不是為了少看七欄。**
+  真正壞掉的**從來不是表格，是框架**：`<header>` 與 `<main>` 寬度＝視窗寬，表格更寬時只是溢出去，往右捲就看到卡片切在半空中。解法是 `.page-shell` 用 shrink-to-fit：`width: fit-content` + `min-width: 100%`。
+  - ⚠️ **不可以寫死寬度** —— 欄位增刪與字級都會改變它，寫死的值一旦過期就是「永遠橫捲」或「又切回去」。`fit-content` 自己會算。
+  - ⚠️ **不可以把表格包進 `overflow-x:auto`** —— 那會變成新的捲動容器，兩層 sticky 表頭與左側凍結欄整套失效。
+  - ⚠️ **列印時一定要還原成 `width:auto` / `min-width:0`**：紙張沒有捲軸，`fit-content` 撐出來的寬度會被直接裁掉。
+  - ⚠️ 也**不要**改成「等比例放大整個畫面（含框架）」—— 橫捲的條件是「表格需要的寬度 × 倍率 > 螢幕寬度」，把倍率調大是**題目本身不是解法**。
+- **⚠️ 「⚠ 右邊被切掉」只出現在投影模式，平常一律不出現**（46-4）。使用者原話：「**嚴重影響操作的 UX 體驗**」—— 浮動那顆正好蓋在編輯／刪除鈕上面，而它出現的時機剛好是版面最擠的時候。`.page-shell` 之後橫捲是完整、看得懂的畫面，瀏覽器自己的捲軸已經在說「右邊還有東西」。
+  ⚠️⚠️ **投影模式是唯一保留的例外**：「台上的人看自己的螢幕，不會發現布幕右邊少了幾欄」。`clipPx` 的量測也跟著只在 `present` 時跑。
+  ⚠️ 投影下這個數字會**略為低估**（按鈕自己的寬度會把 fit-content 再撐寬）。**不要把 `clipPx` 加進相依陣列去「修正」它** —— 那會做出「沒有按鈕就不溢出 → 顯示按鈕 → 溢出 → 隱藏按鈕」的無窮翻轉。
+  ⚠️ 橫捲之後那顆改成畫面右下角的浮動鈕（`renderClipWarning(floating)` + `scrolledX`）：原本掛在頁首裡，而**頁首自己就是會被橫捲帶走的東西**。兩個位置**同時只會有一顆**，文案與動作共用同一支。浮動那顆一定要渲染在 `.present` 那一層（`header`／`main` 之外），否則會被縮放、甚至讓 `position:fixed` 改成相對它定位。⚠️ 底色要**不透明卡片色 + 疊上警示色**（`--tone-alert-bg` 是半透明，浮在資料列上會透出底下的字）。⚠️ `scrolledX` 存的是**布林不是捲動量**（否則連垂直捲動都會整片重繪）。
+- **⚠️ 任何會放大畫面的功能，都必須顧到「可用寬度 = 視窗寬 ÷ 倍率」**（31）。已經踩過兩次（投影倍率、字級）。⚠️ 新增任何 zoom 類功能時一律接上 `clipPx` 指示，並給一個**依情境最有效**的一鍵修正。⚠️ **不要自動幫使用者改設定** —— 放大是他自己按的，靜靜把欄位收起來更難理解。
+- **投影模式的前置條件**（32）：**只有精簡模式、而且在需求列表頁，才能開**；投影中不給關精簡模式；**切到統計報表自動退出**（切回來不會自動再開）；載入時若 localStorage 組出 `present && !compact`，**直接退出投影**。
+  ⚠️ 在此之前是「按下投影就順手幫你打開精簡模式」，那個借用製造了兩次「版面跑掉」的回報 —— **只要「投影 + 16 欄」在任何一條路徑上組得出來，可用寬度就一定小於 16 欄的需求**。改成硬性前置條件之後，那個組合根本組不出來。⚠️ 淺色底**仍然是借用**（投影機黑階偏灰），離開時還原。
+- **投影模式的兩條不變量**（30）：
+  - **「借用」必須在載入時也套一次**，不能只寫在 `togglePresent` 裡 —— `present` 是從 localStorage 復原的，**投影開著時按 F5** 借用不會跑到。載入時的借用要一併把「進來之前」記進 `beforePresent`。
+  - **投影模式下不套 `max-w` 上限**：那時候的可用寬度是「視窗寬 ÷ 倍率」，上限只有在寬螢幕才會生效 —— 而那正是最需要把表格攤開的場合。⚠️ 量 `scrollWidth - clientWidth` 要**同步量，不可包 `requestAnimationFrame`**（分頁在背景時 rAF 不會被呼叫，警告會靜靜地永遠不出現）。
 
-- **⚠️⚠️ 「我的待辦」第二版：砍欄位、開放 MSD、分邊改用姓名**（第 90 批，2026-10-01，使用者看過四輪示意圖後拍板：「畫面的資訊太雜亂了，我想要讓操作者簡單操作」「MSD 人員也需要此功能、可以專注在自己壓日期的階段」）。沒有動 `Program.cs`、沒有動 DB。
-  - ⚠️⚠️ **一張卡只留「標題、一句話、一顆鈕」**。砍掉的六樣：階段徽章（那句話裡已經有「驗收／開發／確認」）、子項目、MSD 負責人、狀態藥丸（與那句話重複）、**按鈕旁的灰字說明**（第 88 批在編輯視窗裡已經刪過同一種東西）、以及抬頭那句「共 N 筆（進行中 X · 已結案 Y）」（與底下兩行收合摘要同一組字）。「等 ○○」整區與「我的全部」都收成**一行**。
-  - ⚠️⚠️ **量過的前提：這份清單通常只有 0~2 列**（8 位 EMS 的進行中件數 4/3/2/2/1/1/0）。**替一份兩列的清單加裝飾比不加更難讀** —— 使用者提過的 KPI 卡片列（`5 進行中 / 2 需要處理 / 1 本月結案`）因此**被否決、不要做回去**：`需要處理` 與正下方的「要你處理 N 筆」是同一個數字、`進行中` 等於底下兩行相加，而 `本月結案` 會與「含已結案 17 筆」並排成第三種口徑（第 84 批那條）。統計報表已經有一組 KPI 卡，兩頁口徑不同只會被問「為什麼對不起來」。
-  - ⚠️⚠️ **MSD 也有這一頁，這推翻了第 87 批那條「MSD 是平台的操作者，要看全部，所以不給頁籤」** —— 那句話已經不成立，**不要照它改回去**。使用者的理由是他自己的：需求列表他另外開在一個分頁，兩邊不衝突；而「MSD 也是要決定日期，先停留在我的待辦對他們也是方便」。預設頁、頁籤、紅點、空狀態全部與 EMS 走同一條。
-  - ⚠️⚠️ **分邊看「負責人欄寫的是不是我的名字」，不是部門**（理由見上面 89 批那條）。部門（`DEPT ∈ {EMS, MSD}`）只決定頁籤出不出現。
-  - ⚠️⚠️ **按鈕的字由 `doneKindFor()` 決定，不可以寫死「標記完成」**。那支是第 87 批 `donePanelKind()` 收 row 參數的版本（第 90 批抽出來的，編輯視窗走的是同一支包裝）—— 「前置還缺日期」「完成順序擋著」這種罕見但做得出來的資料，點進去是**沒有那顆鈕**的，寫死就會叫他去按一顆畫面上沒有的按鈕（第 87 批那條）。三種：未壓日期→`填寫結束日 →`（② 是`填寫確認日 →`）／`kind==='button'`→`標記完成 →`／其餘→`開啟這一階段 →`。
-    ⚠️ `isPhaseOpenOn(row, …)` / `phaseDoneEntryOn(id, …)` 是同一批抽的。**`isOpen` 一定要由呼叫端傳**：編輯視窗看的是**編輯中**的值（剛填上前一階段的日期、還沒存檔就該解鎖），待辦頁看的是已存檔的值 —— 合成一支會讓編輯視窗退化成「要存檔後才解鎖」。
-  - ⚠️ **階段講成人話的那個詞（`verb`）只有一份定義，在 `DUE_PHASES` 上**（規格確認／確認／開發／驗收）。不要在這一頁另寫一份對照表（第 50 批 `renderChip` 同一條）。`等 ○○` 的 `waitSide` 同理 —— 由**那幾筆自己階段的 `side`** 推，不是「我是 EMS 所以一定在等 MSD」（我可能是某筆的 MSD 負責人而它卡在 ①）；兩邊都有時退回「對方」。
-  - ⚠️⚠️ **空狀態的 teal `✓` 只給「名下全部結案」那一種**。還在等對方的那一種他**一件都沒完成**，只是球不在他手上 —— 在那裡放一顆 ✓ 會被讀成「都做完了」（第 59 批：`✓` 與 teal 只留給已經發生的結果）。那一種走中性的 `⏳`。`--tone-good-bg` 是這一批補進 `input.css` 的（三處：淺色／深色／列印）。
-  - ⚠️ 「在需求列表看這 N 筆 →」**要依部門選欄位**（MSD 套 `setMsdFilter`）—— 照抄 EMS 那一支會把篩選設成空字串、畫面變成 0 筆而且看不出原因。N 印的是 `emsCount`／`msdCount`（＝切過去真的會看到幾筆），不是 `all.length`。⚠️ 它是**獨立的 `<button>`，不可以塞進收合那顆裡面**（button 裡放 button 是無效的 HTML，點擊會連帶觸發收合）。
-  - ⚠️ 列印抬頭那行（`.print-only`）也吃 `myDept` / `myTodoName` —— 第 89 批寫死 `EMS ${myEmsName}`，MSD 登入時會印成「我的待辦（EMS ）」（已實測修掉）。
-  - ⚠️ `myWaitOpen` 與 `myAllOpen` 都**不寫 localStorage**（第 86 批那三個收合旗標同一條）。
-  - 實測（本機 62 筆、全程 DOM 量測）：**侑憲**（EMS）3 張卡、三顆都是`標記完成 →`、`⚠ 驗收已逾期 29 天 原訂 09/02`；**建翰**（EMS）2 張 `⚠ 驗收日期還沒填` ＋ `填寫結束日 →`，按下去 `document.activeElement` 就是 `data-ct-focus="uat"`（`disabled` false、四個階段區塊都在）；**智寬**（EMS）1 張 ＋「另有 3 筆在等 MSD」，展開後是政翰 ×2（逾期 31 天）與詠裕 11-10；**明翰**（EMS）`⏳ 目前沒有要你處理的事 ／ 你名下有 1 筆還在進行，正在等 MSD`；**淑芬**（EMS）teal `✓ 你名下的需求都已經結案了`；**玉婷**（MSD）`⚠ 確認已逾期 31 天` ＋「另有 3 筆在**等 EMS**」＋「在需求列表看這 23 筆」；**政翰**（MSD）`⚠ 開發已逾期 31 天`；**桂豪**（主檔／控表姓名對不上）說明卡且頁籤仍畫得出來；`?view=table` ＋ MSD 登入 → **停在需求列表**（界線 ②）且**沒有**被自動套上 `msd=`。`標記完成 →` 點進去的視窗確實有「標記完成」鈕與「現在輪到」框。1280／1366／1440／1920 四個寬度 `docX` 全 **0**（1920 時 `main` 仍是 1600），卡片高 87px、收合行 50px。需求列表仍是 20 個 `th`、16 列；統計報表無回歸；console 無錯誤。**全程沒有按過任何一次儲存／完成 —— 62 筆、237 筆稽核列、`MAX(UpdatedAt) = 2026-09-13 16:54` 與改之前完全相同。**
+#### 可及性與量測（29）
+- **展開明細要有真的 `<button>`**（`No` 欄那顆三角形，帶 `aria-expanded` 與含 NID 的 `aria-label`）。在此之前**鍵盤完全展不開任何一列**。⚠️ 刻意**不**把 `role="button"` + `tabIndex` 掛在 `<tr>` / `<th>` 上（表格會在無障礙樹上失去列／欄結構）。可排序表頭走 `sortProps()`（`tabIndex` + Enter/Space + `aria-sort`）；**Space 一定要 `preventDefault`**。⚠️ 資料列裡任何按鈕都要 `stopPropagation`；每列的編輯／刪除 `aria-label` **一定要帶 NID**。
+- **六個 Modal 共用一份焦點管理**（`data-ct-modal` + `role="dialog"` + Tab trap + 關閉後焦點歸位）。⚠️ 「開窗前的焦點」**不可以在視窗開起來之後才讀 `document.activeElement`** —— React 的 `autoFocus` 在 commit 階段就套用了，比 `useEffect` 早，還原永遠失敗**而且失敗得很安靜**。改用 `lastOuterFocusRef` + `focusin`。⚠️ 也**不要**去搶已經 `autoFocus` 的焦點，沒人接手時聚焦視窗容器本身（`tabIndex={-1}`）。⚠️ Esc 的 handler 要放進 ref、listener 只掛一次；**不可以只把相依換成 `!!editingData` 這種布林**（`closeEdit()` 的閉包會停在開窗當下那份 `editingData`，`isEditDirty()` 永遠 false，Esc 會直接關掉不問）。
+- **放大一律用 CSS `zoom`，不去動那 121 個 `text-[10px]/[11px]`**。字級（`ui-zoom`，1/1.15/1.3）與投影（`present-zoom`）**都掛在 `<header>` 與 `<main>` 上，而且一律同一個倍率**（81）—— 只放大一半會讓頁首比它底下的內文還小。⚠️⚠️ **兩個 class 不可同時掛在同一個元素上**（zoom 會相乘）。⚠️ **也不可以掛到最外層那個 `min-h-screen` 上** —— 只掛 `<header>` 與 `<main>`。⚠️ 改了倍率就要重量表頭吸附位置與 `--frz-2`。
+- **⚠️ 量測跨過 zoom 邊界時一律用 `getBoundingClientRect()` 再除以倍率，不可以用 `offsetHeight`／`offsetWidth`**（47）。`sticky` 的 `top` 是在 **zoom 之後**的座標系裡算的，而 `offsetHeight` 是元素自己座標系的值（放大後不會變）—— 中間那條縫會漏出正在捲動的資料列（使用者原話：「看起來像是網頁哪邊壞了」）。
+  ⚠️ **那個 `÷ 倍率` 的寫法一行都不可以拿掉**：81 批讓兩邊同倍率之後這個坑踩不到了，但它是「兩邊倍率萬一又分家」的唯一防線。⚠️ 群組表頭也要用 rect 高度（`offsetHeight` 會四捨五入成整數，兩層表頭中間會多出細縫）。⚠️ 刻意讓表頭往上多疊 **0.5px** —— 這種對位**寧可疊、不可留縫**。⚠️ 相依陣列要含 `presentZoom`（`ResizeObserver` 回報的是**本地**尺寸，投影倍率改了它根本不會叫）。
+- **窄螢幕（≤1024px）自動套精簡模式**，用 `compactPref || narrow` 這種**衍生值**，⚠️ **不可以** `setCompactPref(true)`（會蓋掉偏好並寫進 localStorage，視窗拉寬之後回不去）。斷點取 1024 而非 1440：1366/1440 的筆電是主要工作機，那裡要看的是完整 16 欄。⚠️ `matchMedia` 的 `change` **一定要配一個 `resize` 備援**（實測有環境寬度變了、`matches` 也翻了，但 `change` 從頭到尾沒送出來）。
 
+#### 表格版面（27）
+- **左側 No / NID 兩欄橫向凍結**（`.frz` / `.frz-1` / `.frz-2`）。⚠️ 只能凍**連續的前綴欄**（Main Cat 不與 NID 相鄰，想一起凍必須先改欄序 → 動到 `FIELD_SPEC.md` 的顯示順序，要先問過使用者）。第二欄的 `left` 由 `app.jsx` 量測 No 欄實際寬度後用 `--frz-2` 傳進來，**不可寫死 44px**。量測的相依陣列一定要含 `requirementsData.length` 與 `showColFilters`（`ResizeObserver` 對 `<th>` 這種 table-cell 不回報寬度變化）。
+- **⚠️ 凍結欄的底色必須是「不透明卡片色 + 疊上列底色」**，不可以直接 `background: var(--row-bg)`。三個列底色有兩個是**半透明**的，而多數列是 Done —— 半透明的凍結欄等於沒凍，右邊捲過來的欄位會直接透出來變成兩層字疊在一起。hover 色同理。
+- **⚠️ 資料列的底色與 hover 一律走 CSS**（`.row-main` / `.row-exp` + `--row-bg`），不可退回 `<tr>` 上的 inline style —— 凍結欄有自己的 background，JS 只改 `tr` 會做出「中間亮、左邊兩格沒亮」。
+- **⚠️ Done 列不可用 `opacity: 0.5` 淡化**（會連文字一起變淡到看不清），一律用 `--bg-row-done` 這種淡底色。同理 **sticky 的儲存格必須是實心底色**（`rgba(...,0.04)` 的 tint 會讓資料列透出來）。
+- 需求列表與「我的待辦」頁寬 `max-w-[1920px]`、統計報表 `max-w-[1440px]`（`pageWidth`，頁首與 `<main>` 吃同一個值）。⚠️ 兩個都必須是完整字面量，**不可拼成 `max-w-[${w}px]`**（Tailwind 掃不到、靜靜不生效）。
+  - **⚠️⚠️ 1600 → 1920（106）：上限只在「比開發機寬的螢幕上」才生效，所以版面差異在開發機上一定測不出來。** 使用者把專案發佈到另一台主機後回報「左右間距變得很大，要放大到 130% 才是我這邊 100% 的樣子」—— 實測 1920 視窗下 `main` 被 1600 切掉、**兩側各死掉 152.5px**，而 130% 剛好把 CSS 視窗寬壓到 1905 ÷ 1.3 ≈ 1465 < 1600，上限就不生效了。**那個 130% 不是巧合，是上限被縮放推到不生效。**
+  - ⚠️ **仍然保留上限、不改成 `max-w-none`**：2560 上一列橫跨整個螢幕時左右兩端的欄位會對不上同一列（27 批設上限的理由沒有變）。1920 的意思是「1920 螢幕用滿、2560 才開始置中」。
+  - ⚠️ **同一份程式在兩台機器上版面不同時，先量 `window.innerWidth` 與 `main` 的 `getBoundingClientRect().width`** —— 與 27 批「`.seg` 的 nowrap 在開發機重現不了」同一條：不要只信開發機的畫面。
+- 頁首的**重新整理鈕**（`handleRefresh`）：`fetchReqs()` 與 `fetchHistory()` **一定要一起抓**（只抓需求的話 ⚠N 與統計報表的「時程異動」會停在舊數字）；⚠️ **不可包進 `runExclusive()`** —— 那是給寫入用的互斥鎖。頁首分開顯示「資料更新」（資料的 `UpdatedAt`）與「畫面」（`lastFetchedAt`，只在抓取**成功**時更新）。
+- **⚠️ `.seg-item` 的 `white-space:nowrap` ＋ `flex-shrink:0` 不可以拿掉**（`input.css`）。頁首是一條 flex，右側控制項一多就會壓縮 `.seg`，沒有 nowrap 時中文會斷字。⚠️⚠️ **這個在開發機重現不了** —— 沙箱沒有他機器上那套中文字型，同樣四個字量到的寬度偏小。**所以這條解的是「結構上不可能換行」，不是把某個寬度調大；日後遇到中文寬度相關的版面問題，不要只信開發機的量測。**
+
+#### 篩選、排序與網址（28、49、63、64）
+- **⚠️ 每一個生效中的條件都要在畫面上看得見、而且可以單獨移除**（條件晶片列 `activeChips`）。尤其 `colFilters`：精簡模式收起的欄位與一般模式沒有的欄位，**它們的篩選值照樣在過濾**（`filteredData` 不分模式）—— 那些晶片一定要標成警示色。判定走 `colFilterHidden()`，與篩選列實際 render 的條件共用 `COL_FILTER_META` 這一份定義，**不可以各寫一份**。
+- **⚠️ 篩選與排序寫進網址**（`replaceState` 單向：state → 網址）。⚠️ **只在載入當下讀一次**（每次 render 都讀會與 state 互相蓋，打字打到一半被回捲）；⚠️ **不可改成 `pushState`**（搜尋框每打一個字就是一次變更）；⚠️ 路徑用 `window.location.pathname`（子路徑部署）；⚠️ **認不得的值一律退回預設**（`urlOne` / `urlList`）—— 放進 state 只會做出一個永遠 0 筆、畫面上又找不到原因的清單。參數表在 `FIELD_SPEC.md`。⚠️ 搜尋防抖之後**網址也要吃防抖後的值**。
+- **需求列表預設「只看進行中」**（49，`progressFilter` 預設 `'ongoing'`）。⚠️ **提過的「未結案／已結案／全部」分段控制被否決並且不要再做回去**：它與 StatusID 那排的「5 結案」是同一群資料的兩組字，而且兩顆會互相打架。使用者原話：「**我上述五個按鈕的功能也要保留**」—— **那五顆是主要導覽，要減的是列不是控制項**。
+  - ⚠️ 白名單要含 `All`、網址的 `prog` **兩個方向都寫**，否則移掉晶片後重整它又自己回來。
+  - ⚠️ **StatusID 那排的數字一律不含進度篩選**（`matchExceptStage(item, ignoreProgress)`）：含進去的話 `5 結案` 永遠是 0，一顆寫著 0、按下去也沒東西的按鈕比看不到更糟。搭配兩條連動（①`ALL` 同時清階段與進度；②選一個被進度整群擋掉的階段時自動解除進度篩選），每個數字剛好就是「按下去會得到幾筆」。
+  - ⚠️ **搜尋要穿透**（`searchBlockedCount` → 晶片列的「另有 N 筆…／一併顯示」）；但**不可以做成「一打字就自動改成全部」** —— 筆數自己跳動會讓人分不清當下的範圍，出聲、由使用者按。
+  - ⚠️ 工具列那顆紅色「✕ 清除全部」改看 `hasNonDefaultFilter`（進度只認 `done`）；**空狀態的說明仍用 `hasActiveFilter`**（那裡要回答「是被篩掉還是真的沒有」）。
+- **StatusID 那五顆預設「單選」，旁邊一顆純圖示開關切成複選**（63，`stageMulti`）。**每次載入都是 `false`、刻意不寫 localStorage**；唯一例外是網址 `stage` 本身帶兩個以上（別人分享的連結）。單選：點一顆就只剩它、再點同一顆回 ALL；切回單選時若正選著多顆，**只留最後選的那一顆**。
+- **「Done 置底」與「逾期優先」每次開啟網頁都是開的，不寫 localStorage**（64）。`readDuePriorityPref()` 固定回 `true`；載入時順手 `removeItem('ct.duePriority')`。網址 `dp` **只在關掉時帶 `dp=0`**，所以「關掉 → 同分頁 F5」仍是關的、新分頁／書籤一律是開的。⚠️ 程式要「歸位」時一律回到 `readDuePriorityPref()`，**不可以寫死 `false`** —— 那會讓「點一張 KPI 卡」變成一個把偏好悄悄關掉的隱藏開關。⚠️ 「排序」鈕的紅點條件是 `!duePriority`（＝與預設不同）。
+- **搜尋比對哪幾欄，畫面上要說得出來；改了範圍就要一起改 placeholder 與 `title`**（55）。七欄：`nid`／`mainCat`／`subCat`／`emsOwner`／`msdOwner`／`currentStatus`／`remark`。⚠️ **`notesLink` 刻意不收**（存的是網址，只會撞到網域這種到處都有的字），**日期與 `Status`／`StatusID` 也不收**（那是漏斗＝欄位篩選的守備範圍；一個關鍵字同時比對日期字串只會做出巧合命中）。
+- ⚠️ **刻意不在晶片列再放一顆「✕ 清除全部」** —— 工具列那顆就在正上方一張卡的距離，同一個動作不放兩顆。
+- **⚠️ 同一個概念在畫面上只能有一組字**（37）。`延期完成` 同時用於稽核 `ChangeType`、⏰ 徽章 tooltip、圖例列、條件晶片、警示下拉、排序面板。使用者問過「我目前的網頁沒有延期的功能，怎麼會有延期的選項」—— 根因就是舊的「執行延期」在畫面上找不到對應的動作。
+
+#### 「畫面更乾淨」與列印（50、56、73）
+- **「畫面更乾淨」＝先砍第一列資料上方的空間，不是砍欄位**（50）。兩刀：①**圖例預設收起**（開關在階段卡右側，`ct.legendOpen`）；②**只剩「預設的進度」那一顆晶片時，晶片列在螢幕上整個不出現**（那顆下拉自己就是移除的入口；**紙本仍然要印**）。
+  - ⚠️ **收起的是螢幕，不是紙**：`.legend-strip.is-collapsed` 與 `.chips-print` 在 `@media print` 裡都會回來。紙上沒有 tooltip，⏰／🔄／⚠ 只剩圖例解釋得了；晶片列不印則會出現「64 筆只印了 19 筆」而沒有任何線索。
+  - ⚠️ 這兩條 CSS **一定要寫在 `@layer` 外面** —— unlayered 規則才贏得過 Tailwind 的 `flex` 工具類，寫進 layer 裡 `display:none` 會靜靜不生效。
+  - ⚠️ **`historyError` 時強制展開圖例並停用那顆開關**（`legendShown = legendOpen || !!historyError`）：那句紅字就掛在圖例列裡。
+  - ⚠️ 晶片的標記只有**一份**（`renderChip()`）給兩個位置共用；併排時另一顆要標 `no-print`，否則紙上印出兩份。
+  - ⚠️ 第三刀（沒生效的下拉降成 `ctl-mute`）**已於 56 批整個移除，不要再做回去**。
+- **⚠️⚠️ 原生 `<select>` 的背景色一律要是不透明的實色，`transparent` 會把展開後的選項清單畫壞**（56）。**`<select>` 展開後的 popup 是瀏覽器自己畫的，它拿 `<select>` 自己的 `background-color` 當底** —— 給 transparent 就等於沒有底色可用，popup 落回系統淺色底而 `select option` 又是深色底淺色字。⚠️ 這與 27 批「凍結欄的底色必須是不透明卡片色」是**同一類坑**：原生控制項與疊在別的東西上面的元素，底色一律實色。⚠️ 第二個毛病是 `border-color: transparent` 讓那幾顆**看起來像被停用**。**「哪一顆在過濾」的訊號本來就由藍色實心那顆（`.ctl-on`）負責，不需要靠把其餘調暗來對比。**
+- **開著任何視窗時列印，視窗與遮罩都不印**（73）：`@media print` 裡 `[data-ct-modal]{display:none!important}`。它們是 `position:fixed`，部分瀏覽器會在每一頁疊印半透明黑底。
+- **列印時「操作」欄整欄消失，`colSpan` 要跟著少一欄，而且一定要 `ReactDOM.flushSync`** —— `beforeprint` 是同步事件，走一般 `setState` 印出去的還是舊欄數。
+- **匯入的確認視窗一定要列出「匯入之後會歸零的東西」**（73）：全部軌跡、四個實際完成日、三個計數欄、通知紀錄。匯出檔帶著 ActualEnd／Count 欄而匯入刻意不吃。
+
+#### 資料列與徽章
+- **「⚠ 未壓日期」徽章本身是按鈕：點下去開編輯視窗並聚焦那一階段的日期欄**（54）。在此之前旁邊的 `✉`（催**別人**壓）反倒是唯一按得動的東西。
+  - ⚠️ **就地換元素，class 與 style 一個字都不改**（`<span>` 與 `<button>` 量到同寬，欄寬一個 px 都沒動）。
+  - ⚠️ 目標欄位一律是該階段的 **End**（`spec→spec.end`／`confirm→msd.confirm`／`msd→msd.end`／`uat→uat.end`，用 `data-ct-focus` 標記）。⚠️ 一定要 `stopPropagation`（外層 `<tr>` 會展開明細）。
+  - ⚠️⚠️ **那個聚焦的 effect 必須宣告在「沒人接手就聚焦視窗容器」那個 effect 之後** —— 兩個吃同一個 `openModalCount`，React 依宣告順序執行，寫在前面會被容器把焦點搶走。用 `focusPhaseRef`（**ref 不是 state**：做成 state 會讓編輯視窗多 render 一次），進 effect 立刻清成 `null`。
+  - ⚠️ **精簡模式刻意不傳 `onSetDate`**，徽章維持不可點的 `<span>`：精簡模式是唯讀的主管檢視，「操作」欄整欄收起是**使用者刻意的設計**（2026-09-05 明講「主管瀏覽時使用精簡模式，不需要看到編輯或刪除的功能」，並要求日後不要再提修改）。
+  - ⚠️⚠️ **但精簡模式那顆 `<span>` 的 tooltip 一定要講出「這裡點不動、關掉精簡模式就點得動」**（57）：兩種模式的徽章**長得一模一樣**，使用者因此回報「怎麼失效了?」。**刻意的限制沒有講出來，在使用者眼裡就等於壞掉** —— 與「讀取失敗一定要出聲」是同一條原則的另一面。（他當天再次確認**維持唯讀**。）
+  - ⚠️ gate 沒過時目標欄位是 `disabled`，`focus()` 無效但**照樣捲過去**。
+- **⚠️⚠️ 「已經發生的結果」與「要你按的動作」不可以長得一樣 —— `✓` 與 teal 只留給結果**（59）。在此之前結果標籤與動作鈕是同一個顏色、底色只差 0.02 alpha、同一個 `✓`。根本的矛盾是**「`✓` 與 teal 是『已經完成』的語言」，卻用在一顆「還沒完成、請你來做」的按鈕上**。做法：動作鈕改 **indigo（`--brand`）＋拿掉 `✓`＋文字「標記完成…」**（`…` ＝ 會開視窗），**三個維度一起拉開**；結果標籤維持 teal `✓` 並**補上完成日**（`✓ 提早完成 · 09/02`，完整日期在 tooltip）。
+  - ⚠️ **改了按鈕名就要改掉畫面上每一處提到它的字**（37：同一個概念只能有一組字），否則使用者會去找一顆不存在的按鈕。
+  - ⚠️ 視窗裡「準時」時**不可以印「由 X 更新為 X」**（那正是補登最常見的情況）；下限的理由要講**實際生效的那一個**。
+- **階段名只在「StatusID 欄講的不是這個日期」時才印**（52）。`unset` 的定義就是「StatusID 走到哪一階段、那一階段自己沒壓日期」—— 印出來的必然與右邊 StatusID 欄一模一樣。同一支 `compactScheduleCell` 底下早就立了這條規則（只有 `已結案` 與 `最急 · X` 才標），只有這個分支漏套。⚠️ 不要改成「把 ✉ 併到徽章右邊」來省那一行：徽章 + ✉ 寬於欄寬，而欄寬是由最寬的那一格撐出來的。
+
+#### 明細列的「變更軌跡」（45、72）
+- **⚠️⚠️ 明細列是「一個階段一行」的收合摘要，逐筆明細在「完整軌跡 ↗」視窗；不可以再把逐筆時間軸畫回明細列**（72，使用者要求：「變更一個步驟可能都會佔很大的版面」「我不想下拉一堆卷軸才能知道變更軌跡」）。時間軸這種畫法的**高度與筆數成正比，壓每筆的高度只是延後爆掉** —— 舊版三筆就超過面板可視高度。
+  - 摘要每行＝`筆數 · 淨效果`（最早的原訂 End → 現在，「現在」＝ `actualEnd || end`）＋ 日期鏈（每一跳對應一筆稽核列、完整內容在 tooltip；✓ 完成、↶ 撤銷、起 只動開始日、未填 回退清空），**沒有 max-height、沒有捲軸**（`phaseChainOf()` / `PhaseChainRow`，與編輯視窗共用同一份）。
+  - 視窗（`histModal`）最新在上、`groupAdjacentEntries()` 合併回退的四筆快照、階段篩選只列有紀錄的階段、使用者填的理由截一行點開展開、系統組的說明（`SYSTEM_NOTE_TYPES`）收成「說明 ⓘ」、**使用者打的理由（日期異動／規格回退／手動調整／刪除）一律印在畫面上**。
+  - ⚠️ **精簡的是顯示、不是紀錄**：稽核列一筆都沒少。⚠️ 使用者明講**這些不列印**；鏈上的時間一律完整 `YYYY-MM-DD HH:mm`（只有鏈上的**日期**縮成 `MM-DD`）。
+  - ⚠️ 被否決的中間方案（**不要再提**）：只把每筆壓成一行（改 30 次仍 30 行）、只做依階段收合但展開留在明細列（展開兩階就又要捲）。
+- **⚠️ `通知寄送` 不進時間軸，收成面板上方一行摘要**（45，使用者要求）。這個面板的其他每一筆回答的是「這個日期為什麼變了」，而通知回答的是「催過了沒」—— 它早就被排除在 `isDateChange` 與 ⚠N 之外，卻還是被畫成同一種卡（實測 7 筆通知就獨佔面板 62% 的高度）。
+  - ⚠️ **第 35 批的 `changeGroups` 對它完全沒用**：合併條件含「時間相同」，而每次通知的時間必然不同 —— 催五次就是五張卡，一張都併不掉。
+  - ⚠️ **精簡的是顯示、不是紀錄**：稽核列一筆都沒少，完整 Note 掛在每一行的 `title`；但「**未確認送出**」**一定要在畫面上看得見**（那是「到底通知了沒」唯一的依據，收進 tooltip 等於看不到）。
+  - ⚠️ 「已通知 N 次」這個計數本身是訊號 —— 催了五次還沒壓日期是該升級處理的事，做成計數遠比做成五張卡看得出來。
+  - ⚠️ 時間軸空不空要看 `hasTimeline`（`changeEntries` + `initEntries`），**不可以用 `hasHist`**（已刪除）—— 通知抽走之後「只有通知、沒有任何時程變更」是做得出來的，沿用舊旗標會畫出一個空白捲動區。
+  - ⚠️ 展開狀態 `notifyOpen` **不寫進 localStorage**（那是一次性的查看動作，不是偏好）；toggle 鈕要 `stopPropagation`（外層 `<tr>` 有展開／收合的 onClick）。
+
+#### 統計報表（52、53、84）
+- **⚠️⚠️ 畫面上的數字排除了東西，就要說排除幾件 —— 上半部補「另有 N 件不在此區間」**（84）。`ymRange` 預設是「最近 12 個**有資料的**年月」，而且**不寫 localStorage、不進網址**，所以每一次打開都是這個區間 —— KPI 那排與交叉表／趨勢圖的合計對不起來，而被擋在區間外的還包含正在逾期、同一頁風險預警卡上寫著「逾期 N 天」的需求。
+  - `trendView` 多回 `inCount` / `outCount` / `outOngoing`，`renderYmOutside()` 一份標記給交叉表與趨勢圖**共用**（各寫一份日後只會改到一邊）。
+  - ⚠️ 它是**按鈕**（＝ `applyYmPreset(0)`），不是灰字 —— 講出「漏了 N 件」卻不給出路只會多一個看得到解不掉的問題。區間涵蓋全部時回 `null`。
+  - ⚠️ **「進行中」要單獨算**：那幾件是「還在跑、可能正在逾期」的。
+  - ⚠️ 這條規則專案早就立過兩次（54 的匯出說明、49 的搜尋穿透）。
+- **卡片順序：跟年月區間連動的全部排在上半部，不連動的「人員負載」排最後**（53）。順序＝KPI → 風險預警 → 交叉表（帶區間選擇器）→ 趨勢圖 → **人員負載（不分區間）**。**同一頁上有兩種口徑時，先把同一種口徑的排在一起，再標示差異**；夾在中間時使用者的第一眼反應是「這張壞了嗎」。⚠️ 日後新增統計卡照這條放。⚠️ 動順序時要回頭確認「同下方趨勢圖」「區間與上方統計表連動」那種指路文字。
+- **「人員負載」刻意不跟年月區間連動，但畫面上一定要講**（52）。它回答的是「**現在**誰身上壓著幾件」（當下快照），而區間是依**註冊年月**分組 —— 套上去會變成混合數字，兩側加總也不再等於「進行中」KPI。**邏輯對，錯的是沒標示**。標題右邊補「不分區間 · 目前未結案的 N 件」＋ tooltip 講原因。
+- **匯出 Excel 不吃畫面上的篩選，那行說明一定要講明**（54）。`/api/export` 只有 `WHERE IsDeleted = 0`。這是**下載檔案**，打開才會發現筆數不同 —— 屬於這個專案一路在防的那種靜默落差。現在寫「下載**全部 N 筆**」，有篩選時多一句警示色的「（不套用畫面上的篩選，畫面目前是 M 筆）」。⚠️ 筆數走 `requirementsData.length`，**不可以用 `sortedData.length`**（那正是不會被匯出的那個數字）。⚠️ 這一段只改文案，沒有動 `Program.cs`。
+
+#### 「今天」與時間
+- **⚠️ 「今天」不可以算死成模組層 const**（67）。`TODAY`／`TODAY_ISO`／`formatToday` 是 `let`，由 `refreshToday()` 在 **App 每次 render 開頭**重算，另有每分鐘一次的 `setInterval` 只在日期字串真的翻過去時 `setTodayTick`（同一天內完全不 setState）。分頁開過午夜時，完成視窗選不到今天、逾期天數少算一天、7 日窗慢一天進 —— 主管的分頁常常開一整天。
+  ⚠️ **拿 `TODAY` 算的 `useMemo`（`dueAlerts`／`dueInfo`）相依一定要含 `todayTick`**；下游 `filteredData`／`sortedData` 吃 `dueInfo` 會跟著重算。⚠️ **新增任何從 `TODAY` 衍生的模組層常數都會把這個坑挖回來** —— 要用就在函式裡讀。
+
+#### 編輯視窗（86、87、88、91）
+- **⚠️⚠️ 三塊收合：階段區塊只展開「目前這一階段」／`⚙ 進階` 在最下面／新增時的「選填欄位」**（86）。起因是使用者原話：「**EMS 人員完全不懂網頁這些功能操作、他們也不想了解這麼多東西**…若需要用到太複雜功能，可以請 MSD 人員代為操作」。在此之前一個視窗攤開 20 幾個欄位與四個階段區塊，而**任何人在任何時間點真正要動的只有一個階段**。
+  - ⚠️⚠️ **依階段分，不可以改成依登入身分分**（「①④ 屬 EMS、②③ 屬 MSD」）：①「用登入身分篩」被否決過；②**依身分反而更差** —— EMS 在等 MSD 開發（StatusID=3）時會展開 ①④、收起 ③，把他**正在等的那一格**收起來。依階段分則兩種身分各自都對，而且不必知道使用者是誰。
+  - ⚠️ `defaultOpenPhases()` 依 `savedStage()` 對應 1→spec／2→confirm／3→msd／4→uat；**5 結案四階全收**；**`StatusID` 推不出來（0，舊資料）一律全部展開，不猜**（33 批「空白一律不推斷」）。
+  - ⚠️⚠️ **三塊都是收合不是隱藏，而且標題一定要把裡面有什麼講出來**（57：刻意的限制沒講出來就等於壞掉）。階段收合那一行必印 **日期 ＋ ✓ 完成 ＋「● 有未儲存的修改」**（`PhaseFoldSummary`，讀的是 `editingData` 不是已儲存的值）；`⚙ 進階` 那一行必印 **目前階段 · Status**，標題必須寫出「StatusID／Status／規格回退」。
+  - ⚠️⚠️ **`revealProblemSections()` 不可以拿掉**：驗證彈窗最後一句寫著「有問題的欄位已在編輯視窗中標紅」，而紅框畫在收合起來的 DOM 裡等於沒有畫。`FIELD_TO_PHASE` 注意 **`msd.confirm` 屬 `confirm` 不是 `msd`**；`reason.xxx` 取後半；`stage`／`status`／`reason.stage` 開 `⚙ 進階`；`mpSaving`／`notesLink`／`msdOwner` 開「選填欄位」。
+  - ⚠️⚠️ **`openEdit(item, phaseKey)` 一定要展開 `phaseKey`** —— 收合起來的話 `data-ct-focus` 的 `<input>` 根本不在 DOM 裡，`querySelector` 撲空，**54 批那顆「⚠ 未壓日期」徽章就靜靜失效**。
+  - ⚠️ `phaseShown = openPhases[pk] || unlockedSections[pk]`、`advShown = advOpen || stageUnlocked`：**解鎖之後就不准再收起來**，否則會把一個還沒填的異動理由欄藏起來。
+  - ⚠️ 三個旗標（`openPhases`／`advOpen`／`addMoreOpen`）**都不寫 localStorage**：那是「這一次打開這一筆」的狀態不是偏好。
+  - ⚠️ `PhaseFoldHead` 的顏色 class 由呼叫端傳**完整字面量**，不可拼成 `text-${c}-500`。
+  - ⚠️ **新增時的「選填欄位」只收新增這一邊**（`!editingData.isNew || addMoreOpen`）：編輯時那四欄一律直接顯示 —— 既有資料本來就有值，收起來會變成「有值卻看不到」。②③④ 三個階段區塊在新增時**本來就整段不渲染**。
+- **⚠️⚠️ 編輯視窗一打開就捲到「現在輪到」的那一階段，並用字寫出「現在該做什麼」**（87）。做法三件：①`openEdit(item)` 沒指名 phaseKey 時把 `focusPhaseRef` 設成 `currentPhaseOf(item)`（結案／`StatusID` 推不出來／新增一律不跳）；②那個 effect 捲的是 **`[data-ct-phase]` 整個區塊**（`block:'start'`）不是 `<input>`（只捲日期欄的話上面那顆鈕會被切在視窗上緣外）；③`CurrentPhaseNotice` ＋ 標題上的 `現在輪到` 藥丸。
+  - ⚠️⚠️ 說明**只講兩個動作**：做完了 →「標記完成…」／還沒做完、日期要改 →「已鎖定，點此修改」。還沒壓日期時走警示色，其餘走 `--brand`。**四種可能性都列出來就等於沒有講。**
+  - ⚠️⚠️ **「要不要提『標記完成…』」一律問 `donePanelKind()`**（回 `done`／`button`／`past`／`prereq`／`order`／`hint`／`none`）。那顆鈕**不是每次都在**，兩邊各判一次遲早會叫使用者去按一顆畫面上沒有的按鈕。
+  - ⚠️ 藥丸掛在 `PhaseFoldHead`（標題）不是只掛在說明框裡：使用者可以把這一段收起來。
+  - ⚠️ 前置還沒完成的階段不畫說明框 —— 旁邊的 `GateLock` 已經在講「請先完成 ○○ 的日期」。
+- **⚠️⚠️ 那個框裡放的是「按鈕」不是說明 —— 兩顆動作鈕從標題列搬進框內**（88，使用者附圖：「目前這個版面好像有點複雜，有更簡單的 UX 設計嗎?」）。87 批的框是四行說明，而它們在講的那兩顆鈕就在正上方的標題列裡：說明得寫「按**上面的**…」把眼睛送回去。
+  - 版面＝**兩行**：①事實（`結束日 X` ＋ `⚠ 已逾期 N 天` ＋ 右側負責人）②動作（`完成了嗎？`［標記完成…］`｜ 要改日期？`［🔒 已鎖定，點此修改］）。**「已逾期 N 天」升到第一行** —— 它是整個框裡最急的一句。
+  - ⚠️⚠️ **兩顆鈕一律沿用原本的元件與原本的字**（`DoneButton`／`UnlockButton`）。另取名字就是同一個概念兩組字（37）；**也不可以順手補回 `✓`**（59）。
+  - ⚠️⚠️ **標題列那兩顆要同時藏起來**（`noticePhase`：這一次 render 把框畫在哪一階段，四個標題列都比對它）—— 兩邊都畫就是同一顆鈕出現兩次。**已完成的 `✓` 藥丸與「撤銷」不受影響**。
+  - ⚠️ `prereq`／`order`（按不了完成）**仍然沿用 `donePanel()` 用的同一組灰字元件**（`DonePrereqHint`／`DoneOrderHint`）塞進 `doneSlot`，不要另寫一句。
+  - ⚠️ 已經解鎖過（或本來就沒鎖）時 `unlockSlot` 是 null，**要改印一句灰字**「下面的『End Date』可以直接改」；空著的話那一行會停在「要改日期？」沒有下文。
+  - ⚠️ 未壓日期那一種：第二行是`預計什麼時候完成？`＋一顆`填寫「End Date」`（`focusPhaseEnd()`：鎖著就先 `handleUnlock()`，再把游標送到 `data-ct-focus`）。**解鎖是 setState，`<input>` 要等下一次 render 才不是 disabled**，所以 focus 排在 `setTimeout 0`；⚠️ 不可以用 `requestAnimationFrame`（30 批那個坑）。灰字要保留「存檔後這裡會出現『標記完成…』」。
+- **⚠️ ① 的 `(可不填)` 標記只在新增視窗出現，編輯視窗不印**（91）。需求建好之後留空就是「⚠ 未壓日期」，而 88 批的框就擺在**正上方**寫著「預計什麼時候完成？」—— 同一個畫面自己打自己。②③④ 本來就沒有任何標記。
+  - ⚠️ **只改標籤、不改規則**：`specEndRequired` 與 `requiredFieldsFor()` 一個字都沒動。
+  - ⚠️ 下面那行灰字「留空的話這筆會標成『⚠ 未壓日期』…」**要留著**：少了 `(可不填)` 之後它是唯一還在講這件事的地方。
+  - ⚠️ Start Date 的 `(可不填)` 一併照同一條 —— 編輯時它底下的 `StartDefaultHint` 已經在講「沒填會自動帶成 End」。
+  - ⚠️ 第 96 批把新增視窗整個換掉之後，`(可不填)` 這個標記**兩邊都沒有了**（新增那一邊改用「先不壓」那顆晶片講同一件事）。規則仍然一個字都沒改。
+- **編輯視窗每個階段底下的「異動紀錄」與明細列同一份畫法（`PhaseChainRow`），不可以做回逐筆的內嵌捲軸**（73）。這個視窗本身已經在捲，裡面再套一層就是 72 批在明細列拿掉的那種畫法。逐筆明細改按「完整軌跡 ↗」開 `histModal` 並**直接篩到那個階段**（`openHistFor(phaseKey)`）；⚠️ 篩過的視窗一定要留「全部」那顆（`phaseTabs.length > 1 || hm.phase !== 'all'`），否則篩到一個只有 init 的階段會停在「沒有變更紀錄」出不去。
+
+#### 新增需求視窗（96）
+**⚠️⚠️ 新增與編輯是同一個 Modal 裡的兩段 JSX，不可以「合併回同一份加幾個三元運算子」**（96，使用者 2026-10-04 附圖）。兩邊的標籤、順序、必填標記、placeholder 全部不同，合起來之後每一行都要先想「這是新增還是編輯」，而這個視窗本來就是整個系統最長的一段。新增走 `{editingData.isNew && (() => {…})()}` 那一塊，其餘全部用 `!editingData.isNew` 關掉。**編輯視窗一個字都沒動**（除了 `Remark` 的標籤改名）。
+- **版面＝單欄，依他開單時的問句由上往下**：專案名稱 `Main Cat` → 要做什麼 `Sub Cat` → 需求內容（選填）→ EMS／MSD 負責人 → 「Spec 預計哪天給 MSD？」→ `▸ 更多欄位`（MP Saving／Notes Link／現況說明）→ 底部「編號 NID 63 改」。寬度跟著收成 `max-w-2xl`（**兩個 class 都是完整字面量**，不可拼接）。
+- **⚠️⚠️ 英文代號（`Main Cat`／`Sub Cat`）一定要留在中文旁邊**：表格表頭、欄位篩選、匯出的 Excel 全是英文，只寫中文的話他在這裡填完、回到列表會對不起來（第 37 批的另一面）。必填訊息因此統一成**「中文 (英文)」的合併寫法**，`MissingRequiredFields()` ↔ `requiredFieldsFor()` 是**鏡像，改了要兩邊一起改**。
+- **⚠️⚠️ NID 自動取號＝現有 NID 裡純數字的最大值 +1，而它只是「建議值」**。`13_nid_unique.sql` 那條唯一索引**刻意沒有在啟動時 bootstrap**（有重複資料時會建失敗），正式主機上不保證存在 —— 自動取號讓「兩個人拿到同一個號」從手誤變成**系統性的結果**（同時開視窗必然都是 63）。所以 `POST` 在**交易裡**用 `(UPDLOCK, HOLDLOCK)` 再查一次（`NidExistsAsync(…, lockRange: true)`），後進來的那個會被擋住、回 409。**前端不可以假設那個號是唯一的。**
+  - ⚠️ **取不到號時（一筆純數字 NID 都沒有）直接渲染成帶紅星的輸入框**，不可以留一個空的「編號 NID ___ 改」擺在視窗最底下 —— 他按下「確認新增」被擋，而畫面上唯一有問題的那一格長得不像要填的東西（第 57 批）。`revealProblemSections()` 命中 `nid` 時也要把它切成輸入框，否則紅框畫在一段純文字上。
+- **⚠️⚠️ EMS 負責人預帶本人只在「`dbo.Assignee` 查得到工號**而且** `DEPT = EMS`」時發生**（`myEmsName`）。MSD 代 EMS 開單是現成會發生的事（第 90 批），預帶自己會把這一欄填成 MSD 的人 —— **而它決定了之後 ✉ 要催誰**。「換人」只換回下拉、**不清掉已經填好的名字**。
+- **⚠️⚠️ 「Spec 預計哪天給 MSD？」的晶片走與「我的待辦」同一支 `quickDateChoices()`**，不要另外寫一份日期算法。「先不壓」＝ End 留空、**而且是預設**，所以**每一筆新建的需求預設都是「⚠ 未壓日期」**；底下那行「之後會出現在『我的待辦』提醒你壓」是它唯一的說明，不可以拿掉（第 57 批）。`Start Date` 在新增視窗**完全不出現**（`applyStartDefaults()` 會補成與 End 同一天）。
+- **⚠️⚠️ 新增時 EMS 負責人就是登入的本人 → 存檔後不跳「要不要寄信通知」**（`selfNewUnset`）。那等於問他要不要寄信給自己。**只收掉這一種** —— 別人幫他建的、或之後編輯時再留空的照樣要問（第 43 批：少問一次是下一棒完全不知道有這件事）。徽章、`✉`、需關注計數一律不動。
+- **⚠️ `更多欄位` 是收合不是移除**（第 86 批那條）：開關的字裡要把三個欄位名全部列出來，不然使用者會以為「這個系統沒有 Notes Link 可以填」。
+- **⚠️ `nidManual`／`emsManual`／`specCustom` 三個旗標都不寫 localStorage，而且 `openAdd` 每次都要重設** —— 上一筆按過「換人」，下一筆開起來就不該停在下拉（那等於把預設值靜靜拿掉了）。
+- **⚠️ `Remark` 的畫面名稱自這一批起是「需求內容」**（原「需求補充」），`FIELD_LIMITS`／`FIELD_AUDIT_LABELS`／明細面板／編輯視窗／搜尋說明／手冊／`FIELD_SPEC.md` **全部一起改**（第 37 批）。欄位代號 `remark` 與 Excel 表頭 `Remark` 沒有動。
+
+#### 新增視窗的第二版版面（103）與 ① 的 Notes Link 閘門（104）
+- **⚠️⚠️ 中文名：`Main Cat` ＝「類型分類」、`Sub Cat` ＝「子分類」**（103，使用者 2026-10-04：「Main Cat 不是專案名稱只是類型分類」）。改名就是**五處一起改**：新增視窗標籤、`requiredFieldsFor()`、後端 `MissingRequiredFields()`、後端 `FieldLimits`、使用者手冊 —— 否則被擋下來時訊息會叫他去找一個畫面上沒有的欄位（37）。**英文代號一定要留在中文旁邊**（表格表頭、篩選、匯出的 Excel 全是英文）。
+- **⚠️ `Remark` 的畫面名稱改回「需求補充」**（103；96 批曾改成「需求內容」）。它回答的是「上面兩個分類說不清楚的，補在這裡」，而 `Program.cs` 那一側本來就一直寫「需求補充」。⚠️ 這個欄位在**負責人與日期底下**，不是在分類底下。
+- **⚠️ 新增視窗的 `現況說明 (Current Status)` 一律改叫「現況描述」**（103）：全系統其他地方都是這四個字，照舊的話使用者照手冊搜「現況描述」會找不到這一格（37）。編輯視窗那一格同批改。
+- **⚠️⚠️ `編號 NID` 從視窗最底下搬到左上角**（103）。96 批把它放最底下的理由是「行政編號不該擋在『你要做什麼』前面」—— 但那時它還是個要填的空格；**現在它是自動取號、唯讀**，已經不是問句而是這張單子的名字，位置因此與表格第一欄、「我的待辦」卡片左上角的 `NID 35` 對齊。⚠️ 取不到號時仍然是帶紅星的輸入框，而且**擺最上面比擺最底下好**（57：被擋下來時那一格要看得見）。⚠️ 畫成**虛線框的灰字**，不要畫成第三個長得一樣的輸入框。
+- **⚠️ `▸ 更多欄位` 那個收合整個拿掉**（103，使用者指定）：MP Saving 併進負責人那一列的右邊（三欄），現況描述留在最後一列。視窗因此變高，靠 `modal-card-tall` 自己捲 ——「確認新增」在 footer、不會被捲走。⚠️ 寬度跟著放寬成 `max-w-3xl`（三欄在 `max-w-2xl` 下每欄只剩 ~210px，`<select>` 會擠；34／36／37 批那個坑）。**兩個 class 都是完整字面量。**
+- **⚠️⚠️ `Notes Link` 整欄從新增視窗移除**（103）：實測 64 筆只有 2 筆有值（3%），而**建單當下那份 SPEC 文件多半還不存在**，連結沒地方指。
+- **⚠️⚠️ 改成擋在「① 標記完成」那一刻**（104，使用者 2026-10-04：「我希望 SPEC 確認提供日時，一定要有 Notes Link」）。`/done` 在 `phase == "spec" && !backfill` 時要求主表或 `body.notesLink` 至少一邊是合法連結，否則 **400 並講明要貼什麼**。
+  - ⚠️⚠️ **不可以改成「把那一欄加回新增視窗來保證有填」** —— 那裡是選填，保證不了任何事，只會換來一個貼假網址的欄位。
+  - ⚠️⚠️ **輸入框就放在擋下來的那個視窗裡**（完成視窗），當場貼、當場送出（88：不要只告訴他缺什麼，要讓他當場補得上）。前端 `needLink`／`isLinkVal()` 與後端 `IsLinkValue()` 是**鏡像，改了要兩邊一起改**；只認 `https?|notes|file|ftp://`（放寬到「有冒號就算」會讓 `javascript:` 進到 `href`）。
+  - ⚠️⚠️ 連結與完成**寫在同一個交易裡**，而且真的不一樣時要補一筆 `欄位異動` 稽核列（84 批那條在這條路徑上一樣成立 —— 在此之前只有 `PUT` 會寫這種列）。
+  - ⚠️⚠️ **`backfill`（補記完成）不套這一條**：那是在記錄一件早就發生的事，擋它只會讓既有資料變成「有值卻永遠補不了」（14）。②③④ 三關也不要求。
+  - ⚠️ 「我的待辦」卡片那顆一鍵完成的晶片，缺連結時**退回完成視窗**（92 批那條既有做法），不要讓他按一顆後端一定會擋下來的鈕（90）。
+  - ⚠️ 手冊**第 17 章**（被擋訊息對照表）與第 05 章都要跟著寫 —— 新增或改寫任何 400 訊息都要同步那一章。
+
+#### 「這筆沒有 Notes Link 可貼」的豁免（105）
+- **⚠️⚠️ 這道豁免是必要的，不是把第 104 批放寬** —— 在它之前，真的沒有連結的人只剩兩條路：①**貼一個假網址**（第 104 批自己的註解就寫著「只會換來一個貼假網址的欄位」，正是它要防的）；②去 `⚙ 進階` 手動把 StatusID 從 1 推到 2（H2 允許往前，所以這條路是通的），而那樣**不會留下完成紀錄**，① 會永遠停在「已略過此階段」（第 60 批那個最難收拾的狀態）。**兩種都比一個留得下稽核列的豁免糟。日後不要拿第 104 批的字面去把這個出路砍掉。**
+- **⚠️⚠️ 狀態存在稽核表，不是欄位 —— 這一批沒有任何 SQL 腳本、主表一個欄位都沒加**（使用者 2026-10-04：「我不想動 DB 架構」）。`ChangeType='無連結確認'` / `Phase='spec'`（`ChangeType` 是 `NVARCHAR(20)` 且**無 CHECK**，見 `DB_table.md` 第 295 行）。作法與第 69 批 `PhasesWithEndEverSetAsync()`、第 43 批 `phaseNotifiedEntry()` 完全一樣：要問「這筆需求發生過什麼」就去問稽核表。
+  - ⚠️ 後端 `NoNotesLinkConfirmedAsync()` ↔ 前端 `noLinkConfirmOf()` 是**鏡像，改了要兩邊一起改**。基準線＝ ① 最後一次 `規格回退` 之後（規格重做了就要重問：新的那一版可能真的有文件），**一定要按 `Phase='spec'` 過濾**（第 43 批：跨階段取 MAX(Id) 會誤判）。
+  - ⚠️ **寫入走既有的 `PUT`**（`Requirement.confirmNoNotesLink`），**不另開端點**（第 92 批）：樂觀鎖、交易、400／409 的中文訊息、`alertWriteFail` 的兩種措辭全部一次套到。
+  - ⚠️⚠️ **有合法連結時一律不寫**（前後端各擋一道）：兩件事同時成立是矛盾的，而稽核表上一筆矛盾的列日後沒有人分得出哪一個才算數。
+  - ⚠️ 進 `NON_CHANGE_TYPES`（第 85 批那份定義）—— 漏掉的話每一筆按過的需求都會多一張「狀態調整」卡。不進 `isDateChange`、不計 ⚠N、不動三個計數欄。
+  - ⚠️ **判不出來時一律當成「還沒確認」**（`historyError`、資料還沒抓回來）：最壞情況是那行提示多出現一次，而後端自己再查一次，不會誤放行。
+- **⚠️⚠️ 抬頭右上角那一格是「這個欄位的格子」，兩種狀態共用它**（使用者 2026-10-04 指定擺右上角、而且要可以點）：有連結 `Notes Link ↗`（indigo ＋ `↗`，點了開文件）／確認無連結 `無 Notes Link ✏`（灰 ＋ `✏`，點了就地展開輸入列補連結，存檔後自動變回前者）。
+  - ⚠️⚠️ **不可以再在左上角放第二顆**（提過、使用者否決）：同一行裡兩顆講同一件事的徽章是第 37 批那個坑最直接的形式。
+  - ⚠️⚠️ **兩顆都可以點，所以顏色與圖示都要不一樣**（第 59 批）：一個是「開啟外部文件」，一個是「編輯這個欄位」，長得一樣就分不出按下去會發生什麼。
+  - ⚠️ `無 Notes Link` 那顆的 tooltip **一定要寫出誰在什麼時候確認的** —— 那是這個狀態唯一的出處。
+  - ⚠️ 第三種（沒有連結、也還沒確認）**不畫徽章**，改在卡片底下印一行灰字 —— 那是「待辦」不是「狀態」。
+- **⚠️ 那行提示只在 ① 出現，而且刻意是一行灰字、不是框、不用琥珀色**：②③④ 沒有連結是完全正常的；而這一頁的琥珀與紅已經是「未壓日期」與「逾期」（第 59 批），再用一次就是同一個顏色兩個意思。常駐的警告會被學會無視，連帶把真正該響的那次一起消音（第 43 批）。
+  - ⚠️ 兩個出路缺一不可：`貼上連結`（第 88 批：要讓他當場補得上）與 `這筆沒有連結可貼`；後者權重刻意較低（第 99 批那個作法）—— 貼連結是正解，豁免是例外。
+  - ⚠️⚠️ 確認視窗走**既有的 `confirmModal`**，**不另做一個視窗**；而且**一定要經過它**，不可以按一下就生效（使用者 2026-10-04 選的是「不必填理由，但要確認一次」）。訊息要把三件事講完：之後不再要求、主管在列表上看得到、**怎麼反悔**（直接貼連結就蓋掉）。
+- **⚠️ 需求列表的 `Notes Link` 欄印灰字 `無`、不是 `-`**：`-` 是「沒填」，`無` 是**有人決定過這筆不會有**，而主管看得到這件事正是那道豁免可以存在的前提。
+  - ⚠️⚠️ `hasNotesLink`（整欄沒資料就自動收起）**要連同這種確認一起算** —— 本機 65 筆只有 2 筆有連結且都已結案，不補這個條件的話那個「無」永遠沒有人看得到（第 80 批：看不到＝沒有做）。
+- ⚠️ **匯入會 `TRUNCATE` 稽核表，所以這個確認會跟著歸零**（與完成紀錄、建立者、通知紀錄同一類）。⚠️ 加欄位也救不了（匯入是從 Excel 重灌），所以這不是「走稽核表」的代價。
+
+#### 登入身分與「我的待辦」（87、89、90）
+- **⚠️⚠️ EMS 登入者一進需求列表預設只看自己的需求，但「對不到名字就不套」**（87，`meAssignee` / `myEmsName` / `autoEmsRef`，在 `app.jsx` 的 `matchOwner` 下面）。工號 → `dbo.Assignee` 的 `EMPO` → `NAME`／`DEPT`，是 EMS 就 `setEmsFilter(NAME)`。
+  - ⚠️⚠️ **這件事 2026-09-05 被否決過一次**（「我沒有用全名，用篩選無效」＋「有時候登入的人可能是主管」）。當時是拿工號去名冊**猜**控表負責人欄裡的字串；這一批查的是 `dbo.Assignee`，而那張表的 `NAME` 正好就是負責人下拉寫進控表的同一份字串。**日後不要把這一條當成「又做回被否決過的東西」，也不要拿它去推翻 86 批那條「編輯視窗依階段分、不依身分分」** —— 那是兩件事（看到哪幾**列** vs 展開哪一**階段**）。
+  - ⚠️⚠️ **五道界線少一道就會變回當年那個「一片空白又看不出原因」**：①`dbo.Assignee` 查不到工號 → 什麼都不做（主管／外部人員／新人一律看全部）；②`DEPT` 必須是 `EMS`（**這一支**不對 MSD 套 `msd=`。⚠️ 這只管需求列表的自動篩選 —— **MSD 有「我的待辦」頁籤，兩者不衝突**）；③**那個名字在 `requirementsData` 裡至少要對得到一筆，否則不套** —— 兩張表之間**沒有外鍵**，本機就有現成的例子（主檔 `桂豪`／控表 `桂瑮`）；④網址已經帶 `ems=` 的不覆蓋；⑤同一個工號只套一次（`autoEmsRef`）且只在 `emsFilter === 'All'` 時。
+  - ⚠️ 出路走**現成的條件晶片**（28），刻意不做新控制項（49：要減的是列不是控制項）。晶片前面多一個 `👤`；`renderChip()` 的 `c.note` 是那一份說明**唯一**的來源。
+  - ⚠️ 套用時的 toast **刻意不印筆數**：這裡數得到的是「他名下的全部」，而畫面預設只看進行中 —— 正是專案一路在防的那種靜默落差。
+  - ⚠️ 模擬帳號也適用（唯讀、沒有副作用），與「只有 `actorSource == windows` 才可以用本人身分寄信」那條**不是同一件事**。
+- **⚠️⚠️ 第三個頁籤「我的待辦」：身分成立時是預設頁，而它是既有流程的路由、不是第二套版面**（89/90）。`activeView` 多一個 `'mytodo'`，版面分三區：**要你處理的**（卡片）／**等 ○○**（收成一行）／**我的全部 N 筆**（收成一行、含已結案）＋ 固定在最上面的 `＋ 新增需求`。沒有動 `Program.cs`、沒有動 DB。
+  - ⚠️⚠️ **使用者自己提的是「我的專案列表」，刻意改成「待辦」這個形狀**。量過本機資料：最忙的 EMS 負責人只有 4 筆進行中，而進行中裡只有一半是 EMS 的球。做成「列表」他還是得逐列自己判斷「這筆現在是誰要動」—— 而 `currentPhaseOf()` 早就算得出來，只是 87／88 批把它鎖在編輯視窗裡。**這一頁做的事就是把那個判斷搬到落地畫面上。**
+  - ⚠️⚠️ **這與 2026-08-19 否決「第二套版面／第三個頁籤」的理由不衝突，但那個代價是真的**。當年的理由是「不再維護第二套格式」，而真正的代價全在**重算**：這一頁**不准自己算任何東西、也不准自己寫入** —— 分組走 `DUE_PHASES` 自己帶的 `side`／`owner`、逾期走 `getPhaseAlert()`、徽章用 `UnsetDateBadge`、寄信用 `NotifyMailButton`、排序沿用 `dueRank`。每一顆動作鈕都只是**把既有的視窗開到正確的位置**（`openEdit(item, phaseKey)` / `askNotifyUnset`）。一旦開始在這裡寫第二條寫入路徑，112 種擋下訊息、樂觀鎖、稽核列就會有一邊沒套到。
+  - ⚠️⚠️ **一張卡只留「標題、一句話、一顆鈕」**（90）。砍掉的六樣：階段徽章、子項目、MSD 負責人、狀態藥丸、按鈕旁的灰字說明、抬頭那句「共 N 筆（進行中 X · 已結案 Y）」。**替一份兩列的清單加裝飾比不加更難讀** —— 使用者提過的 KPI 卡片列因此**被否決、不要做回去**（`需要處理` 與正下方的數字重複、`本月結案` 會並排成第三種口徑，而統計報表已經有一組 KPI 卡）。
+  - ⚠️⚠️ **分邊看「負責人欄寫的是不是我的名字」，不是部門**。控表存的是**姓名字串、沒有外鍵**，部門則來自 `dbo.Assignee`，兩邊對不上的例子本機就有；更實際的是某位 MSD 同時被填在某筆需求的「EMS 負責人」欄 —— 用部門分邊的話那幾筆**他永遠看不到，而且畫面上不會有任何線索**。部門只用來決定頁籤出不出現。
+  - ⚠️⚠️ **分組只看「`StatusID` 那一階段」，不可以改用 `resolveFocusPhase()`**：那一支挑的是「最急的那一階段」，可能挑到 EMS 先壓好的 ④ —— 於是卡片寫著「要你處理」、編輯視窗的「現在輪到」卻指著 ③，**畫面自己打自己**。也**不要另立「①④ 屬 EMS」這種第二份規則** —— `DUE_PHASES` 裡已經有 `side`。
+  - ⚠️⚠️ **MSD 也有這一頁，這推翻了 87 批那條「MSD 是平台的操作者，要看全部，所以不給頁籤」** —— 那句話已經不成立，**不要照它改回去**。使用者的理由是他自己的：需求列表他另外開在一個分頁，兩邊不衝突。
+  - ⚠️⚠️ **頁籤與預設頁是同一個條件（`myTodoReady`）**：`dbo.Assignee` 查得到工號 ＋ **`DEPT ∈ {EMS, MSD}`** ＋ **名字在 `requirementsData` 的 `EmsOwner` 或 `MsdOwner` 對得到至少一筆**。三道同時也是「登入的可能是主管」的出口 —— **主管看不到這個頁籤**（給他一個永遠空的頁籤只是噪音）。
+  - ⚠️⚠️ **預設頁的四道界線，少一道就是那種靜默失效**：①`myTodoReady` 不成立 → 預設頁維持需求列表；②**網址指名過 `view` 就不覆蓋**（`urlHadViewRef`）；③同一個工號只套一次（`autoViewRef`）—— 他自己切去需求列表之後不可以又跳回來；④**不寫 localStorage**。
+  - ⚠️⚠️ **`urlHadViewRef` 只能在掛載當下問一次**：28 批之後每次 render 都會 `replaceState` 把 state 寫回網址，之後再問一律是 `true`。
+  - ⚠️⚠️ **`view=table` 這個方向也要寫進網址**（`else if (myTodoReady)`）。預設頁不再固定是 `table`，所以 48 批那條一字不差地適用；更常踩到的是**EMS 在需求列表按 F5 又跳回待辦頁**。身分對不上的人不多帶這個參數。相依陣列要含 `myTodoReady`。
+  - ⚠️⚠️ **按鈕的字由 `doneKindFor()` 決定，不可以寫死「標記完成」**（`donePanelKind()` 收 row 參數的版本，編輯視窗走同一支包裝）。三種：未壓日期→`填寫結束日 →`（② 是`填寫確認日 →`）／`kind==='button'`→`標記完成 →`／其餘→`開啟這一階段 →`。
+    ⚠️ `isPhaseOpenOn(row, …)` / `phaseDoneEntryOn(id, …)` 是同一批抽的。**`isOpen` 一定要由呼叫端傳**：編輯視窗看的是**編輯中**的值，待辦頁看的是已存檔的值 —— 合成一支會讓編輯視窗退化成「要存檔後才解鎖」。
+  - ⚠️ 身分對不上時那一頁要**自己說明原因**（三種情況全部印在畫面上並講明要去 SSMS 補哪裡）＋一顆「去需求列表看全部需求」，不可以靜靜退回也不可以留白。⚠️ `activeView === 'mytodo'` 時頁籤**照樣要畫出來**（`?view=mytodo` 的書籤而這次身分對不上），否則分段控制會停在「一顆都沒選中」。
+  - ⚠️ **「要你處理的」的空狀態是這一頁最重要的一格**：一定要把「那其他幾筆在哪」一起講（「你名下有 N 筆還在進行，目前都在等 MSD」），否則他會以為自己的需求不見了。⚠️⚠️ **空狀態的 teal `✓` 只給「名下全部結案」那一種**；還在等對方的那一種他一件都沒完成，走中性的 `⏳`。
+  - ⚠️ **「等 ○○」那一區刻意不放主要動作鈕**：它只回答「進行到哪裡」。唯一的動作是 `✉`。⚠️ 那一區的 `UnsetDateBadge` **一定要傳 `onSetDate`**（＝可點）—— 不傳的那一支 tooltip 寫著「精簡模式是唯讀檢視…」，在這一頁印出來是**畫面上的假話**。
+  - ⚠️ **階段講成人話的那個詞（`verb`）只有一份定義，在 `DUE_PHASES` 上**（規格確認／確認／開發／驗收）。`等 ○○` 的 `waitSide` 同理 —— 由**那幾筆自己階段的 `side`** 推，不是「我是 EMS 所以一定在等 MSD」；兩邊都有時退回「對方」。
+  - ⚠️ `myTodo` 這個 `useMemo` 的相依**一定要含 `todayTick`**（67）。
+  - ⚠️ 「在需求列表看這 N 筆 →」**要依部門選欄位**（MSD 套 `setMsdFilter`）—— 照抄 EMS 那一支會把篩選設成空字串、畫面變成 0 筆而且看不出原因。N 印的是 `emsCount`／`msdCount`。⚠️ 它是**獨立的 `<button>`，不可以塞進收合那顆裡面**（button 裡放 button 是無效的 HTML）。
+  - ⚠️ 列印抬頭那行（`.print-only`）要吃 `myDept` / `myTodoName`，不可寫死 `EMS`。
+  - ⚠️ `myWaitOpen` 與 `myAllOpen` 都**不寫 localStorage**。
+  - **⚠️⚠️ 「我的全部」維持**一行一筆**，不可以跟「等 ○○」一樣拆成兩行**（97，使用者 2026-10-04 看過兩行版之後選的）。「等 ○○」拆兩行是因為**一列塞七樣**、11px 擠不下（第 95 批）；這一區只有四樣，而且它是**全部**（含已結案，本機 62 筆）—— 拆成兩行等於同一個螢幕高度能掃到的筆數少一半，而「往下掃名字找一筆舊的」正是它唯一的用途。
+    - ⚠️ 真正該修的是**字級**：原本整列 11px、名稱還卡著 `max-width: 24rem`，所以圖上全是 `C-2003 EMS_O…`。**一個用來找需求的清單把名字切掉，等於這一區沒在做它的事。** 現在名稱 15px（與「等 ○○」的主標同一級）吃掉剩下的全部寬度，NID／階段／日期 13px。
+    - ⚠️ 四欄**固定寬度**，不可以改回 `flex-wrap`：62 列的欄位對不齊時，眼睛要一列一列重新找欄位在哪。階段那一欄要容得下最長的 `short`（`EMS規格確認`）—— 實測 4.9rem 會折成兩行，而**只有幾列變高看起來像畫面壞了**；`StatusID 不明` 更長，所以要 `truncate` ＋ `title`。
+    - ⚠️ **NID 從藍色連結降成灰字前綴**，開編輯視窗改按名稱（與「等 ○○」同一個作法）—— 62 列重複 62 次「NID」兩個字。
+    - ⚠️⚠️ **逾期一律走 `dueInfo`，而且只有在「逾期的就是這一格印的那個階段」時才標紅**：這一欄印的是 `lastFilledPhase`，它不一定是 `resolveFocusPhase` 挑中的那一階 —— 不比對的話會做出「紅色的 04/26 其實沒有逾期」，正是第 23 批那條「逾期判定只有一份規則」要防的畫面。
+    - ⚠️ 日期印**完整的 `YYYY-MM-DD`**（「等 ○○」是縮成 `MM/DD` 的）：那一區全是進行中、日期都在眼前，而這一區含已結案、跨好幾年，少了年份就分不出 `12/01` 是哪一年的。
+    - ⚠️ 副標**不印負責人**（「等 ○○」有印）—— 這份清單的定義就是「我的」。`StageDots` 對已結案與 StatusID 推不出來的自己就不畫，外面那一格仍要給固定寬度，否則右邊界對不齊。
+- **⚠️⚠️ 卡片上的晶片是真的寫入，但走的是「同一條路的第二個入口」，不是第二條路**（92）。
+  壓日期走 `quickSetDate()` → `validateEdit()` ＋ `saveRequirement()`；標記完成走 `handleDone(key, {row, quick})` → `submitDone()`。
+  - ⚠️⚠️ **第 89 批那條鐵律的重點是「不要有第二套規則」，不是「這一頁永遠不能送出請求」。**
+    為了做到這件事，四支函式改成**收參數、預設值＝原本的 state**（既有呼叫端一行都沒改）：
+    `validateEdit(rec, reasons, cats, unlocked)`／`isPhaseModified(key, rec)`／`isPhaseEndModified(key, rec)`／
+    `handleDone(key, {row})`／`submitDone(m)`／`handleUndoDone(key, done, rowId)`／`phaseDoneEntryOn(id, key, histAll)`。
+    **日後要在這一頁加任何寫入，一律照這個做法：讓它呼叫既有那一支，不要自己寫一份。**
+  - ⚠️⚠️ **`validateEdit` 裡任何「隱性讀 `editingData`」的 helper 都要跟著收 `rec`**。踩過一次：
+    `isPhaseOpen(key)` 內部是 `isPhaseOpenOn(editingData, key)`，卡片那條路 `editingData` 是 **null**，
+    於是 gating 把「前置明明填好了」判成「前置還沒填完」，每一次壓日期都被退回編輯視窗。
+    改成 `isPhaseOpenOn(rec, key)`。**加新的驗證規則時要先問：它讀到的是 `rec` 還是 state？**
+  - ⚠️⚠️ **驗證沒過就退回既有的編輯視窗並帶著已填的日期**，不要在卡片上重畫一套錯誤呈現 ——
+    那裡才有就地標紅與一次列完的彈窗（第 26 批）。走到那條路的多半是「這一筆**還有別的問題**」
+    （例：舊資料的負責人欄是空的），不是這顆日期本身有問題，所以 toast 要講「還有其他欄位要處理」。
+  - ⚠️⚠️ **`handleDone` 的 `quick` 只在三個條件全部成立時才直接送**：沒有要「一併記錄」的階段、
+    日期在 `doneMainMin()` ~ `m.max` 之間、而且是有效日期。否則**退回完成視窗並把他挑的日期帶進去**。
+    ⚠️ 第一個條件是第 60 批那條「不可以靜靜地做」：系統要替他宣告別的階段的事實，一定要先列出來讓他看。
+    （實務上從卡片按必然 `extras` 為空 —— 它完成的永遠是 `StatusID` 那一階 —— 但**那道條件不可以拿掉**，
+    它是「日後有人改了卡片挑階段的方式」時唯一的防線。）
+  - ⚠️⚠️ **「做完了」一定要問「哪一天做完的」，不可以預設今天就送出** —— 那正是第 58 批修掉的 bug
+    （9/19 準時做完、10/01 才來按 → 記成延期 12 天、`DelayCount +1`，而那是主管在看的數字）。
+    三顆：`原訂那天`（＝準時，三個計數欄都不動）／`今天`／`🗓 其他日期…`（開完成視窗）。
+    ⚠️ **原訂日排在今天之後時不給「原訂那天」**：`/done` 不收未來日，那顆按下去只會退回視窗，
+    變成一顆每次都沒作用的鈕。原訂日剛好是今天時與「今天」去重。
+  - ⚠️⚠️ **晶片只在 `x.kind === 'button'`（`doneKindFor`）時出現**。其餘幾種（前置缺日期／完成順序擋著／
+    已略過）維持一顆「開啟這一階段 →」—— 寫死晶片就是叫他去按一顆後端一定會擋下來的東西（第 90 批那條）。
+  - ⚠️⚠️ **卡片右上角的「完整編輯 ↗」不可以拿掉**：晶片改成內嵌寫入之後，它是進完整編輯視窗的**唯一**入口 ——
+    要改需求內容、負責人，或是把剛壓錯的日期改掉，都只能從這裡進去。
+  - ⚠️⚠️ **toast 上的「復原」一定要透過 `handleUndoDoneRef` 呼叫，不可以直接抓 closure**。
+    那顆鈕是在 `submitDone` 執行的那一次 render 裡建立的，而撤銷視窗要算「End 還原後會不會倒序」
+    「要不要還原 Start」是拿 `requirementsData` 去比的 —— 直接抓 closure 會讀到**寫入前**那一份，
+    視窗上就會印出與後端真正會做的事**相反**的話（實測：明明會還原，卻寫「維持改過的值、不還原」）。
+    這與第 70 批「視窗上講的一定要是後端真的會做的」是同一件事，與第 29 批 Esc handler 放進 ref 同一個理由。
+  - ⚠️ **「復原」是開既有的撤銷視窗，不是直接打 `/undo-done`** —— CLAUDE.md 那條「撤銷視窗一定要列出
+    會動到什麼、不會動到什麼」仍然成立（它會改 `EarlyCount`／`DelayCount`）。
+    ⚠️ `historyId` 走 `latestDoneEntryOf(id, hist)`，而 `hist` 必須是 `fetchHistory()` **剛回傳的那一份**
+    （`phaseDoneEntryOn` 的第三個參數）—— 讀 `historyMap` 會是寫入前的（`setState` 非同步）。
+  - ⚠️ **壓日期與延後刻意不給「復原」**：那要靠再寫一筆 `日期異動` 把它改回去，會污染 ⚠N 與第 69 批的
+    `重新排程` 判定。出路是「完整編輯 ↗」。只有「標記完成」有復原，因為 `/undo-done` 本來就是為誤按做的。
+  - ⚠️ **不可以改成「等 N 秒才真的送出」的那種復原**（使用者 2026-10-03 的提案，已否決並說明）：
+    樂觀鎖 token 會在那幾秒內過期，而 toast 消失之後他會以為存好了。一律立刻送出。
+  - ⚠️ 兩種晶片**底下那行灰字講的是不同的事**，不可以互相抄：壓日期那排寫「要改其他欄位請按完整編輯」，
+    完成那排寫「按錯可以從提示上按『復原』」。
+- **⚠️⚠️ 「做完了嗎？」那一層只有兩顆鈕，日期是第二層**（93，使用者 2026-10-04 的 mockup）：`做完了`／`還沒，要延後`。他站在卡片前面要回答的就是這一題，把三顆日期晶片攤在最外層等於先問「哪一天做完的」—— 那是**他還沒說要按完成**時根本不存在的問題。
+  - ⚠️⚠️ **`做完了` 不可以直接送出**，它只負責展開第二層（`原訂那天｜今天｜🗓 其他日期…`，＝第 92 批那三顆，寫入路徑一行都沒改）。原訂 09/19、10/01 才來按、預設今天就是**延期 12 天 ＋ `DelayCount +1`** —— 那正是第 58 批修掉的 bug。
+  - ⚠️⚠️ **`還沒，要延後` 同樣不可以直接送出**，它展開的是**延後那一層**（見第 94 批）。
+    ⚠️ 這一條在第 93 批原本寫的是「一律走既有的編輯視窗，不可以做成卡片上的日期晶片」，理由**只有一個**：改一個已經有值的 End 算「日期異動」，前後端都強制要填異動理由，**而那一欄只有視窗裡有**。第 94 批把那一欄搬到卡片上了，**那條規則的前提因此消失**（2026-10-04 使用者決定）。**不要照舊文字把它改回去。**
+    ⚠️ `openEdit` 的 `opts.unlock` **仍然不可以省**，只是改由「🗓 自選」與「驗證沒過退回視窗」那兩條路在用：那一格原本就有值、是 `locked` 的，不解鎖的話游標送過去也只是一個 `disabled` 的 `<input>`，看起來就像按鈕沒有作用。它**只解鎖、不動值**。
+  - ⚠️ **顏色與 `✓` 照第 59 批**：`做完了` 是「還沒發生的動作」，一律 `--brand`、不帶 `✓`。（mockup 畫的是綠色 `✓`，使用者 2026-10-04 當天確認**照鐵律走**。）
+  - ⚠️ `myDoneAsk` 存的是 `${id}:${phaseKey}`：**一定要帶 phaseKey**，否則同一筆走到下一階段時那一層不會自己收回去。**不寫 localStorage**（那是「這一次要按完成」的狀態不是偏好），每一顆晶片按下去都要先清掉它。
+  - ⚠️ **未壓日期那一種（`x.unset`）維持單層**：它的問題是「打算哪天完成？」，晶片本身就是答案 —— 那裡沒有「做完了嗎」這個是非題可問。
+- **⚠️⚠️ 延後也在卡片上做完：日期 ＋ 原因分類 ＋ 文字說明，一次存檔**（94，使用者 2026-10-04 決定，`quickDelayDate()`）。按下 `還沒，要延後` 展開第二層，三樣同時攤開、一顆「存檔」收尾。
+  - ⚠️⚠️ **這是解掉第 93 批那條規則的前提，不是繞過它**（見上）。做法仍然是第 92 批那條：**呼叫既有那一支，不要自己寫一份** —— 驗證走同一支 `validateEdit(rec, {[k]:note}, {[k]:cat}, {[k]:true})`（把「這一階段解鎖了」餵成參數），送出走同一支 `saveRequirement(rec, {[k]:{category, note}}, …)`。樂觀鎖、400／409 的中文訊息、`alertWriteFail` 的兩種措辭、兩個頁籤的重抓因此全部一次套到。
+  - ⚠️⚠️ **分類與文字說明兩個都是必填**（前端 `validateEdit`、後端 `PUT` 的「必須選擇異動原因分類並填寫文字說明」）。**不可以為了少按一下而把說明自動帶成分類的字** —— 那會讓稽核表的說明欄變成分類欄的複製品，而 `Program.cs` 那句註解寫得很清楚：「資料列上掛著 ⚠1 但點開什麼理由都沒有，正是稽核表要防的事」。延期是三個計數欄裡主管在看的那一個。**存檔鈕在三樣填齊前一律 `disabled`。**
+  - ⚠️ **分類沿用編輯視窗那一組 `REASON_CATEGORIES`，不另外發明一組詞**（第 37 批；2026-10-04 使用者指定「跟目前的一樣」）。
+  - ⚠️⚠️ **延後的日期晶片比第 92 批的 `quickSetDate` 多兩道，少一道就會做出一顆「按下去必定 400」或「按了等於沒按」的鈕：**
+    ① **必須真的比原訂晚**（`q.iso > x.end`）。`quickDateChoices()` 只濾掉「≤ 今天」，而原訂日在未來時算出來的那幾顆可能早於、甚至正好等於原訂日。比原訂早更糟：那不是延後是提前（第 71 批）。這一種**整顆不印**（與濾掉重複日期同一類：沒有意義的選項，不是被擋住的選項）。實測 NID 2（原訂 12/31）三顆全濾掉、只剩「🗓 自選」。
+    ② **上限＝下一階段已經壓好的 End**（`nextPhaseEndOf()`）。後端 `PhaseOrderViolations` 對相鄰那一對只要有一端被動到就會擋，所以延後 ②③ 超過下一階段會回 400。第 92 批只吃下限是因為它壓的是**空的** End，後面按 H1 前綴不變量通常也是空的 —— 延後不適用那個前提。這一種**印出來但 `disabled`**，`title` 寫明是被哪一階段擋住（與下限那一顆同一個作法）。
+  - ⚠️⚠️ **`myDelay` 的三個欄位一律用 functional updater（`setMyDelay(p => …)`）**，不可以寫成 `setMyDelay({...dl, …})`：`dl` 是那一次 render 的閉包值，同一個 React 批次裡連著動到兩個欄位時第二個會把第一個蓋回去（實測：連按「月底」＋「技術問題」之後日期是空的、存檔鈕不會亮）。真人點不出來，但那是**不報錯、只是靜靜少一個值**的寫法。
+  - ⚠️ **驗證沒過就退回既有的編輯視窗，並把日期、分類、說明三樣一起帶過去**（`openEdit(row, key, iso, {unlock:true, cat, note})`）。只帶日期的話那段字當場消失，而視窗裡那一欄又是必填的，等於罰他重打一次。
+  - ⚠️ **上一層那句「做完了嗎？」在這一層整段被取代**：他已經回答過「沒有」了，留著會變成同一張卡上兩個同樣權重的問句。回頭的路是「← 回上一步」。⚠️ 兩層**互斥**（展開任一層要先清掉另一個 state）。
+  - ⚠️ **延後刻意不給「復原」**（第 92 批）：那要靠再寫一筆「日期異動」改回去，會污染 ⚠N 與第 69 批的「重新排程」判定。出路是「完整編輯 ↗」。⚠️ 這行灰字與完成那排的「按錯可以按復原」講的是**不同的事**，不可以互抄。
+  - ⚠️ `myDelay` 同樣**不寫 localStorage**，key 同樣要帶 `phaseKey`（理由與 `myDoneAsk` 一字不差）。
+- **⚠️⚠️ 版面簡化（95，使用者 2026-10-04 附圖：「我只想保留登入者必填跟可閱讀項目，設計越簡單越好」）**：
+  - **抬頭併成「標題 ＋ 一行小字」**：`👤` 身分晶片與「基準日」那**一整列**都拿掉，改成副標 `EMS · 今天 10/04（日）`（名字只印一次，第 37 批）。身分是怎麼查到的、逾期以哪天為基準，全部收進那一行的 tooltip（`identityHint`）。⚠️ **收起來的是說明不是資訊** —— 部門與今天的日期仍然印在畫面上。
+  - **卡片去掉中間那條分隔線，問句與按鈕同一行**；「做完了嗎？」前面的階段動詞拿掉（上一行已經寫了「驗收已逾期 N 天」）。壓日期那排的灰字砍掉後半句「要改其他欄位請按右上角…」（與右上角那顆重複），**前半句縮成「按了就存」要留著** —— 第一次用的人要知道按下去是直接存檔。
+  - ⚠️⚠️ **「完整編輯 ↗」維持文字，不可以縮成圖示**（提過、否決）：它在標題那一行的右端，那一行本來就有空白，**縮了一行都沒少**，而第 92 批講明它是進編輯視窗的**唯一**入口 —— 把唯一的入口變成沒有標籤的符號，正好牴觸第 86 批那句「EMS 人員完全不懂網頁這些功能操作」。
+  - ⚠️⚠️ **卡面上的「原訂 MM/DD」不可以收進 tooltip**（提過、否決）：它與逾期天數**同一行**，移走省不到行；而第 90 批那行 `.print-only` 證明這一頁會被列印，**tooltip 印不出來**。
+  - ⚠️⚠️ **「等 ○○」與「我的全部」維持兩條，不可以合併**（提過、使用者否決）。合併要寫一個「其他 N 筆」＝等待＋已結案，那是**今天不存在的新數字**，會與「我的全部 N 筆」和連結用的 `emsCount`／`msdCount` 變成三個分母。
+  - **「我的全部」那顆並排的「在需求列表看這 N 筆 →」移進展開區最底下**（兩顆同樣是 `t-card px-4 py-3.5`，看起來一樣卻做不同的事）。⚠️ 移過去之後**刻意不印筆數**：它切過去套的是「單一欄＝我」，與左上角那個兩欄聯集的數字本來就不一樣。
+  - **⚠️⚠️ 「等 ○○」每一列改成兩行**（11px 一行擠七樣是整頁最難讀的一區）：上＝名稱（15px，可點開編輯視窗），下＝`階段 · 日期 · 負責人`。NID 降成灰字前綴。
+    ⚠️⚠️ **副標只有一個位置，正常與逾期共用它**（`預計 10/30` ↔ 紅字 `逾期 32 天（原訂 09/02）`），所以寬度不隨狀態變。**逾期那一段不可以被吃掉** —— 等 MSD 的那幾筆照樣會逾期，而那正是他該按 ✉ 的訊號。
+    ⚠️⚠️ **未壓日期的徽章從藥丸改成行內琥珀字，但它必須仍然是可以點的 `<button>`**（第 90 批那條：這一區一定要給 `onSetDate`）。狀態（可點的琥珀字）與動作（右邊的 ✉）**分開，不可以合成一顆**（第 59 批）。
+    ⚠️⚠️ **`✉` 的標籤寫「提醒 {side}」，不可以寫人名**：收件者是後端自己從（部門, 姓名）查的，而主檔與控表的姓名對不上是現成會發生的事（主檔「桂豪」／控表「桂瑮」）—— 按鈕寫了人名就可能說錯話。
+    ⚠️ 右邊**二擇一**：未壓日期放 ✉，其餘放 `StageDots`。兩個都放會打架。
+  - **⚠️⚠️ 「按不了完成」那張卡要把原因直接印出來**：在此之前寫的是「視窗上會寫是哪一個原因」，等於叫他先點開才知道（第 57 批）。⚠️⚠️ **字一律沿用 `DonePrereqHint` / `DoneOrderHint`，判斷沿用同一支 `doneKindFor`**（第 88 批）—— 為此 `myTodo` 的 row 改成留**整個** `st` 物件而不只是 `kind`。⚠️ `past`（已略過）刻意不印灰字：它不是被擋住，出路是視窗裡的「補記完成…」（第 70 批）。
+- **⚠️⚠️ 卡片抬頭是「NID ＋ 階段徽章 ／ SPEC ＋ 完整編輯」，而且一定在標題「上方」**（98，使用者 2026-10-04 附圖）。第 90 批砍掉的六樣裡有「階段徽章」，但那一批是六樣一起砍、其餘五樣都是裝飾或重複；**徽章帶的「代號」是卡片上原本沒有的資訊** —— 句子裡只有 `verb`（驗收），而代號才是全系統的共同語彙（StatusID 那排五顆、表格的 StatusID 欄、`StageDots`、`⚙ 進階` 的「目前階段」）。**不要照舊文字把它再砍一次。**
+  - ⚠️⚠️ 徽章一律用 **`x.ph`**（＝ `StatusID` 那一階，與這一頁的分組同一個），**不可以改用 `resolveFocusPhase()`** —— 那支挑的是「最急的那一階」，會做出「卡片寫著 `4. 驗收`、編輯視窗的『現在輪到』卻指著 ③」，正是第 90 批那條「畫面自己打自己」。
+  - ⚠️ 代號／講成人話的詞／顏色全部取自 `DUE_PHASES`（`code` / `verb` / `color`），**不要在這一頁另寫一份對照表**。
+  - ⚠️⚠️ **左邊色塊與圓點刻意不同色，不是漏改**：色塊在未壓日期／逾期時一律紅（＝急迫度），圓點永遠是階段色（＝第幾關）。而 danger 的那幾張卡剛好就是色塊被紅色蓋掉、最需要知道卡在哪一關的那幾張 —— **徽章等於替那條色塊補上圖例**（第 59 批：不同的事不要長得一樣）。
+  - ⚠️⚠️ **這一排不可以貼到標題右邊**：標題是 `truncate` 的，右邊每多一樣東西就是把需求名稱多切掉一截（第 39 批那條的同一個道理）。
+  - ⚠️⚠️ **第 92 批那句「上一棒的狀況」要留著** —— 徽章回答「卡在第幾關」，那一句回答「為什麼現在輪到我」，不是同一件事；而且它的措辭有鐵律在身上（只有真的查得到完成紀錄才可以說「做完了」）。⚠️ 問句也**維持「哪天完成？」不要補回動詞**（第 95 批拿掉的，有了徽章更不需要第三份）。
+  - ⚠️⚠️ **`SPEC` 只在 `isLinkVal(notesLink)` 成立時才印**（與表格那一格**同一支**）。實測 64 筆只有 2 筆填了 Notes Link —— 沒值還印一顆灰的，就是做一顆 97% 時間按不動的鈕（第 94 批「沒有意義的選項整顆不印」）。⚠️ 那一欄是使用者自己打的自由文字，**一定要經過 `isLinkVal`**，否則 `javascript:` 這種值會被直接掛進 `href`；且一律 `target="_blank" rel="noopener noreferrer"`。⚠️ 本機那兩筆都是 `Notes://` 的 Lotus Notes URI，沒裝 Notes 的機器按下去是跳一個系統對話框然後沒反應 —— 那不在程式這一側，所以 **`title` 一定要寫出完整網址**，他至少複製得走。
+  - ⚠️⚠️ **「完整編輯 ↗」仍然不可以縮成圖示**（第 95 批否決過）：它是進編輯視窗的唯一入口，而它在這一行的右端，縮了一行都沒省。
+- **⚠️⚠️ 卡片上的「現況描述」只印最新那一則（`latestStatusOf()`，102，使用者 2026-10-04 附圖）**：「我的待辦的清單內，都只要顯示最新的狀態就好，不包含歷史修改紀錄。（要看歷史紀錄到需求列表觀看）」。這一欄大家是**往後面接**的（本機 52 筆有值的有 3 筆是 `1. … 2. … 3. …`，最長 122 字），而那一行是 `truncate` 的 —— 整段印出來的結果是**看得見的全是最舊的幾則**，剛好與這一行存在的目的相反。
+  - ⚠️⚠️ **這只影響顯示，一個字都不會被改掉**：完整內容在 tooltip、在「完整編輯 ↗」、在需求列表那一列的明細裡。
+  - ⚠️⚠️ **切不出來時一律原樣整段印**（`hidden:0`），不要猜：流水編號要**從 1 開始、連號、至少兩則**才算數；都不成立才看換行（兩種都成立時**以編號為準**）。少印了使用者自己打的字，是這個專案一路在防的那種靜默落差。
+  - ⚠️⚠️ **收起來幾則一定要印在畫面上**（`· 另有 N 則較早的`，第 84 批）：省略號只說得出「還有字」，說不出「還有 5 則」。那一段 `flex-shrink-0`，**不可以讓它跟著被 truncate 吃掉**。
+- **⚠️ 卡片最底一行印「現況描述」，有值才印**（98）。它是這張卡上**唯一一句他自己寫的話**，在此之前只有開完整編輯視窗才看得到（實測 64 筆有 52 筆有值、中位數 14 字、最長 122 字）。
+  - ⚠️⚠️ **一定要 `truncate`，不可以 `whitespace-pre-wrap`** —— 這一欄是 `NVARCHAR(MAX)`、**刻意沒有長度上限**，攤開來就是第 72 批在明細列拿掉的那種「高度與內容成正比」的畫法。全文走 `title`。⚠️ flex 裡要 `truncate` 一定要配 `min-w-0`。
+  - ⚠️ 名稱**一律寫「現況描述」**：全系統（`COLUMN_META`／`FIELD_AUDIT_LABELS`／搜尋說明）都是這四個字，另取一組（例如「最新現況」）就是第 37 批那個坑。
+  - ⚠️ 空的時候**整行不印**，不要印「—」（與 `SPEC` 同一條）。
+- **⚠️⚠️ 「🔄 規格回退」在卡片上有第三個入口，但權重刻意比另外兩顆低**（99，使用者 2026-10-04 選了三種權重裡的「文字」那一版）。在此之前它**只在**編輯視窗最下面那個收合起來的 `⚙ 進階` 裡（完整編輯 → 捲到底 → 展開 → 一顆 11px 的鈕），而 `⚙ 進階` 自己的定位寫著「繞過機制的操作，**一般人不該動**」—— 但回退的真實觸發點（規格變了、前面要重做）是 **EMS 自己身上發生的事**，而他的落地頁就是這一頁。四層深＋「一般人不該動」＝ 第 86 批那句「EMS 人員完全不懂網頁這些功能操作」在這條路徑上根本沒被滿足。
+  - ⚠️⚠️ **第 60 批那句「照做的結果比不做更糟」不可以拿來擋這個入口** —— 那一批講的是**比這窄的一件事**（② 有日期卻沒按完成、直接按 ③ 的那個情境，解法是「補記完成」），**不是**「回退本身不該被按到」。規格真的變更時它就是唯一正解，第 70 批還特地加了「目標可以是目前這一階段自己（重做 ③）」。
+  - ⚠️⚠️ **權重是文字不是鈕**（`做完了嗎？[做完了][還沒，要延後] ｜ 規格變了要重做？ 🔄 規格回退 ↗`）：「做完了」是每天的動作，而回退會清掉 ≥ 目標階段的**全部**日期並讓 `RollbackCount +1`，那個計數是主管在看的。做成同尺寸同一排，就是把一個每次都該停一下的動作做成順手。**要調權重請回來看這一條。**
+  - ⚠️⚠️ **名稱一定是「規格回退」**：後端的擋下訊息裡有四處寫著「請用『🔄 規格回退』」，加上 🔄 徽章 tooltip 與手冊的 `#m-rollback` —— 叫「退回前關」之類就是第 37 批那個坑（訊息叫他去找一個畫面上根本沒有的東西）。
+  - ⚠️⚠️ **顏色取 `CHANGE_TYPES['規格回退'].color`，尤其不可以用紅色** —— 紅在這一頁已經是「逾期」（卡片左邊那條色塊），再用一次就是同一個顏色兩個意思（第 59 批）。
+  - ⚠️ **只能是「開既有的回退視窗」**，不可以像日期晶片那樣內嵌寫入：回退要兩個輸入（目標階段 ＋ 必填說明），攤在卡片上就是第二套版面（第 92 批）。`handleRollback` 成功後本來就會 `setEditingData(null)` 並重抓兩份，從卡片呼叫**一個字都不用改它**。
+  - ⚠️ `savedStage < 2` **整顆不印**（與編輯視窗那顆同一道 gate）：① 前面沒有東西可退（第 94 批「沒有意義的選項整顆不印」）。⚠️ 編輯視窗那顆要先擋 `isEditDirty()`，從卡片進來沒有開著的編輯視窗，**刻意不需要**那一道。
+  - ⚠️ 三個動作分支（未壓日期／做完了嗎／開啟這一階段）共用同一個 `rollbackLink`，**不要各寫一份**。它刻意**不出現在展開後的第二層**（哪一天做完的／延後）—— 那兩層會把上一層整段取代（第 94 批）。
+- **⚠️ 抬頭就是答案：「○○，有 N 件事等你」（92）。** 件數搬進抬頭之後，原本那排「要你處理 N 筆」**整行移除** —— 同一個數字在同一個畫面上只印一次（第 37 批）。那一排只留「基準日」（它回答的是「逾期天數跟哪一天比」）。
+- **⚠️ 未壓日期的卡片第一行寫「上一棒的狀況」（92）。⚠️⚠️ 措辭必須對得起稽核列：只有真的查得到完成紀錄（`phaseDoneEntryOn`）才可以說「MSD 已經開發完了」** —— 只壓了日期、沒按過標記完成時一律寫「MSD 的開發日期已經壓好」。說成「做完了」就是畫面上的假話。① 沒有上一棒，寫「這筆需求剛建立」。
+- **⚠️⚠️ 快速日期：`quickDateChoices()` 一定要是函式，不可以算成模組層常數**（第 67 批 `TODAY` 那個坑）。「下週五」＝**下一週**的週五（今天就是週五時也是 +7）；三顆落在週六／日一律往前挪到週五（那是「打算哪天交」的承諾日）；`<= 今天` 或與前一顆同一天的不印（一排晶片裡出現兩顆同樣的日期比少一顆更難懂）。
+  ⚠️⚠️ **晶片要吃下限**（`prevChainEndOf()`，＝ `DUE_PHASES` 的 `getDate` 那條鏈，與 `validateEdit` 的 `orderChain`／後端 `PhaseOrderViolations` 比的是同一對，**不另外寫一份對照表**）。算出來早於前一階段 End 的那顆直接 `disabled` 並在 `title` 寫是被哪一階段擋住。
+- **⚠️ 「等 ○○」每行最右邊的四個小圓點（`StageDots`，92）**：綠＝走完、`--brand`＝現在這一關、灰＝還沒到。⚠️ 它**只是把 `StatusID` 畫出來**，不要在這裡加任何「看日期推階段」的邏輯（第 65／66 批）。⚠️ 走完那幾顆用 `--tone-good` 是因為那**是已經發生的結果**（第 59 批）。`StatusID` 推不出來（0）或已結案（5）時整個不畫。
+- **⚠️⚠️ 「要你處理」卡片右半部的「專案進度條」（`PhaseTimeline` ＋ `phaseTimelineOf()`，100／101）**：四關各一**欄**、三列（階段名／圓點＋連接線／日期 ＋ ✓）。算的那一支與畫的那一支分開（與第 72 批 `phaseChainOf()` / `PhaseChainRow` 同一個配對寫法），**呼叫端不可以自己算一份**。
+  - ⚠️⚠️ **階段名一律取 `STAGE_CODES[code].label`**（＝ StatusID 那排五顆、表格 StatusID 欄、`⚙ 進階` 的「目前階段」同一份字），**不要在這一頁另寫一份對照表**（98）；tooltip 的第一句也用同一份字（37）。
+  - ⚠️⚠️ **刻意只畫四關、不畫「5. 結案」**（使用者 2026-10-04）：結案的日期就是 ④ 完成的那一天，再畫一格是同一個日期印兩次；而且已結案的需求根本不會出現在這一頁（`phaseTimelineOf` 對 `n=5` 回 `null`），那一格永遠是灰的。
+  - ⚠️⚠️ **四個標籤一律同一個字重**，現在這一關只用顏色、**不加粗**：欄寬就是這四個字串的文字量測值，粗體會讓那一欄寬 2.5px —— 於是「停在 ④」與「停在 ①」的兩張卡，點的位置差 2px（97：欄位對不齊時眼睛要一列一列重新找）。強調由**空心環 ＋ 階段色 ＋ 粗體日期**三樣負責。
+  - ⚠️ 版面用 **grid（四欄 `auto`）＋ `column-gap: 0`**，欄距由標籤自己的左右 padding 給 —— 連接線要跨過欄與欄之間，有 gap 會斷在縫裡。**不可以寫死欄寬**（46-3）。
+  - ⚠️ 點上的 `box-shadow` 是拿卡片底色蓋掉穿過去的連接線，所以**必須是 `--bg-card` 這種不透明實色**（27／56）。走完的點 `--tone-good`（已經發生的結果，59）、現在這一關是**階段色的空心環**（不是 `--brand`：正上方那顆階段徽章的點就是階段色，98）。
+  - ⚠️⚠️ 現在這一關**還沒壓日期**時那一格印 **`未壓日期`**（色與字都取 `ALERT_STYLES.unset`），**不可以另外發明「待排程」之類的第二種講法**（37）。
+  - ⚠️ **不可以加 `aria-hidden`**（`StageDots` 有，因為它純裝飾）—— 這一條帶的日期是卡片上別的地方看不到的資訊。
+  - ⚠️ 它擺在**說明句的右端**（不是標題那一行的右邊：標題是 `truncate` 的）；`flex-wrap` 不可以拿掉。第 101 批起這一列的高度由進度條決定，**卡片比第 100 批高約 30px** —— 要再省就是省列數，**不是把階段名縮回 `①②③④`**。
+- **⚠️ `showToast(message, type, action)` 的第三個參數**（92）是 `{ label, onClick }`，目前只有上面那顆「復原」在用。加新的動作鈕之前先想清楚：**toast 會自己消失**，所以它只能放「可以不做」的事。
 
 ### 使用者手冊 (User Manual)
-- **檔案**: `docs/使用者手冊.html`（單一檔、無外部相依，可直接開啟或列印成 PDF）。同一份內容另發成 Artifact 供分享：<https://claude.ai/code/artifact/751c4197-c30c-49b1-a3b0-3e7870a29a83>
-- **手冊分兩部**（第 76 批，2026-09-21 使用者要求「依 EMS、MSD 登入者的角度去指導」）：**第一部 A~D 依角色**（A 先看這一頁＝「每個階段只有兩個動作：壓結束日、標記完成…」＋「我想要…」對照表；B EMS 負責人／C MSD 負責人的從頭到尾手順；D 主管），**第二部 01~16 功能參考**（原本那 16 章，編號與 `#c1`~`#c16` 錨點不動）。⚠️ 改到操作流程時**兩部都要對**：第一部的每一步都引用「第 N 章」，而且它照實寫了「標記完成之後系統不會自動問要不要寄信」—— 若日後把 `askNotifyUnset` 接進 `/done` 那條路，B-2／C-3 那兩步要改。
-- **手冊的版型機制**（第 77 批，2026-09-22 使用者要求「參照 `C:\Gantt` 的方式」）：**三欄** —— 左側深色固定側欄（章節目錄）＋ 900px 內容欄 ＋ 右側「本章小節」（`.onthis`，210px），中右兩欄**合起來置中**在側欄右邊的剩餘空間。字級 16px/1.8。
-  ⚠️⚠️ **不可以「把內容欄拉寬去填滿寬螢幕」**（第 79 批實測，使用者問「右半部是不是有一個區塊都不會使用到」）：段落真正的上限是 `p{max-width:70ch}`＝**633px**，內容欄拉到 1300 仍然是 633；表格的列高是被 `th` 的固定欄寬（250/210px）撐出來的，中間欄 334→734px 而最高那列**還是 112px、一個 px 都沒省**；33 個表格沒有一個需要橫捲。空間要用就是放東西（右欄），不是把行寬拉長。
-  ⚠️⚠️ **`.onthis` 在 1366／1440 上必須看得見，收的是「內容欄」不是「右欄」**（第 80 批，2026-09-22）。第 79 批的斷點 1500px ＋ `display:none` 讓右欄在主要工作機上**從來沒出現過**，使用者因此來問「可以在版面右邊加小節嗎」—— 那功能前一天就做好了。**看不到 ＝ 沒有做。** 現在分兩段：`1281~1500px` 右欄照留、**內容欄流動**（只加左右 28px 留白，寬度交給 grid 自己算）；**1280px 以下**整個收掉回兩欄。
-  ⚠️⚠️ **內容欄不可以寫死一個窄值** —— 第一版寫死 700px，實測 1400 寬時表格總高 11882 → **13705px（+15%）**、最高那張 929 → **1110px**、第 17 章 +21%：**段落沒變（早就被 `70ch` 封頂），被壓高的是表格**。上一條「拉寬沒有用」量的是 900→1300，那時表格早就不換行了；700→900 完全是另一回事，**不要拿那條去推這一段**。
-  ⚠️ 也不需要自己算寬度：**`minmax(0,900px)` 的軌道本來就只會長到「剩多少」為止**，實測 1400 → 837、1366 → 803、1281 → 718，寫死的數字會過期、`minmax` 不會。
-  ⚠️⚠️ 下界 **1280** 的界線是「**右欄不可以從讀的那一欄身上偷寬度**」：文字區 1440 → 821、1366 → 747、1280 → 661（仍高於 `70ch` ＝ 633px），1241 → **622 已破線**。破線之後右欄是在犧牲正文換導覽。⚠️ 1280~1366 這一段留著的代價很便宜（全文總高 +0.5%～+2.4%）。七個寬度（1600/1440/1366/1281/1280/1024/820）`docX` 全是 0。
-  ⚠️⚠️ **右欄的內容由 `pickActive()` 直接算，IntersectionObserver 只是「跟著捲動更新」**：①IO 第一次回呼之前右欄是空的（載入當下就看到空面板）②實測 `document.hidden` 為真時 IO **完全不派送**（與 rAF 在背景分頁不被呼叫是同一類坑）。`pickActive()` 在載入、`hashchange`、`applyRole` 之後各跑一次；**最頂端時要退回第一章、不可以 return**（抬頭與身分列佔滿判定帶，否則剛載入右欄就是空的）。
-  ⚠️⚠️ **目錄是 JS 依每個 `<section>` 的 `data-group` / `data-num` / `data-title` 生成的，不要再手寫第二份** —— 這正是改版前的做法，章節一改就有一邊沒跟上。**新增章節就是加一個帶那四個 `data-*` 的 `<section>`**（`data-role` 也要），目錄、身分篩選、scrollspy、子目錄全部自動跟上。
-  ⚠️ **身分篩選**（頂端「EMS／MSD／主管／全部」，記 localStorage `ct_manual_role`）：`data-role` 寫「這一章跟誰有關」，`common`／空白＝所有人。**EMS 與 MSD 共用大半章節**（壓日期、標記完成、規格回退、逾期判定同一套），所以**只藏真正不相關的** —— 藏錯的代價是「使用者找不到、以為系統沒這功能」，比文件長一點嚴重得多。藏了幾章一定要在 `#rolehint` 講出來並留回去的路。
-  ⚠️ **`details.adv` 收的只能是「為什麼這樣設計／罕見的失敗情境」**，使用者正常會遇到的行為一律留在主線上（收起來等於沒寫）。目前收了 7 塊。
-  ⚠️⚠️ **列印時被身分篩掉的章節與收合的 `details` 都要攤開**（`@media print` 裡 `section.hidden{display:block!important}`）—— 拿紙本的人沒有那些開關可以按。
-  ⚠️ 線框圖的 SVG **顏色一律吃 CSS 變數**（深淺色自動跟），只有語意色（警示紅）才寫死 hex。目前兩張：**資料列**與**編輯視窗**（都在 A 章），各配一組編號 callouts。
-- **第 17 章「被擋下來時看到的訊息」**（第 78 批，2026-09-22）是**被擋訊息的唯一對照表**，依情境分五節：`#m-save`／`#m-done`／`#m-rollback`／`#m-mail`／`#m-misc`。
+- **檔案**: `docs/使用者手冊.html`（單一檔、無外部相依，可直接開啟或列印成 PDF）。另發成 Artifact 供分享：<https://claude.ai/code/artifact/751c4197-c30c-49b1-a3b0-3e7870a29a83>
+- **分兩部**（76）：**第一部 A~D 依角色**（A 先看這一頁＝「每個階段只有兩個動作：壓結束日、標記完成…」＋「我想要…」對照表；B EMS／C MSD 的從頭到尾手順；D 主管），**第二部 01~18 功能參考**（編號與 `#c1`~`#c18` 錨點不動）。
+  ⚠️ 改到操作流程時**兩部都要對**。手冊照實寫了「標記完成之後系統不會自動問要不要寄信」—— 若日後把 `askNotifyUnset` 接進 `/done`，**B-2／C-3 與「例」章第 3、7 步三處都要改**。
+- **版型**（77）：左側深色固定側欄（目錄）＋ 內容欄 ＋ 右側「本章小節」（`.onthis`），中右兩欄**合起來置中**。字級 16px/1.8。
+  - ⚠️⚠️ **不可以「把內容欄拉寬去填滿寬螢幕」**（79）：段落真正的上限是 `p{max-width:70ch}`，內容欄再寬段落也不變；表格的列高是被 `th` 的固定欄寬撐出來的，拉寬一個 px 都沒省。**空間要用就是放東西（右欄），不是把行寬拉長。**
+  - ⚠️⚠️ **`.onthis` 在 1366／1440 上必須看得見，收的是「內容欄」不是「右欄」**（80）。原本斷點 1500px ＋ `display:none` 讓右欄在主要工作機上**從來沒出現過**，使用者因此來問「可以在版面右邊加小節嗎」—— 那功能前一天就做好了。**看不到 ＝ 沒有做。** 現在 `1281~1500px` 右欄照留、內容欄流動；**1280px 以下**整個收掉回兩欄。
+  - ⚠️⚠️ **內容欄不可以寫死一個窄值**：第一版寫死 700px，實測表格總高 +15%（**段落沒變，被壓高的是表格**）。上一條「拉寬沒有用」量的是 900→1300，**不要拿那條去推 700→900**。
+  - ⚠️ 也不需要自己算寬度：**`minmax(0,900px)` 的軌道本來就只會長到「剩多少」為止**。寫死的數字會過期、`minmax` 不會。
+  - ⚠️⚠️ 下界 **1280** 的界線是「**右欄不可以從讀的那一欄身上偷寬度**」：1280 時文字區仍高於 `70ch`，再窄就破線、等於犧牲正文換導覽。
+  - ⚠️⚠️ **右欄的內容由 `pickActive()` 直接算，IntersectionObserver 只是「跟著捲動更新」**：①IO 第一次回呼之前右欄是空的；②`document.hidden` 為真時 IO **完全不派送**（與 rAF 在背景分頁不被呼叫同一類坑）。`pickActive()` 在載入、`hashchange`、`applyRole` 之後各跑一次；**最頂端時要退回第一章、不可以 return**。
+  - ⚠️⚠️ **目錄是 JS 依每個 `<section>` 的 `data-group` / `data-num` / `data-title` 生成的，不要再手寫第二份**。**新增章節就是加一個帶那幾個 `data-*` 的 `<section>`**（`data-role` 也要），目錄、身分篩選、scrollspy、子目錄全部自動跟上。
+  - ⚠️ **身分篩選**（頂端「EMS／MSD／主管／全部」，記 localStorage `ct_manual_role`）：`common`／空白＝所有人。**EMS 與 MSD 共用大半章節**，所以**只藏真正不相關的** —— 藏錯的代價是「使用者找不到、以為系統沒這功能」。藏了幾章一定要在 `#rolehint` 講出來並留回去的路。
+  - ⚠️ **`details.adv` 收的只能是「為什麼這樣設計／罕見的失敗情境」**，使用者正常會遇到的行為一律留在主線上（收起來等於沒寫）。
+  - ⚠️⚠️ **列印時被身分篩掉的章節與收合的 `details` 都要攤開**（`section.hidden{display:block!important}`）—— 拿紙本的人沒有那些開關可以按。
+  - ⚠️ 線框圖的 SVG **顏色一律吃 CSS 變數**，只有語意色（警示紅）才寫死 hex。
+- **第 17 章「被擋下來時看到的訊息」**（78）是**被擋訊息的唯一對照表**，五節 `#m-save`／`#m-done`／`#m-rollback`／`#m-mail`／`#m-misc`。
   ⚠️ **新增或改寫任何 400／409 的訊息，就要同步更新那一章** —— 後端有 112 種擋下訊息，使用者被擋的那一刻正是最需要手冊的時候。
-  ⚠️⚠️ `alertModal` 右上角的 `?` 靠 `manualAnchorFor(title)` **依標題**推小節（不是依訊息內容 —— 那是後端自由文字，文案一調就靜靜失準）。**順序有意義而且要先排除**：實測「必填欄位**未完成**」會被 `/完成/` 命中而連到「標記完成」那一節，所以 `未完成|尚未儲存|未儲存` 必須排在最前面。**加新標題時請跑一次那 36 個標題的對照驗證**（scratchpad 的 `anchor.js`），錯的錨點比沒有錨點更糟（使用者會以為手冊沒寫）。推不出來一律退回整章 `c17`。
-- **「例」章（`#rex`）是新人的入口**：一筆假需求 NID 99 從建立走到結案，每一步寫「誰在做／按哪裡／畫面變成什麼」。⚠️ 它照實寫了「標記完成**不會**自動問要不要寄信，要自己按 ✉」（第 3、7 步）—— 與 B-2／C-3 同一個事實，`askNotifyUnset` 日後若接進 `/done`，**三處都要改**。
-- **改到使用者看得見的行為，就要一併更新這份手冊**（2026-08-27 使用者要求）。判斷標準是「畫面上會不會不一樣」，不是「動了幾行程式」——
-  控制項增刪或改名、按鈕出現／消失的條件、必填與驗證規則、階段流程與計數規則、篩選／排序選項、網址參數、統計報表版面、投影／列印行為、以及 `FIELD_SPEC.md` 的欄位語意，全部算。
-  ⚠️ 純內部重構（抽函式、改變數名、效能調整）不用動它。
-- ⚠️ **手冊與 `FIELD_SPEC.md` 是兩種文件，不可互相取代**：`FIELD_SPEC.md` 寫的是「為什麼這樣設計、踩過哪些坑」（給開發者，是欄位語意的權威來源）；手冊寫的是「看到什麼、按哪裡、為什麼被擋」（給 EMS／MSD 負責人與主管）。
-  規格變更時先改 `FIELD_SPEC.md`，再把**使用者感受得到的那一面**翻進手冊。
-- ⚠️ **手冊裡有一組會過期的數字**：抬頭的「版本」寫的是 `wwwroot/index.html` 的 `?v=` 值，**它不會自己跟著 build 走**。改完手冊時順手對齊當次的版本號。
-- 手冊放在 `docs/`（**不在 `wwwroot` 底下**），由 **`GET /manual`** 這支端點直接讀檔回傳（第 76 批，2026-09-21 使用者要求「把手冊路徑加到網頁上」），入口是頁首的 `📖 手冊`（`<a href={api('/manual')} target="_blank">`，投影模式收起）。
-  ⚠️ **刻意不複製一份進 `wwwroot/`**：兩份的話日後一定只會改到其中一邊。⚠️ 網址用 ASCII 的 `/manual`（中文檔名進 URL 會被編成一長串 `%E4%…`），前端走 `api()` 所以子路徑部署也對。⚠️ **匿名、不套瀏覽權限卡控**（卡控擋的是資料畫面，手冊裡沒有任何需求資料）；**`no-cache`**（手冊沒有 `?v=` 版本號可帶，部署完要立刻看得到新的）。
-  **視窗裡的 `?`**（第 77 批）：`ManualLink` 元件，目前掛在六個視窗的標題列（編輯 `#c4`／標記完成 `#c5`／規格回退 `#c6`／撤銷 `#h-undo`／瀏覽權限 `#c14`／完整軌跡 `#h-timeline`）。⚠️ 帶 `?theme=` 讓手冊跟系統同一個深淺色（**只蓋那一次、不寫 localStorage**）；⚠️ **不帶 `?role=`** —— 登入者是 EMS 還是 MSD 系統無從判斷，身分由使用者自己在手冊上選並記住。⚠️ 錨點若落在被身分篩掉的章節裡，手冊的 `revealHash()` 會**自動切回「全部」再捲**，否則會停在一片空白。⚠️ **`#h-undo` / `#h-timeline` 這種固定 id 要寫在手冊的 `<h3 id="…">` 上**，不可以用 JS 自動產生的 `c5-s4`（那是依序號來的，章節裡插一個 h3 就指到別的地方）。
+  ⚠️⚠️ `alertModal` 右上角的 `?` 靠 `manualAnchorFor(title)` **依標題**推小節（不是依訊息內容 —— 那是後端自由文字，文案一調就靜靜失準）。**順序有意義而且要先排除**（例：`未完成|尚未儲存|未儲存` 必須排在 `/完成/` 前面）。**加新標題時請跑一次全部標題的對照驗證**（scratchpad 的 `anchor.js`），**錯的錨點比沒有錨點更糟**。推不出來一律退回整章 `c17`。
+- **改到使用者看得見的行為，就要一併更新這份手冊**（2026-08-27 使用者要求）。判斷標準是「畫面上會不會不一樣」：控制項增刪或改名、按鈕出現／消失的條件、必填與驗證規則、階段流程與計數規則、篩選／排序選項、網址參數、統計報表版面、投影／列印行為、`FIELD_SPEC.md` 的欄位語意，全部算。⚠️ 純內部重構不用動它。
+- ⚠️ **手冊與 `FIELD_SPEC.md` 是兩種文件，不可互相取代**：`FIELD_SPEC.md` 給開發者（欄位語意的權威來源）；手冊給 EMS／MSD 與主管（看到什麼、按哪裡、為什麼被擋）。規格變更時先改 `FIELD_SPEC.md`，再把**使用者感受得到的那一面**翻進手冊。
+- ⚠️ **手冊抬頭的「版本」寫的是 `index.html` 的 `?v=` 值，它不會自己跟著 build 走** —— 改完手冊時順手對齊。
+- 手冊放在 `docs/`（**不在 `wwwroot` 底下**），由 **`GET /manual`** 直接讀檔回傳，入口是頁首的 `📖 手冊`（投影模式收起）。
+  ⚠️ **刻意不複製一份進 `wwwroot/`**：兩份的話日後一定只會改到其中一邊。⚠️ 網址用 ASCII 的 `/manual`（中文檔名會被編成一長串 `%E4%…`），前端走 `api()` 所以子路徑部署也對。⚠️ **匿名、不套瀏覽權限卡控**（手冊裡沒有任何需求資料）；**`no-cache`**（手冊沒有 `?v=` 可帶）。
+  **視窗裡的 `?`**（`ManualLink`，目前六個視窗）：⚠️ 帶 `?theme=` 讓手冊跟系統同一個深淺色（**只蓋那一次、不寫 localStorage**）；⚠️ **不帶 `?role=`**（系統無從判斷登入者是 EMS 還是 MSD）。⚠️ 錨點若落在被身分篩掉的章節裡，`revealHash()` 會**自動切回「全部」再捲**。⚠️ **`#h-undo` / `#h-timeline` 這種固定 id 要寫在 `<h3 id="…">` 上**，不可以用 JS 自動產生的 `c5-s4`（依序號來的，插一個 h3 就指到別的地方）。
   ⚠️⚠️ **`Controltable.csproj` 裡那個 `docs\使用者手冊.html` 的 `<Content>` 項目不可以拿掉** —— `docs/` 不在 `wwwroot` 底下，`dotnet publish` 預設不會帶出去，少了它部署到 IIS 之後按下去就是 404（開發機上因為 `ContentRootPath` 指著原始碼目錄，**測不出來**）。
 
 ## 重要業務邏輯 (Key Business Logic)
-1. **三個主要階段的時程 (Spec, MSD, UAT)**
-   - 每個階段各有 `Start`、`End` 日期。MSD 開發額外有一個 `Confirm` 日期。
-   - **解鎖機制 (Lock/Unlock)**: 若該區塊欄位已有資料，前端預設會反灰(Lock) 不可修改；使用者必須點擊鎖頭圖示「解鎖」才能開放修改。
-   - **強制填寫理由**: 若解鎖並變更了日期，儲存時**必須填寫異動理由**，否則不給儲存。
-   - **時程變更軌跡**: 後端與前端會將異動紀錄寫入各階段專屬的 `History` 欄位（儲存為字串）。格式大致為 `[YYYY/M/D 修改] 原日期: Start: ..., End: ... | 理由: ...`。前端的 `parseHistoryString` 會利用正規表達式去解析該字串，並產生視覺化的時間軸 (Timeline) 圓點。
-2. **Excel 匯入 (Import) 與匯出 (Export)**
-   - 匯出會將現有的資料庫狀態輸出為 `.xlsx`。匯出的表頭與匯入的對應名稱一致，匯出的檔案可原封不動匯回來。
-   - **匯入會 `TRUNCATE` 整張表後重灌**，不是以 NID 做 UPSERT。這是初期測試階段的**刻意做法**（避免反覆匯入導致資料列無限增長），功能穩定後匯入功能會整個移除。**請勿自作主張改成 UPSERT。**
-   - **整個匯入（兩個 TRUNCATE + 全部 INSERT）包在一個 `SqlTransaction` 裡**，中途失敗一律回捲並回 `400`。動這段時交易裡的每一個 `SqlCommand` 都必須帶上 `tx`（含 `WriteAuditAsync` / `InsertHistoryAsync` 的 `tx` 參數），漏一個會直接拋例外。
-   - ⚠️ **清空之前的四道前置檢查不可以拿掉**（第 21 批）：開檔失敗／找不到表頭列／關鍵欄位都對應不到／一列資料都讀不出來／檔案內 NID 重複，全部在 `BeginTransaction()` **之前**回 `400`。交易能保證「失敗就回捲」，但回捲不了「成功地匯入了一份錯的檔案」—— 在此之前只有「清空排在欄位對應之後」這句註解、沒有任何一行真的中止流程，選錯檔案就會把整庫清空並照樣 commit。**排順序是必要條件不是充分條件。**
-   - **歷史軌跡重置**: 每次重新匯入 Excel 時，三個歷史軌跡欄位 (`SpecHistory`, `MsdHistory`, `UatHistory`) 一律清空，確保舊的歷史不會堆疊。
-   - **欄位對應**: 先做「完全相符」比對，全部配完後剩下未認領的表頭才做「包含」比對，避免撞欄（例如 `MSD` 會誤命中「(2)評估日期 (MSD 填寫) Spec Confirm」）。回應會帶 `unmappedFields` 列出對應不到的欄位。
-3. **兩個容易混淆的狀態欄位**
-   - `Status`：整體狀態 `Init` / `Ongoing` / `Pending` / `Done`，對應 Excel 的「**Overall Status**」欄。
-   - `StageCode`：階段代號 `(1)`~`(5)`，對應 Excel **最後一欄的「Status」**。兩者不可混用。
-4. **寫入端點的三條不變量（第 21 批，2026-08-22）**
-   - **每一支會寫入的端點都要包在 `SqlTransaction` 裡**（`POST` / `PUT` / `/done` / `/rollback` / 匯入）。主表與 `dbo.Controltable_History` 分兩段各自寫的話，中途失敗就會留下「計數 +1 但軌跡查不到原因」這種對不起來的狀態，而三個計數欄的定義就是稽核表的快取。
-   - **`PUT` 有樂觀鎖**：`GET` 回傳帶秒的 `updatedAtToken`，前端原樣帶回；對不上回 `409 conflict:true`。⚠️ 不可以改用只到「分」的 `updatedAt` —— 同一分鐘內的兩次儲存會互相看不見（與稽核表當初改用 `Id` 而非 `ChangedAt` 比先後是同一個坑）。
-   - **`/api/import` 有跨站請求防護，不可以拿掉**（第 22 批，2026-08-23）。移除 CORS 的 `AllowAnyOrigin` **擋不住這一支**：JSON 端點靠 `application/json` 觸發 preflight 才安全，但匯入收的是 `multipart/form-data`，那是 CORS 的 **simple request** —— 別的網站放一個 `<form action="…/api/import">`，使用者點一下就 TRUNCATE 了，而所有寫入端點都是匿名的。`IsCrossSiteRequest()` **只在能明確判斷是跨站時才拒絕**（`Sec-Fetch-Site` 優先，其次 `Origin`），curl / 測試腳本兩個標頭都不帶所以照常可用。
-   - **軟刪除要留稽核，原因必填**（第 22 批）。`DELETE` 寫一筆 `ChangeType='刪除'` / `Phase='stage'` 並與 `UPDATE` 同一個交易；沒帶原因回 `400`（後端強制，不是只有前端擋）。⚠️ `DELETE` 收 body 一定要明寫 `[FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)]` —— Minimal API 只對 `POST`/`PUT`/`PATCH` 推斷 body，寫成推斷會讓**整個 App 啟動就掛**，而 `dotnet build` 不會報錯。刪除成功後前端要 `fetchReqs` **與** `fetchHistory` 一起重抓，否則統計卡的兩個數字會對不起來。
-   - **完成日由使用者填，不是「按按鈕的那一天」**（第 58 批，2026-09-10 使用者要求）。在此之前 `/done` 寫死 `DateTime.Today` —— 使用者常常隔幾天才回平台補登，於是「9/9 準時完成、9/20 才來按」被判成延期 11 天並讓 `DelayCount +1`，**而那三個計數欄是主管在看的數字**。改成 `DoneRequest.completedAt`（`YYYY-MM-DD`），提早／延期一律拿**它**去比原訂 End。⚠️ **沒帶時退回今天**（curl／測試腳本行為完全不變，已實測）。⚠️⚠️ **範圍一律後端自己再驗一次，不可以只信前端**：①不可未來；②下限＝**max(前一階段實際結束的那一天, 半年前)**（第 68 批，2026-09-12 改）——「前一階段實際結束的那一天」＝ `PrevPhaseEndOf()` ＝ **max(它的原訂 End, 它的 ActualEnd)**（前一階段就在同一次 `alsoComplete` 裡時不套，第 61 批），半年前用 `AddMonths(-6)`（前端的 `sixMonthsAgoIso()` 是**鏡像，改了要兩邊一起改**；⚠️ 必須用「月」不可用 180 天，月份長度不同會差 2 天；⚠️ **日要夾到目標月的最後一天**（第 67 批）—— `new Date(y, m-6, 31)` 在 8/31 會溢成 03-03 而 .NET 是 02-28，那幾天前端會比後端嚴 1~3 天）。⚠️⚠️ **`Start` 不是下限、不可以再拿回來當下限**：第 58 批寫成「有 Start 就是 Start」，但 `ApplyStartDefaults()` 存檔時就把沒填的 Start 補成 = End（本機 58/62 筆 `SpecStart = SpecEnd`），於是「③ 原訂 9/15、其實 9/9 就交了、9/20 才補登」根本選不到 9/9、只能記成準時 —— `EarlyCount` 少算、End 停在原訂日；而 ② 沒有 Start 欄反而退回半年前，四個階段只有 ② 能補登提早。完成日早於 Start 時由 `ApplyCompletionAsync` 把 Start 夾到完成日並寫進稽核說明（那段本來就在），視窗上先講。⚠️ **前一階段的下限提早／延期都套、而且比的是實際完成日**：原本只在提早時比原訂 End，「② 延期到 9/10 才確認、③ 補登 9/05 完成」整個放行 —— guard 自己寫著「不可能比前一階段更早完成」卻只做一半；前端 `prevPhaseEndOf()` 是鏡像（回 `actual` 旗標，視窗上要講「實際完成日」不是「日期」）。⚠️ **選的不是今天時，稽核 `Note` 一定要標「（完成日 X，於 Y 補登）」** —— 完成日開放自填之後，「延期」是可以被寫成「準時」的，那一行是日後唯一查得到「誰、什麼時候、補登了哪一天」的地方。⚠️ 前端改成一個帶日期欄的視窗（`doneModal`，預設今天）並**即時顯示會被記成什麼**，別讓使用者按下去才知道。
-   - **跳過中間階段時，可以在完成視窗上一併把它記成完成**（第 60 批，2026-09-10 使用者要求：「我還沒填寫 2_MSD確認中的已完成日期，直接點選 3_MSD開發中 的已完成日期…我是否可以把上述原本壓的 2026/09/08 變成已完成日期」）。② 有日期卻沒按 ② 的完成、直接按 ③ —— StatusID 從 2 跳到 4，② 就永遠停在灰字「已略過此階段」。⚠️ 而那句灰字原本指過去的「規格回退」**照做的結果比不做更糟**：回退到 ② 會清掉 `MsdConfirm / MsdStart / MsdEnd / MsdActualEnd / UatStart / UatEnd / UatActualEnd`（含剛按完的 ③ 提早完成）、`RollbackCount +1`（宣稱發生過規格變更），重壓日期後再按一次 ③ 完成又讓 `EarlyCount` **+1 第二次**（回退列會把 `/done` 重複檢查的基準線重設）—— **第 21 批那條規則本來是為了防計數灌水，它指過去的替代方案卻是唯一真的會灌水的做法**。
-     ⚠️ **這一批完全沒有碰第 21 批那道「已經走過的階段」guard**：一併記錄發生在按下去的**當下**，那時 StatusID 還是 2、② 根本還沒「走過」，所以它連觸發都不會觸發。已經卡成「已略過此階段」的既有資料自**第 70 批（2026-09-12）**起有出口：**「補記完成…」＝ `/done` 的 `backfill:true`**（使用者 2026-09-10 先說「先不動」、09-12 選了做）。只接受已走過的階段、**StatusID／Status 一律不動**、不收 `alsoComplete`、上限多一道「下一階段實際結束的那一天」（`backfillCap` ↔ 前端 `backfillMax()` 鏡像）、重複檢查與前一階段下限照套。⚠️ 稽核 `Note` 固定接「（事後補記：StatusID 已在 X，不變）」，**`/undo-done` 靠 `Contains("事後補記")` 讓撤銷時 StatusID 不退**（前端撤銷視窗看同一字串，改字要三邊一起改）。視窗預設日期是原訂日不是今天。`DonePastHint` 的 tooltip 不再指向規格回退。
-     ⚠️ 預設值是**拿該階段的原訂日當完成日**，走的正是準時完成那一條 —— `days == 0` 時 `setCount` 是空字串（第 20 批），**三個計數欄一個都不動**；而提早分支的 `SET MsdConfirm = @Completed` 寫回去的就是庫裡原本那個值，**資料一個字都不會變**，只多一筆稽核列與畫面上那顆 `✓`。實測：② 記 09/08、③ 提早完成 → `EarlyCount` 只 +1（③ 的）、`DelayCount` 0、`MsdConfirm` 仍是 `2026-09-08`。
-     ⚠️⚠️ **不可以靜靜地做**：使用者按的是 ③，系統卻要替他宣告 ② 的事實 —— 一定要在按下去**之前**就列在完成視窗上、可以取消勾選、日期可以改，不勾的那一列旁邊要寫明「不記錄 → 這個階段會顯示『已略過此階段』」。成功訊息也要把一併記錄了哪幾階講出來（問完就把答案藏起來等於沒問）。
-     ⚠️⚠️ **日期一定要可以改，不可以寫死成準時** —— ② 真的延期時記成準時會讓 `DelayCount` 少算一次，而那是主管在看的數字。這一支的兩個失敗方向差很多：**多報只是難看，少報是把一次延期整個抹掉**。
-     ⚠️ **範圍只有「這一次點擊會跳過的」**：階段代號 ∈ `[目前 StatusID, 主要階段 - 1]`；原訂日排在未來的不收（那個階段是真的還沒完成）；StatusID 推不出來（0）時整段不做（沿用第 33 批「空白一律不推斷」）。更早的既有缺口（匯入資料）不在範圍內。
-     ⚠️⚠️ **日期範圍是一條鏈**：勾起來的階段依代號遞增排好、主要階段接在最後，每一列**下限** = max(該階段的 Start／沒有就半年前, 前一列的完成日)、**上限** = min(今天, 下一列的完成日)。**上限少了「下一列的完成日」就會做出 `MsdConfirm > MsdEnd`**，之後 `PhaseOrderViolations` 會把那筆需求整個鎖住，連改個現況描述都存不了。`app.jsx` 的 `doneExtraBounds()` 與 `Program.cs` 的 `alsoStages` 迴圈是**鏡像，改了要兩邊一起改**。
-     ⚠️ **一併記錄的階段一律不動 StatusID**（`newStage = Math.Max(...)` 只由主要階段決定）；**前端送什麼一律不看**，後端每一筆自己再驗一次（範圍、有沒有日期、是不是已經完成過）—— 那些值會直接寫進 `EarlyCount` / `DelayCount`，與第 58 批的完成日同一條界線。
-     ⚠️ **稽核列的寫入順序＝階段代號遞增、主要階段最後**：`/api/history` 是 `ORDER BY RequirementId, ChangedAt, Id`，同一秒內只有 `Id` 分得出先後，寫顛倒會讓明細面板的時間軸把 ③ 畫在 ② 前面。一併記錄的那幾筆說明欄要標「此階段在標記『X』完成時一併記錄，StatusID 不變」。
-     ⚠️ 「算 isEarly/days → 組 setDate/setCount → UPDATE 日期與計數 → 寫稽核列」已抽成 `ApplyCompletionAsync()`，主要階段與一併記錄的階段**共用同一份**（各寫一份的話「準時不計數」「提早時夾 Start」「補登要標註」三條界線遲早只會改到一邊）。它**只動日期與計數欄**，`StageCode` / `Status` 由端點自己下一個 `UPDATE`。重複檢查的 SQL 同樣抽成 `PhaseAlreadyDoneAsync()`。
-     ⚠️ API 不帶 `alsoComplete` 時**行為與第 59 批完全相同**（已實測 curl 路徑無回歸）。
-   - **第 61 批（2026-09-10）把上一條的三個 bug 修掉**，三條都是「一併記錄」與既有守則沒對齊的地方。
-     ⚠️⚠️ **主要階段的完成日下限，不可以被「就在同一次 `alsoComplete` 裡」的前一階段抬高**。第 22 批那道「提早完成不可以把 End 拉到前一階段的 End 之前」拿的是**寫入前**的原訂日，於是第 60 批想解決的情境自己撞牆：② 原訂 9/08、③ 原訂 9/15，而 ③ 其實 9/05 完成、② 是 9/03 完成的 —— 一次把兩階都記進來完全合法，日期欄卻連 9/05 都選不到，**擋住他的正是他在同一次送出裡要覆蓋掉的那個值**（實測改前 400、改後 200）。⚠️ 拿掉之後先後順序**仍然成立，是鏈式上下限保證的、不是放寬**：前一階段若在清單裡必然是最後一筆（stage 最大），上限就是主要階段的完成日；提早時 End 改成那個完成日、延期時 End 一個字不動而「延期」的定義本身就推得出 `completed > 原訂日`。⚠️ 後端因此把那道檢查**搬到 `alsoStages` 驗證之後**（`prevAlsoListed`）—— 搬動順序是這條修正的必要條件；前端改成 `doneMainMin()` **每次 render 重算**（勾選是開窗之後才動的，算死在開窗當下永遠是舊答案），`doneModal` 不再存 `min`、改存 `prevKey`／`plannedStart`。**兩邊是鏡像，改了要一起改。**⚠️ 前一階段**不在**清單裡時一個字都沒改（實測仍回 400）。
-     ⚠️⚠️ **一併記錄的階段不可以把「使用者真的按下去的那一個」一起打掉**。原本「已經有完成紀錄」回 `409`、「StatusID 已經走過」回 `400`，兩者都讓整個交易回捲 —— 使用者按的是 ③，訊息卻寫「『2_MSD確認中』已經標記過完成了」，而他在畫面上看不出要怎麼解。走得到這裡就代表**呼叫端的畫面是舊的**（`/api/history` 讀取失敗那條路、或別人在另一台已經把 ② 標完成了），而那個階段**本來就不用記**。現在兩種都**跳過該筆、照樣完成主要階段**，並在回應訊息與 `alsoSkipped` 裡講出跳過了哪幾階（不出聲就等於「勾了卻沒發生」）。⚠️ **只有這兩種往「跳過」倒**：排在主要階段**後面**的階段仍然回 400 —— 那不是畫面舊了，是請求本身就不對，靜靜跳過會把一個真正的錯誤藏起來。⚠️ **主要階段自己的 409 一個字都沒動**。
-     ⚠️ **「原訂日排在未來的不收」補上後端這一側**。第 60 批把這條只寫在 `app.jsx` 的 `extras` 過濾裡（`pl <= TODAY_ISO`），而同一批的規格明寫著「前端送什麼一律不看，後端每一筆自己再驗一次」—— 直接打 API 可以把一個真的還沒完成的階段記成「提早完成」並讓 `EarlyCount +1`。
-     ⚠️ 已實測（本機 DB、造 5 筆暫時需求，測完全部軟刪除還原成原來的 65 筆）：修正 1 改前 400／改後 200 且 `MsdConfirm 09-03 ≤ MsdEnd 09-05`、PUT 回寫 200（沒有被 `PhaseOrderViolations` 鎖住）；修正 2 回 200 且 `alsoSkipped:["2_MSD確認中"]`、稽核列沒有多寫一筆；修正 3 回 400；不帶 `alsoComplete` 的路徑無回歸。前端 `doneMainMin()` 另以 **編譯後的 `wwwroot/app.js`**（不是重寫一份鏡像）跑 7 個案例全過。
-   - **準時完成的 `ChangeType` 仍是 `提早完成`，但畫面上一律印「準時完成」**（第 71 批，2026-09-12）。稽核列不動（第 20 批的決定）；前端 `entryLabelOf()` 看 `old End == new End`（② 是 Confirm）決定標籤，`/done` 的回應訊息同理。用在 ✓ 藥丸、軌跡與 `PhaseAuditList` 的藥丸、撤銷視窗 —— **新增任何印 `changeType` 標籤的地方都要走它**，不要直接印 `CHANGE_TYPES[…].label`。
-   - **完成之後又改 End，一律要在稽核說明裡講、畫面上要看得出落差**（第 71 批）：延期那條第 21 批就有（清 `ActualEnd` 並寫明）；提早／準時那條 PUT 現在用 `ValidEarlyDoneOfAsync()` 查有效的完成紀錄，有就把「此階段已於 X 標記完成（完成日 Y）…請先『撤銷』」接進 `日期異動` 說明，`donePanel` 在 ✓ 旁印「（結束日之後已改為 X）」。⚠️ 不擋存檔（第 14 批那條界線），出路是「撤銷」再重標 —— 那條路才會把 `EarlyCount` 算對。`/undo-done` 對「被夾過、之後又被改掉的 Start」也補了一句 note（前端 `startRestore` 的 `modified` 原本沒有鏡像）。
-   - **`PhaseOrderViolations` 只比原訂 End、不比 `ActualEnd`，這是使用者選的、不要改**（第 71 批）。前一階段延期完成後，這一階段 End 壓在它的實際完成日之前照樣存得進去，只由編輯視窗的 `PrevActualHint`（黃字、非阻擋）講「之後只能記成延期、完成日下限是 X」。
-   - **`/done` 要套 `StagePrereqViolations`**（第 22 批）。按完成等於宣告「前面都走完了」，規則必須與手動改 `StatusID` 一致 —— 只擋一邊的話，一筆 `StageCode=1` 但有 `UatEnd` 的匯入資料按一下 ④ 完成就跳到結案。同批另加「提早完成不可把 `End` 拉到前一階段的 `End` 之前」。
-   - **回退後重新壓的日期是 `重新排程`，不是 `init`**（第 35 批，2026-08-27）。`WriteAuditAsync()` 原本只看「舊的 End 是不是空的」判 `init`，但 **`/rollback` 剛好會把 End 清成 NULL** —— 於是重新排程被當成「這個欄位第一次被填」，那一列會沉到明細面板最下面的「初始時程」區（標題還寫著「初始」）、不計入 ⚠N，而且同一階段出現兩筆 `init` 會讓前端 `initStamp` 的時間戳去重失效。判定走 `PhasesWithEndEverSetAsync()`（第 69 批，2026-09-12）：**這個 phase 的 End（② 是 Confirm）在稽核表裡曾經有過值，現在重填就是 `重新排程`；從來沒有過才是 `init`**。⚠️⚠️ **不可以改回「看這個 phase 最後一筆稽核列是誰」**（第 35→68 批的做法）—— 那個問法已經補了三次側門：第 68 批排除 `通知寄送`（催過再壓，最後一筆是通知）、加 `日期異動`（第 66 批 H1 仍允許手動清空 End），第 69 批又抓到「回退 → **只填 Start 存一次**（記成 `init`、End 空）→ 再填 End → 最後一筆是 `init` → 判成 `init`」（實測 `ZZ69-A`：#516 回退 → #517 init → #518 **init**），「清空 End → 只調 Start（`起日調整`）→ 重填」同一條。根本的問題是「最後一筆是誰」與「End 為什麼是空的」是兩個問題，中間插進任何一筆不動 End 的列都會把答案洗掉。`通知寄送`／`手動調整`／`刪除` 日期全空，自然不算「有過值」。前端 `phaseNotifiedEntry()` 的基準線（「最後一次被清空是哪一筆」）**問的是另一個問題**（通知要不要重問），仍然是 `規格回退`＋「清空 End 的 `日期異動`」，**不要拿來互相對齊**。⚠️ 那支要**一次查詢撈完四個階段**（`GROUP BY Phase`）並吃同一個 `tx` —— 匯入是逐列呼叫 `WriteAuditAsync` 的，在迴圈裡查會變成每列多送四趟；新增（`oldReq == null`）則整個跳過。⚠️ `重新排程` **不進 `isDateChange`**（沒有人改動任何既有日期，計進 ⚠N 會讓同一件事被數兩次），也**不強制理由**（正上方那筆回退自己就帶著說明）。⚠️ **不可併進 `日期異動`** —— 那會讓 ⚠N 灌進性質不同的事件。
-   - **回退清掉的實際完成日要寫進稽核說明，而且寫在四筆快照共用的那一句裡**（第 69 批，2026-09-12）。`/rollback` 讀 `cur` 要 SELECT 四個 `*ActualEnd`（在此之前沒讀，快照只有 Start／End／Confirm）：延期完成過的階段被回退後 `⏰N` 還在、「→ 實際 X」那行卻消失，而回退那張卡只寫「結束 X → 未填」—— 同一件事走 `PUT` 改 End 那條路是有講的（第 21 批）。⚠️ **不可逐階段各補一句**：前端 `changeGroups` 只併「型別／時間／人／分類／說明」五項全同的相鄰列，說明不同就會把一次回退畫成四張卡。實測 `ZZ69-H`：三筆快照 note 完全相同、含「一併清除實際完成日：1_EMS規格確認 2026-09-06」；沒有 ActualEnd 時不加那段。⚠️ 編輯視窗每個階段底下的 `PhaseAuditList` 與主軌跡**同一組字**：`延期完成` 印「原訂 X → 實際 Y」、`撤銷完成` 印「→ 還原為」（同批補上；在此之前一律印 `X → Y`，補登延期後那行寫「結束 09-05 → 09-10」而正上方的欄位還是 09-05）。回退視窗「清空後會變成⚠ 未壓日期」那句**不分目標階段一律顯示**（原本只在 ① 出現，②③④ 情況完全相同）。
-   - **明細的「時程變更軌跡」一次動作只畫一張卡**（第 35 批）。回退一次會清掉「≥ 目標階段」的全部日期、每個階段各留一筆快照（**那些列是必要的**，少一筆就不知道當時清掉了什麼），但四筆的型別／時間／異動人／分類／說明完全一樣 —— 逐筆各畫一個區塊等於同一次動作被畫成四件事。`changeGroups` 把**相鄰且那五項全同**的收成一張卡。⚠️ **只併相鄰的**：`/api/history` 是 `ORDER BY RequirementId, ChangedAt, Id`，同一次寫入本來就連續，跨越其他紀錄硬併會把時序畫顛倒。⚠️ **單筆的群組版面一律維持舊版**（欄位在前、分類與說明在後）—— 單筆是絕大多數，只有多筆時說明才提到最前面（那句話解釋的是整組）。
-   - **`StageCode` 只能是 `1`~`5`，不可空白**（第 22 批；空白自第 66 批起不合法，`17_stagecode_not_null.sql`）。`POST` / `PUT` 用 `IsValidStageCode()` 擋下回 `400`，**不是靜靜收成 NULL**；`PUT` 只在值真的被改動時才驗「1~5」，否則既有的壞值會變成「有值卻永遠改不動」—— **但空值不管有沒有改都擋**（DB 寫不進去，與其 500 不如講清楚）。匯入維持寬鬆，空白由 `InferStageCode()` 推一次寫進去、回應 `stageInferred`。寫入一律經 `NormStage()` 去雜訊。
-   - **`Status` 只能是 `Init` / `Ongoing` / `Done` 或空**（第 23 批，2026-08-23）。與 `StageCode` **完全同一套**：`IsValidStatus()` 擋下回 `400`、`PUT` 只在被改動時才驗、寫入經 `NormStatusWrite()` 收大小寫（`Pending` → `Ongoing`，認不出來的原樣留著）。在此之前它是唯一沒有把關的狀態欄 —— 壞值進去之後，前端一律顯示成 `Init`（畫面與 DB 不同），而 `/rollback` 的 `curStatus.Equals("Done")` 會判錯，那筆需求就回退不了。
-   - **`/done` 也要把「`StageCode` 空 + `Status=Done`」視為第 5 階**（第 23 批）。`/rollback` 與前端 `savedStage()` 早就這樣推斷，只有 `/done` 沒有 —— 那種需求前端不給按、直接打 API 卻放行，計數欄會憑空 +1。
-   - **`GET /api/requirements` 與 `/api/export` 都要 `ORDER BY Id`**（第 22 批）。前端預設沒有排序鍵、它的 sort 是穩定排序，所以「畫面上的列序 = 後端回傳的順序」；沒有 `ORDER BY` 時同一份資料兩次重新整理就可能換位置，而最左邊還有一個 `No` 流水號。
-   - **`/done` 的重複檢查基準線要按 `Phase` 過濾**。回退只清 ≥ 目標階段的日期，基準線若跨階段取 `MAX(Id)`，前面沒被清的階段會冒出完成鈕，按下去計數就灌水。前端 `phaseDoneEntry()` 是同一套，改一邊就要改兩邊。
 
-5. **非日期欄位的稽核（第 84 批，2026-09-28）：`AuditFields` ＋ `WriteFieldAuditAsync()` → `ChangeType='欄位異動'`／`Phase='field'`**
-   - 在此之前 `WriteAuditAsync()` 只掃四個階段的日期，另加「手動改 `StatusID`／`Status`」一種 —— **NID／註冊日期／Main Cat／Sub Cat／EMS 與 MSD 負責人／MP Saving／需求補充／Notes Link／現況描述／Next Check 說明** 這 11 欄改掉之後全系統一列紀錄都不會留，只有 `UpdatedAt` 會動。⚠️ 這與專案的第二核心需求正面矛盾（「規格填完後是否被異動過，有異動就要留下可追蹤的紀錄」），而 Spec 的內容本體剛好全在沒紀錄的那一邊（實測 62 筆裡 52 筆有現況描述）。負責人更明顯：第 43 批特地做了「收件者換人就重問」，系統自己知道換人是件大事，卻查不到是誰在什麼時候換的。
-   - 資料表：`dbo.Controltable_History` 新增 `FieldKey NVARCHAR(50)` / `OldValue` / `NewValue`（皆 `NVARCHAR(MAX)`，`21_add_history_field_audit.sql`，啟動 bootstrap 也補得到）。⚠️ **不另開一張表** —— 這張表回答的就是「這筆需求發生了什麼」，分兩張之後「同一次儲存改了日期也改了負責人」會散在兩處、時序還要自己併。⚠️ **不塞進 `Note`（1000）** —— 現況描述是 `NVARCHAR(MAX)`，塞進去必然要截斷，而第 82 批立的界線是「不可以靜靜截斷」。**要截的是顯示（前端 48 字＋tooltip 全文），不是紀錄。**
-   - ⚠️ **只有 `PUT` 會寫**（新增與匯入整筆都是新的，那不是「修改」，否則每建一筆就多 11 列）；比較前一律 `Trim()`；**不含 `Status`／`StageCode`**（那兩欄早就有 `手動調整`，重複記會在軌跡上畫出兩張卡）。
-   - ⚠️ **不進 `isDateChange`、不動三個計數欄、不強制填理由**：⚠N／⏰／🔄／統計報表的「時程異動」問的都是「**日期**被改過幾次」，把改一個錯字與延期一週算成同一種只會讓那個數字失去意義。
-   - ⚠️ 寫入順序＝`AuditFields` 的宣告順序，且整段排在日期與 `手動調整` **之後** —— `/api/history` 是 `ORDER BY RequirementId, ChangedAt, Id`，同一秒內只有 `Id` 分得出先後。與那兩段**同一個 `tx`**。
-   - ⚠️ `AuditFields`（`Program.cs` 檔尾）↔ `FIELD_AUDIT_LABELS`（`app.jsx`）是**鏡像，改了要兩邊一起改**；`PUT` 讀 `before` 的那段 SELECT 也要跟著加欄位 —— **少讀一欄的後果是「那一欄永遠被判成從空白改成新值」，不是「不記錄」**。
-   - 畫面：明細列的「變更軌跡」多一行 `欄位異動 · N 筆 · 最近改到哪幾欄`（一行、沒有捲軸，沿用第 72 批的收合原則），逐筆的「舊值 → 新值」在「完整軌跡 ↗」視窗裡（沿用既有的 `fieldsOf` / `groupAdjacentEntries`，同一次儲存的多欄會併成一張卡並標「改了 N 個欄位」）。⚠️ **面板與視窗的標題自這一批起是「變更軌跡」**（原本「時程變更軌跡」）—— 它現在同時涵蓋兩種，沿用舊名就是畫面上的假話（第 37 批）。`app.jsx` 與手冊都已一起改。
-   - ⚠️ 明細列那一行**刻意不印前後值**：現況描述動輒上百字，攤開來就是第 72 批拿掉的那種捲軸。
+### 1. 三個主要階段的時程 (Spec, MSD, UAT)
+- 每個階段各有 `Start`、`End`。MSD 開發額外有一個 `Confirm`。
+- **解鎖機制**: 已有資料的區塊前端預設反灰，必須點鎖頭「解鎖」才能改。
+- **強制填寫理由**: 解鎖並變更了日期，儲存時**必須填寫異動理由**。
+- **時程變更軌跡**: 寫入 `dbo.Controltable_History` 稽核表。（舊的 History 字串欄位與 `parseHistoryString` 已於第 13 批移除。）
 
-   **5-2. 建立紀錄（第 85 批，2026-09-28）：`POST` 與匯入各寫一筆 `ChangeType='建立'`／`Phase='stage'`**
-   - ⚠️⚠️ 在此之前**「這筆需求是誰開的」全系統查不到**：`dbo.Controltable` **沒有 `CreatedBy` 欄**（只有 `CreatedAt`，回答的是「什麼時候」），而 `WriteAuditAsync(oldReq = null)` 只替**已填的日期**寫 `init` —— ① 結束日自第 42 批起是選填，所以「只填必填欄位就存檔」這條最常見的路徑會留下 **0 筆稽核列**（實測 `ZZ85-A`：建完之後 `Controltable_History` 一列都沒有）。這與 memory 第 1 節那兩條核心需求的起點正面矛盾，而第 84 批才剛補完 11 個非日期欄位的異動稽核（誰把負責人換掉查得到）—— 連 `dbo.AccessRules` 都記得住規則是誰加的，唯獨需求本身沒有。
-   - ⚠️ **不是變更，是這條軌跡的起點**：不進 `isDateChange`、不計 ⚠N、不動三個計數欄、不強制理由（與 `init` 同一條界線）。
-   - ⚠️⚠️ 前端 **`NON_CHANGE_TYPES`（`init`／`通知寄送`／`建立`）＋ `isChangeEntry()` 是一份定義、三處共用**（明細面板的 `changeEntries`、編輯視窗的 `PhaseAuditList`、完整軌跡視窗的 `changes`）。在此之前那三處各寫一次 `changeType !== 'init' && changeType !== '通知寄送'` —— 漏掉任何一處，**每一筆需求都會多出一張寫著「狀態調整 · 建立」的卡**（與 `renderChip()`／`COL_FILTER_META` 同一個理由）。
-   - 畫面：展開明細的「建立時間」底下多一行 **建立者**；完整軌跡視窗壓在最底一行（在「初始時程」之下，只在「全部」時出現 —— 它不屬於任何階段）。⚠️ **查不到時印「無紀錄」而不是留白**：第 85 批之前建立的資料本來就沒有這一列，留白會被讀成「沒有人建過」或「壞了」（tooltip 講明是從哪一批才開始記的）。
-   - ⚠️ **匯入也要寫**（`ChangedBy = 'Excel 匯入'`，與它寫 `init` 時同一個字串）：少了它，匯入進來的那 60 幾筆永遠是「建立者 無紀錄」，而「由 Excel 匯入建立」本身就是答案。匯入會先 `TRUNCATE` 稽核表，所以這一列不會逐次累積。⚠️ `/api/import` 是匿名的 multipart 端點、拿不到 Windows 身分，不要在那裡「補上真正的使用者」——那會是猜的。
-   - ⚠️ `hasHist` 已於這一批**刪除**（自第 45／72 批改用 `hasTimeline` 之後就沒有人讀它了）：`建立` 會讓它對每一筆都是 `true`，留著一個永遠為真又沒人用的旗標只會騙到下一個人。
+### 2. Excel 匯入 (Import) 與匯出 (Export)
+- 匯出的表頭與匯入的對應名稱一致，匯出的檔案可原封不動匯回來。
+- **匯入會 `TRUNCATE` 整張表後重灌**，不是以 NID 做 UPSERT。這是初期測試階段的**刻意做法**，功能穩定後匯入會整個移除。**請勿自作主張改成 UPSERT。**
+- **整個匯入包在一個 `SqlTransaction` 裡**，中途失敗一律回捲並回 `400`。⚠️ 動這段時交易裡的每一個 `SqlCommand` 都必須帶上 `tx`（含 `WriteAuditAsync` / `InsertHistoryAsync` 的 `tx` 參數），漏一個會直接拋例外。
+- ⚠️ **清空之前的五道前置檢查不可以拿掉**（21、82）：開檔失敗／找不到表頭列／關鍵欄位都對應不到／一列資料都讀不出來／檔案內 NID 重複／欄位超長，全部在 `BeginTransaction()` **之前**回 `400`。交易能保證「失敗就回捲」，但**回捲不了「成功地匯入了一份錯的檔案」**。**排順序是必要條件不是充分條件。**
+- **歷史軌跡重置**: 每次重新匯入，三個歷史軌跡欄位（`SpecHistory`／`MsdHistory`／`UatHistory`）一律清空，確保舊的歷史不會堆疊。
+- **欄位對應**: 先做「完全相符」比對，全部配完後剩下未認領的表頭才做「包含」比對，避免撞欄（例如 `MSD` 會誤命中「(2)評估日期 (MSD 填寫) Spec Confirm」）。回應帶 `unmappedFields`。
+- ⚠️ 用 ClosedXML 時**不可用 `RowsUsed()`**（格式化但內容空的儲存格判定不一致，會漏列），一律 `LastRowUsed().RowNumber()` 逐列迭代。
 
-6. **逾期判定只有一份規則：`isPhasePassed()`**（第 23 批，2026-08-23）
-   - 資料列上四個時程欄的紅字、與「需關注／逾期篩選／精簡模式的目前階段時程」（`resolveDuePhase()`）**必須共用同一支**「這個階段走完了沒」。歷史上分開寫過兩次，兩次都做出「畫面與數字對不起來」的結果 —— 主管照著紅字找卻找不到那一筆。
-   - `resolveDuePhase()` = 排除走完的階段 → 剩下有日期的裡面取**到期日最早**的那一個。挑到的不是 `StatusID` 那一階時，畫面標「最急 · 階段名」。
-   - **「這個階段有 `*ActualEnd`」也算走完**（第 24 批補上）。`scheduleCell` 早就有 `alert && !actual` 這道抑制，`isPhasePassed()` 沒有 —— 某階段「延期完成」之後被「✎ 手動修正 StatusID」調回去，那一格不顯示紅字，**左側紅色風險條卻會亮、也會算進「需關注」**。
-   - ⚠️ **仍然不可改回「四個日期一起比」**：第一步（排除走完的階段）就是那條禁令的實質，少了它去年交的 Spec 會永遠亮紅燈。
-   - ⚠️ **沒有可盯的到期日就不預警**，不要退回「最後一個已排定的階段」—— 那會挑到已經走完的階段，做出「一格紅字都沒有卻算一件需關注」的反向落差。
-   - **「走完了沒」只看 `StatusID`（階段代號 < `StatusID`），沒有任何日期反推**（第 65→66 批，2026-09-11，使用者附截圖）。在此之前 `isPhasePassed()` 有兩條「① 一旦 ② 有日期就算走完、② 一旦 ③ 有日期就算走完」的反推，註解寫著只給 `StageCode` 空白的舊資料，程式卻對每一筆都生效 —— `StatusID=1`、規格回退後把 ①②③ 三個日期一次壓好的需求，資料列上只有 ③ 亮「今天到期」、早兩天到期的 ① 一個字都沒提，而編輯視窗（`savedStage()` 只看 `StatusID`）同時把 ① 標成「可以標記完成」。「②③ 的日期是做到這裡才會排」自第 60 批起就不成立。第 65 批先收窄、第 66 批把空白本身消滅（`17_stagecode_not_null.sql`，NOT NULL + CHECK）後整段刪除；前端 `isPhasePassed()` 與後端 `StagePassed()` 是鏡像，各剩一行。**那條反推唯一還在的地方是匯入時 `InferStageCode()`（`StatusID` 空白推一次寫進 DB）**，畫面上再也不推。⚠️ ③④ 本來就沒有反推，現在 ①② 也沒有，不要再補回任何一條。⚠️ 「有 ActualEnd 就算走完」留著當保險。
-   - **⚠️⚠️ 整套流程只靠一條不變量：`StatusID = N` ⇔ ①…N-1 全部有 End、N 是目前階段；日期是連續前綴、跨階段 End 遞增**（第 66 批，使用者要求「一個都沒有 bug 的流程」）。三個洞已補、一個新出口（H4 匯入後檢查使用者沒選、沒做）：
-     **H1** `PUT` 不准清空已走完階段的 End、清空也不准挖洞（`PhaseClearViolations()`，前端 `validateEdit()` 就地標紅）—— 只看「原本有值、這次清空」，既有跳空資料不動就不擋（第 14 批那條）。
-     **H2** 手動 `StatusID` 只能往前（`PUT` 400、下拉往回的選項 `disabled`）；往回只有「規格回退」（規格變了）與「撤銷」（誤按）。
-     ⚠️ **規格回退的目標可以是目前這一階段自己**（第 70 批，2026-09-12 使用者選的）：`StatusID` 不變、清空範圍照樣 ≥ 目標。「重做 ③」在此之前最少只能退到 ②，把走完的 ② 一起清掉；不然只能解鎖 ③④ 逐一清空（兩筆 `日期異動`、⚠N +2）。目標晚於目前仍 400。note 在目標＝目前時寫「X 重做（StatusID 不變…）」，不印「由 X 回退至 X」。
-     **H3** `StageCode` NOT NULL + CHECK；`POST`/`PUT` 空白一律 400（空值**不套**「只在被改動時才驗」）；前端下拉的「未設定」已移除。
-     **H5** `Status = Done ⇔ StatusID = 5`（第 67 批，2026-09-11）。`Done` 會讓 `isPhasePassed()`／`StagePassed()`／`unsetDuePhase()` 把整筆當「全部走完」—— 那筆從需關注／未壓日期／通知／逾期篩選全部退出、KPI 算結案，StatusID 欄卻仍是 1；反向 `5 + Ongoing` 零預警卻列在進行中。在此之前 `PUT` 收 `Done + 1`（實測 200）、Status 下拉三個值隨便選。現在 `StatusStageMismatch()`：`POST` 一律驗、`PUT` **只在其中一欄被改動時**驗（與 H2 同界線），兩個方向的 400 各講自己的出路（④「標記完成…」／「規格回退」）；前端 `validateEdit()` 鏡像、Status 欄就地標紅，**StatusID 下拉調到 5 時一併把 Status 改成 Done**（旁邊看得見的下拉＋灰字「已一併改成 Done」，不是靜靜做）。⚠️ 這**不是**合併兩欄（2026-08-22 否決過）。`/done`／`/rollback`／`/undo-done` 本來就自己維護這條，改那三支時不要破壞它。
-     **撤銷上一次標記完成** `POST /api/requirements/{id}/undo-done`：只撤最後一筆有效的完成紀錄（跨階段 Id 最大，LIFO）；提早 → End／被夾的 Start 還原、`EarlyCount −1`（準時沒加過就不減）；延期 → `ActualEnd` 清、`DelayCount −1`；`StatusID` 退到那個階段自己；原訂日期與 `RollbackCount` 一律不動；End 在完成之後又被改過就不還原、只在稽核列講。⚠️ **被夾的 Start 只在「還原後 ≤ 生效的 End」時才還原**（第 70 批，2026-09-12）：End 沒還原時原本的 Start 是相對於原訂 End 的，照樣還原會做出 Start > End，那筆之後連改現況描述都 400（實測 `ZZ70-A`）；不還原時稽核列要講原因。⚠️ **呼叫端要帶 `historyId`（畫面上那顆撤銷旁的那一筆），後端與自己挑到的最後一筆比、不符回 `409 conflict:true`**（第 68 批）—— 這一支自己挑「Id 最大的」，沒有這道比對時 A 看著 ② 按撤銷、B 在另一台剛把 ③ 標完成，撤掉的是 B 的 ③ 而兩個人都不知道；`/rollback` 同理帶 `fromStage`。與樂觀鎖同一條界線：**沒帶才跳過**（curl 照常）。稽核列不刪，寫 `撤銷完成`；⚠️ **它是 `提早完成`／`延期完成` 有效與否的基準線**（`PhaseAlreadyDoneAsync()` 與前端 `phaseDoneEntry()` 的 `IN (規格回退,撤銷完成)`，兩邊鏡像），少了它撤銷過的階段會永遠 409。`撤銷完成` 不進 `isDateChange`；軌跡上箭頭寫「還原為」、不畫「延後 N 天」。⚠️ 撤銷視窗一定要列出「會動到什麼、不會動到什麼」—— 它與回退都是往回走，差別只在「原訂日期不清、不計回退」。
-     ⚠️⚠️ **還原 End 不可以把它抬到下一階段的 End 之後**（第 67 批，2026-09-11）。提早完成之後下一階段的日期可以合法地壓在 `[完成日, 原訂日)` 之間（`PhaseOrderViolations` 比的是當時的 End），撤銷若照樣抬回原訂日就做出倒序資料 —— 之後那兩欄連改都改不動，`resolveDuePhase` 還會把「最急」指到後面那一階（實測 `ZZ67-A`：① 09-10 提早 09-01 → ② 壓 09-03 → 撤銷 → 改 ② 回 400）。後端 `NextPhaseEndOf()`（`PrevPhaseEndOf()` 的鏡像）在**真的要還原 End** 時驗「還原值 > 下一階段 End → 400」，`==` 放行、End 已被改過或延期完成不驗；前端 `nextPhaseEndOf()` 是鏡像，撤銷視窗算 `nextConflict` 命中就畫警示區並把「確認撤銷」`disabled`。⚠️ **不可以改成「夾到下一階段的 End」**：撤銷要的是還原，夾成一個沒人排過的日期是半真半假。
+### 3. 兩個容易混淆的狀態欄位
+- `Status`：整體狀態 `Init` / `Ongoing` / `Done`，對應 Excel 的「**Overall Status**」欄。
+- `StageCode`：階段代號 `1`~`5`，對應 Excel **最後一欄的「Status」**。兩者不可混用、也不可合併（2026-08-22 使用者要求復原過一次）。
 
-   **例外，也是唯一的例外：「已到階段卻沒壓日期」＝逾期未壓**（第 33 批，2026-08-27，使用者附截圖要求）
-   - `unsetDuePhase()`：`StatusID` 走到哪一階段、**那一階段自己**就沒有日期 → `level='unset'`。入口統一走 `resolveFocusPhase()` = **先問未壓、沒有才退回 `resolveDuePhase()`**。反過來會漏掉「③ 沒壓、但 ④ 已先填預設驗收日」——那時會挑到 ④，畫面指著一個還沒輪到的階段，真正卡住的 ③ 一個字都沒提。
-   - 這**不違反**上一條禁令：那條講的是「不要退回去挑一個**已經走完**的階段」（做出「一格紅字都沒有卻算一件需關注」）；這裡指名的是**當前這一階段自己**，而且資料列上那一格會同步標紅色的「⚠ 未壓日期」（`UnsetDateBadge`，一般模式與精簡模式同一顆）——**每一件被算進去的，畫面上都看得見原因**。`isPhasePassed()`（含 `*ActualEnd`）先擋掉「已被下一階段接手」的，那種是不用壓、不是還沒壓。
-   - **不受 7 日窗限制**（它沒有日期可比），`dueAlerts` 與 `dueInfo` 都一定收得到。排序 `dueRank`：0=未壓 → 1=有到期日（按剩餘天數）→ 2=沒有到期資訊。
-   - ⚠️ **不可以把它塞成一個很小的 `diffDays`（如 -9999）混進同一條數線** —— 那個假天數會流進畫面（「逾期 9999 天」）並被 `diffDays < 0` 算成「已逾期」，而它並沒有任何逾期的日期可查。
-   - ⚠️ `matchDueFilter` 一律比 `e.level`，**不可以拿 `diffDays` 反推**：`unset` 的 `diffDays` 是 `null`，而 **`null <= 7` 在 JS 裡是 `true`**、`null < 0` 是 `false` —— 靠強制轉型碰對的分支沒有人看得出來。
-   - ⚠️ `StageCode` 空白或超出 1~5 的**一律不推斷**：空白代表「不知道走到哪」，硬猜會冤枉一批舊資料；壞值那一格本來就已經有紅色 ⚠ 在請人修。
+### 4. 寫入端點的不變量
+- **每一支會寫入的端點都要包在 `SqlTransaction` 裡**（`POST` / `PUT` / `/done` / `/rollback` / `/undo-done` / 匯入）。主表與稽核表分兩段各自寫的話，中途失敗就會留下「計數 +1 但軌跡查不到原因」，而三個計數欄的定義就是稽核表的快取。
+- **`PUT` 有樂觀鎖**：`GET` 回傳帶秒的 `updatedAtToken`，前端原樣帶回；對不上回 `409 conflict:true`。⚠️ 不可以改用只到「分」的 `updatedAt` —— 同一分鐘內的兩次儲存會互相看不見（與稽核表用 `Id` 而非 `ChangedAt` 比先後是同一個坑）。
+- **⚠️ `/api/import` 有跨站請求防護，不可以拿掉**（22）。移除 CORS 的 `AllowAnyOrigin` **擋不住這一支**：JSON 端點靠 `application/json` 觸發 preflight 才安全，但匯入收的是 `multipart/form-data`，那是 CORS 的 **simple request** —— 別的網站放一個 `<form action="…/api/import">`，使用者點一下就 TRUNCATE 了，而所有寫入端點都是匿名的。`IsCrossSiteRequest()` **只在能明確判斷是跨站時才拒絕**（`Sec-Fetch-Site` 優先、其次 `Origin`；curl / 測試腳本兩個標頭都不帶所以照常可用）。
+- **軟刪除要留稽核，原因必填**（22）。`DELETE` 寫一筆 `ChangeType='刪除'` / `Phase='stage'` 並與 `UPDATE` 同一個交易；沒帶原因回 `400`（後端強制）。⚠️ **`DELETE` 收 body 一定要明寫 `[FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)]`** —— Minimal API 只對 `POST`/`PUT`/`PATCH` 推斷 body，寫成推斷會讓**整個 App 啟動就掛，而 `dotnet build` 不會報錯**。刪除成功後前端要 `fetchReqs` **與** `fetchHistory` 一起重抓。
+- **`GET /api/requirements` 與 `/api/export` 都要 `ORDER BY Id`**（22）。前端預設沒有排序鍵、它的 sort 是穩定排序，所以「畫面上的列序 = 後端回傳的順序」；沒有 `ORDER BY` 時同一份資料兩次重整就可能換位置，而最左邊還有一個 `No` 流水號。
+- **`StageCode` 只能是 `1`~`5`，不可空白**（22、66，`17_stagecode_not_null.sql`）。`POST`/`PUT` 用 `IsValidStageCode()` 擋下回 `400`，**不是靜靜收成 NULL**；`PUT` 只在值真的被改動時才驗（否則既有壞值會變成「有值卻永遠改不動」）—— **但空值不管有沒有改都擋**。匯入維持寬鬆，空白由 `InferStageCode()` 推一次寫進去、回應 `stageInferred`。寫入一律經 `NormStage()`。
+- **`Status` 只能是 `Init` / `Ongoing` / `Done` 或空**（23）。與 `StageCode` **完全同一套**：`IsValidStatus()`、`PUT` 只在被改動時才驗、寫入經 `NormStatusWrite()` 收大小寫（`Pending` → `Ongoing`，認不出來的原樣留著）。
+- **`/done` 也要把「`StageCode` 空 + `Status=Done`」視為第 5 階**（23）—— `/rollback` 與前端 `savedStage()` 早就這樣推斷，只有 `/done` 沒有，那種需求前端不給按、直接打 API 卻放行，計數欄會憑空 +1。
+- **`/done` 的重複檢查基準線要按 `Phase` 過濾** —— 回退只清 ≥ 目標階段的日期，跨階段取 `MAX(Id)` 會讓前面沒被清的階段冒出完成鈕，按下去計數就灌水。前端 `phaseDoneEntry()` 是同一套，改一邊就要改兩邊。
+- **`/done` 要套 `StagePrereqViolations`**（22）。按完成等於宣告「前面都走完了」，規則必須與手動改 `StatusID` 一致。同批另加「提早完成不可把 `End` 拉到前一階段的 `End` 之前」。
 
-7. **日期欄位一律為 `DATE` 型別**，API 與前端之間統一以 `"YYYY-MM-DD"` 字串傳遞。`MpSaving` 是自由文字（可空、可非數字），由使用者自行填寫。`NID` 初期不自動產生，由使用者手動輸入。
+#### 完成日與撤銷
+- **完成日由使用者填，不是「按按鈕的那一天」**（58，`DoneRequest.completedAt`，`YYYY-MM-DD`）。使用者常常隔幾天才回平台補登，而三個計數欄是主管在看的數字。⚠️ **沒帶時退回今天**（curl／測試腳本行為不變）。
+  - ⚠️⚠️ **範圍一律後端自己再驗一次，不可以只信前端**：①不可未來；②下限＝**max(前一階段實際結束的那一天, 半年前)**（68）。「前一階段實際結束的那一天」＝ `PrevPhaseEndOf()` ＝ **max(它的原訂 End, 它的 ActualEnd)**；半年前用 `AddMonths(-6)`（前端 `sixMonthsAgoIso()` 是**鏡像，改了要兩邊一起改**；⚠️ 必須用「月」不可用 180 天；⚠️ **日要夾到目標月的最後一天** —— `new Date(y, m-6, 31)` 在 8/31 會溢成 03-03 而 .NET 是 02-28）。
+  - ⚠️⚠️ **`Start` 不是下限、不可以再拿回來當下限**：`ApplyStartDefaults()` 存檔時就把沒填的 Start 補成 = End，於是「原訂 9/15、其實 9/9 就交了、9/20 才補登」根本選不到 9/9 —— `EarlyCount` 少算。完成日早於 Start 時由 `ApplyCompletionAsync` 把 Start 夾到完成日並寫進稽核說明，視窗上先講。
+  - ⚠️ **前一階段的下限提早／延期都套、而且比的是實際完成日**（68）。前端 `prevPhaseEndOf()` 是鏡像（回 `actual` 旗標，視窗上要講「實際完成日」不是「日期」）。
+  - ⚠️⚠️ **主要階段的下限不可以被「就在同一次 `alsoComplete` 裡」的前一階段抬高**（61）—— 擋住他的正是他在同一次送出裡要覆蓋掉的那個值。後端把那道檢查**搬到 `alsoStages` 驗證之後**（`prevAlsoListed`）；前端改成 `doneMainMin()` **每次 render 重算**（勾選是開窗之後才動的）。**兩邊是鏡像。** 先後順序仍然成立，是鏈式上下限保證的、不是放寬。
+  - ⚠️ **選的不是今天時，稽核 `Note` 一定要標「（完成日 X，於 Y 補登）」** —— 完成日開放自填之後「延期」是可以被寫成「準時」的，那一行是日後唯一查得到「誰、什麼時候、補登了哪一天」的地方。
+  - ⚠️ 前端是一個帶日期欄的視窗（`doneModal`，預設今天）並**即時顯示會被記成什麼**。
+- **跳過中間階段時，可以在完成視窗上一併把它記成完成**（60，`alsoComplete`）。② 有日期卻沒按 ② 的完成、直接按 ③，② 就永遠停在灰字「已略過此階段」—— 而那句灰字原本指過去的「規格回退」**照做的結果比不做更糟**（會清掉剛按完的 ③、`RollbackCount +1`、重壓後 `EarlyCount` 再 +1）。**21 批那條規則本來是為了防計數灌水，它指過去的替代方案卻是唯一真的會灌水的做法。**
+  - 預設值是**拿該階段的原訂日當完成日**，走準時那一條 —— 三個計數欄一個都不動、資料一個字都不會變，只多一筆稽核列與畫面上那顆 `✓`。
+  - ⚠️⚠️ **不可以靜靜地做**：一定要在按下去**之前**就列在完成視窗上、可以取消勾選、日期可以改，不勾的那一列旁邊要寫明「不記錄 → 這個階段會顯示『已略過此階段』」。成功訊息也要把一併記錄了哪幾階講出來。
+  - ⚠️⚠️ **日期一定要可以改，不可以寫死成準時** —— ② 真的延期時記成準時會讓 `DelayCount` 少算一次。這一支的兩個失敗方向差很多：**多報只是難看，少報是把一次延期整個抹掉**。
+  - ⚠️ **範圍只有「這一次點擊會跳過的」**：階段代號 ∈ `[目前 StatusID, 主要階段 - 1]`；原訂日排在未來的不收（**前後端都要驗**，61）；StatusID 推不出來（0）時整段不做。
+  - ⚠️⚠️ **日期範圍是一條鏈**：勾起來的階段依代號遞增排好、主要階段接在最後，每一列**下限** = max(該階段的 Start／沒有就半年前, 前一列的完成日)、**上限** = min(今天, 下一列的完成日)。**上限少了「下一列的完成日」就會做出 `MsdConfirm > MsdEnd`**，之後 `PhaseOrderViolations` 會把那筆需求整個鎖住。`doneExtraBounds()` 與 `alsoStages` 迴圈是**鏡像**。
+  - ⚠️ **一併記錄的階段一律不動 StatusID**；**前端送什麼一律不看**，後端每一筆自己再驗一次。
+  - ⚠️⚠️ 一併記錄的階段遇到「已經有完成紀錄」或「StatusID 已經走過」，**跳過該筆、照樣完成主要階段**並在 `alsoSkipped` 裡講出來（61）—— 走得到這裡就代表呼叫端的畫面是舊的，而那個階段本來就不用記。⚠️ **只有這兩種往「跳過」倒**：排在主要階段**後面**的仍然回 400。⚠️ **主要階段自己的 409 一個字都沒動。**
+  - ⚠️ **稽核列的寫入順序＝階段代號遞增、主要階段最後**（`/api/history` 是 `ORDER BY RequirementId, ChangedAt, Id`，同一秒內只有 `Id` 分得出先後）。
+  - ⚠️ 「算 isEarly/days → 組 setDate/setCount → UPDATE → 寫稽核列」抽成 `ApplyCompletionAsync()`，主要階段與一併記錄的階段**共用同一份**；重複檢查抽成 `PhaseAlreadyDoneAsync()`。它**只動日期與計數欄**，`StageCode` / `Status` 由端點自己下一個 `UPDATE`。
+- **「補記完成…」＝ `/done` 的 `backfill:true`**（70）：給已經卡成「已略過此階段」的既有資料。只接受已走過的階段、**StatusID／Status 一律不動**、不收 `alsoComplete`、上限多一道「下一階段實際結束的那一天」（`backfillCap` ↔ 前端 `backfillMax()` **鏡像**）、重複檢查與前一階段下限照套。⚠️ 稽核 `Note` 固定接「（事後補記：StatusID 已在 X，不變）」，**`/undo-done` 靠 `Contains("事後補記")` 讓撤銷時 StatusID 不退**（前端撤銷視窗看同一字串，**改字要三邊一起改**）。視窗預設日期是原訂日不是今天。
+- **撤銷上一次標記完成** `POST /api/requirements/{id}/undo-done`（66）：只撤最後一筆有效的完成紀錄（跨階段 Id 最大，LIFO）。提早 → End／被夾的 Start 還原、`EarlyCount −1`（準時沒加過就不減）；延期 → `ActualEnd` 清、`DelayCount −1`；`StatusID` 退到那個階段自己；原訂日期與 `RollbackCount` 一律不動；End 在完成之後又被改過就不還原、只在稽核列講。
+  - ⚠️ **被夾的 Start 只在「還原後 ≤ 生效的 End」時才還原**（70）：End 沒還原時照樣還原會做出 Start > End，那筆之後連改現況描述都 400；不還原時稽核列要講原因。
+  - ⚠️ **呼叫端要帶 `historyId`，後端與自己挑到的最後一筆比、不符回 `409 conflict:true`**（68）；`/rollback` 同理帶 `fromStage`。與樂觀鎖同一條界線：**沒帶才跳過**。
+  - ⚠️ 稽核列不刪，寫 `撤銷完成`；**它是 `提早完成`／`延期完成` 有效與否的基準線**（`PhaseAlreadyDoneAsync()` 與前端 `phaseDoneEntry()` 的 `IN (規格回退,撤銷完成)`，**兩邊鏡像**），少了它撤銷過的階段會永遠 409。`撤銷完成` 不進 `isDateChange`；軌跡上箭頭寫「還原為」、不畫「延後 N 天」。
+  - ⚠️ 撤銷視窗一定要列出「會動到什麼、不會動到什麼」—— 它與回退都是往回走，差別只在「原訂日期不清、不計回退」。
+  - ⚠️⚠️ **還原 End 不可以把它抬到下一階段的 End 之後**（67）。提早完成之後下一階段的日期可以合法地壓在 `[完成日, 原訂日)` 之間，撤銷若照樣抬回原訂日就做出倒序資料。`NextPhaseEndOf()`（`PrevPhaseEndOf()` 的鏡像）在**真的要還原 End** 時驗，`==` 放行；前端 `nextPhaseEndOf()` 是鏡像，命中就畫警示區並把「確認撤銷」`disabled`。⚠️ **不可以改成「夾到下一階段的 End」**：撤銷要的是還原，夾成一個沒人排過的日期是半真半假。
+- **準時完成的 `ChangeType` 仍是 `提早完成`，但畫面上一律印「準時完成」**（71）。前端 `entryLabelOf()` 看 `old End == new End` 決定標籤，`/done` 的回應訊息同理。⚠️ **新增任何印 `changeType` 標籤的地方都要走它**，不要直接印 `CHANGE_TYPES[…].label`。
+- **完成之後又改 End，一律要在稽核說明裡講、畫面上要看得出落差**（71）：延期那條 21 批就有（清 `ActualEnd` 並寫明）；提早／準時那條 `PUT` 用 `ValidEarlyDoneOfAsync()` 查有效的完成紀錄，有就把「此階段已於 X 標記完成…請先『撤銷』」接進 `日期異動` 說明，`donePanel` 在 ✓ 旁印「（結束日之後已改為 X）」。⚠️ 不擋存檔（14 批那條界線），出路是「撤銷」再重標。
+- ⚠️ **Done 推進／提早 vs 延期這一整套刻意不做成完全鎖死** —— 匯入資料的階段填錯一定會發生，鎖死之後那些列會變成「有值卻永遠改不動」。與 gating 只擋「從空白開始填寫」是同一條界線。
+- **`PhaseOrderViolations` 只比原訂 End、不比 `ActualEnd`，這是使用者選的、不要改**（71）。只由編輯視窗的 `PrevActualHint`（黃字、非阻擋）講「之後只能記成延期、完成日下限是 X」。
+
+#### 規格回退與重新排程
+- **規格回退的清空範圍**：清空 **≥ 目標階段**的全部日期（含目標階段本身）。計數欄不清，那是既成事實。
+- **⚠️ 規格回退的目標可以是目前這一階段自己**（70，使用者選的）：`StatusID` 不變、清空範圍照樣 ≥ 目標。「重做 ③」在此之前最少只能退到 ②，把走完的 ② 一起清掉。目標晚於目前仍 400。note 在目標＝目前時寫「X 重做（StatusID 不變…）」，不印「由 X 回退至 X」。
+- **回退後重新壓的日期是 `重新排程`，不是 `init`**（35）。判定走 `PhasesWithEndEverSetAsync()`（69）：**這個 phase 的 End（② 是 Confirm）在稽核表裡曾經有過值，現在重填就是 `重新排程`；從來沒有過才是 `init`**。
+  - ⚠️⚠️ **不可以改回「看這個 phase 最後一筆稽核列是誰」** —— 那個問法已經補了三次側門（通知寄送、手動清空 End、只填 Start 存一次）。根本的問題是「最後一筆是誰」與「End 為什麼是空的」是兩個問題，中間插進任何一筆不動 End 的列都會把答案洗掉。
+  - ⚠️ 前端 `phaseNotifiedEntry()` 的基準線**問的是另一個問題**（通知要不要重問），仍然是 `規格回退`＋「清空 End 的 `日期異動`」，**不要拿來互相對齊**。
+  - ⚠️ 那支要**一次查詢撈完四個階段**（`GROUP BY Phase`）並吃同一個 `tx` —— 匯入是逐列呼叫 `WriteAuditAsync` 的；新增（`oldReq == null`）則整個跳過。
+  - ⚠️ `重新排程` **不進 `isDateChange`**（沒有人改動任何既有日期）、**不強制理由**、**不可併進 `日期異動`**。
+- **回退清掉的實際完成日要寫進稽核說明，而且寫在四筆快照共用的那一句裡**（69）。`/rollback` 讀 `cur` 要 SELECT 四個 `*ActualEnd`。⚠️ **不可逐階段各補一句**：前端 `changeGroups` 只併「型別／時間／人／分類／說明」五項全同的相鄰列，說明不同就會把一次回退畫成四張卡。
+- **明細的「變更軌跡」一次動作只畫一張卡**（35）。回退一次會在每個階段各留一筆快照（**那些列是必要的**），但五項完全一樣 —— `changeGroups` 把**相鄰且那五項全同**的收成一張卡。⚠️ **只併相鄰的**（跨越其他紀錄硬併會把時序畫顛倒）。⚠️ **單筆的群組版面一律維持舊版**。
+
+#### 一條不變量：`StatusID = N` ⇔ ①…N-1 全部有 End（66）
+日期是連續前綴、跨階段 End 遞增。
+- **H1** `PUT` 不准清空已走完階段的 End、清空也不准挖洞（`PhaseClearViolations()`，前端 `validateEdit()` 就地標紅）—— 只看「原本有值、這次清空」，既有跳空資料不動就不擋（14）。
+- **H2** 手動 `StatusID` 只能往前（`PUT` 400、下拉往回的選項 `disabled`）；往回只有「規格回退」與「撤銷」。
+- **H3** `StageCode` NOT NULL + CHECK；空白一律 400（**不套**「只在被改動時才驗」）；前端下拉的「未設定」已移除。
+- **H5** `Status = Done ⇔ StatusID = 5`（67，`StatusStageMismatch()`）。`Done` 會讓整筆被當「全部走完」（從需關注／未壓日期／通知／逾期篩選全部退出、KPI 算結案，StatusID 欄卻仍是 1）；反向 `5 + Ongoing` 零預警卻列在進行中。`POST` 一律驗、`PUT` **只在其中一欄被改動時**驗，兩個方向的 400 各講自己的出路；前端 `validateEdit()` 鏡像、Status 欄就地標紅，**StatusID 下拉調到 5 時一併把 Status 改成 Done**（旁邊看得見的下拉＋灰字，不是靜靜做）。⚠️ 這**不是**合併兩欄。`/done`／`/rollback`／`/undo-done` 本來就自己維護這條，改那三支時不要破壞它。
+- **H4**（匯入後對不變量跑檢查）**使用者沒選、沒做**。
+
+### 5. 非日期欄位的稽核（84）：`AuditFields` ＋ `WriteFieldAuditAsync()` → `ChangeType='欄位異動'`／`Phase='field'`
+在此之前 **NID／註冊日期／Main Cat／Sub Cat／EMS 與 MSD 負責人／MP Saving／需求內容／Notes Link／現況描述／Next Check 說明** 這 11 欄改掉之後全系統一列紀錄都不會留 —— 與專案的第二核心需求（「規格填完後是否被異動過」）正面矛盾，而 Spec 的內容本體剛好全在沒紀錄的那一邊。負責人更明顯：43 批特地做了「收件者換人就重問」，系統自己知道換人是件大事，卻查不到是誰在什麼時候換的。
+- 資料表：`dbo.Controltable_History` 新增 `FieldKey` / `OldValue` / `NewValue`（`21_add_history_field_audit.sql`，啟動 bootstrap 也補得到）。
+  ⚠️ **不另開一張表** —— 這張表回答的就是「這筆需求發生了什麼」，分兩張之後「同一次儲存改了日期也改了負責人」會散在兩處。
+  ⚠️ **不塞進 `Note`（1000）** —— 現況描述是 `NVARCHAR(MAX)`，塞進去必然要截斷。**要截的是顯示（前端 48 字＋tooltip 全文），不是紀錄。**
+- ⚠️ **只有 `PUT` 會寫**（新增與匯入整筆都是新的）；比較前一律 `Trim()`；**不含 `Status`／`StageCode`**（那兩欄早就有 `手動調整`）。
+- ⚠️ **不進 `isDateChange`、不動三個計數欄、不強制填理由**：⚠N／⏰／🔄／統計報表的「時程異動」問的都是「**日期**被改過幾次」。
+- ⚠️ 寫入順序＝`AuditFields` 的宣告順序，且整段排在日期與 `手動調整` **之後**；與那兩段**同一個 `tx`**。
+- ⚠️ `AuditFields`（`Program.cs` 檔尾）↔ `FIELD_AUDIT_LABELS`（`app.jsx`）是**鏡像，改了要兩邊一起改**；`PUT` 讀 `before` 的那段 SELECT 也要跟著加欄位 —— **少讀一欄的後果是「那一欄永遠被判成從空白改成新值」，不是「不記錄」**。
+- 畫面：明細列的「變更軌跡」多一行 `欄位異動 · N 筆 · 最近改到哪幾欄`（一行、沒有捲軸），逐筆的「舊值 → 新值」在「完整軌跡 ↗」視窗裡。⚠️ **面板與視窗的標題自這一批起是「變更軌跡」**（原「時程變更軌跡」）—— 它現在同時涵蓋兩種，沿用舊名就是畫面上的假話（37）。⚠️ 明細列那一行**刻意不印前後值**。
+
+### 5-2. 建立紀錄（85）：`POST` 與匯入各寫一筆 `ChangeType='建立'`／`Phase='stage'`
+- ⚠️⚠️ 在此之前**「這筆需求是誰開的」全系統查不到**：`dbo.Controltable` **沒有 `CreatedBy` 欄**，而 `WriteAuditAsync(oldReq = null)` 只替**已填的日期**寫 `init` —— ① 結束日自 42 批起是選填，所以「只填必填欄位就存檔」這條最常見的路徑會留下 **0 筆稽核列**。
+- ⚠️ **不是變更，是這條軌跡的起點**：不進 `isDateChange`、不計 ⚠N、不動三個計數欄、不強制理由。
+- ⚠️⚠️ 前端 **`NON_CHANGE_TYPES`（`init`／`通知寄送`／`建立`）＋ `isChangeEntry()` 是一份定義、三處共用**（明細面板的 `changeEntries`、編輯視窗的 `PhaseAuditList`、完整軌跡視窗的 `changes`）。漏掉任何一處，**每一筆需求都會多出一張寫著「狀態調整 · 建立」的卡**。
+- 畫面：展開明細的「建立時間」底下多一行 **建立者**；完整軌跡視窗壓在最底一行（只在「全部」時出現）。⚠️ **查不到時印「無紀錄」而不是留白**（tooltip 講明是從哪一批才開始記的）。
+- ⚠️ **匯入也要寫**（`ChangedBy = 'Excel 匯入'`）：少了它，匯入進來的那幾十筆永遠是「建立者 無紀錄」。⚠️ `/api/import` 是匿名的 multipart 端點、拿不到 Windows 身分，不要在那裡「補上真正的使用者」—— 那會是猜的。
+- ⚠️ `hasHist` 已刪除（`建立` 會讓它對每一筆都是 `true`，留著一個永遠為真又沒人用的旗標只會騙到下一個人）。改用 `hasTimeline`。
+
+### 6. 逾期判定只有一份規則：`isPhasePassed()`（23）
+- 資料列上四個時程欄的紅字、與「需關注／逾期篩選／精簡模式的目前階段時程」（`resolveDuePhase()`）**必須共用同一支**。歷史上分開寫過兩次，兩次都做出「畫面與數字對不起來」—— 主管照著紅字找卻找不到那一筆。
+- `resolveDuePhase()` = 排除走完的階段 → 剩下有日期的裡面取**到期日最早**的那一個。挑到的不是 `StatusID` 那一階時，畫面標「最急 · 階段名」。
+- **「這個階段有 `*ActualEnd`」也算走完**（24）。
+- ⚠️ **仍然不可改回「四個日期一起比」**：第一步（排除走完的階段）就是那條禁令的實質，少了它去年交的 Spec 會永遠亮紅燈。**這條規則的起點就是第一版那樣寫** —— 7 列有 5 列全紅（前一年交的 Spec 被標成逾期 334 天），反而把真正落後的那一筆蓋掉。**「日期 < 今天」不是逾期判定。**
+- ⚠️ **沒有可盯的到期日就不預警**，不要退回「最後一個已排定的階段」—— 那會挑到已經走完的階段，做出「一格紅字都沒有卻算一件需關注」的反向落差。
+- **⚠️⚠️ 「走完了沒」只看 `StatusID`（階段代號 < `StatusID`），沒有任何日期反推**（65→66）。舊的「① 一旦 ② 有日期就算走完」那兩條反推註解寫著只給 `StageCode` 空白的舊資料，程式卻對每一筆都生效 —— 做出「資料列只有 ③ 亮今天到期、早兩天到期的 ① 一個字都沒提，而編輯視窗同時把 ① 標成可以標記完成」。前端 `isPhasePassed()` 與後端 `StagePassed()` 是鏡像，各剩一行。**那條反推唯一還在的地方是匯入時 `InferStageCode()`，畫面上再也不推。③④ 本來就沒有，不要再補回任何一條。** ⚠️ 「有 ActualEnd 就算走完」留著當保險。
+
+**例外，也是唯一的例外：「已到階段卻沒壓日期」＝逾期未壓**（33）
+- `unsetDuePhase()`：`StatusID` 走到哪一階段、**那一階段自己**就沒有日期 → `level='unset'`。入口統一走 `resolveFocusPhase()` = **先問未壓、沒有才退回 `resolveDuePhase()`**。反過來會漏掉「③ 沒壓、但 ④ 已先填預設驗收日」。
+- 這**不違反**上一條禁令：那條講的是「不要退回去挑一個**已經走完**的階段」；這裡指名的是**當前這一階段自己**，而且資料列上那一格會同步標「⚠ 未壓日期」——**每一件被算進去的，畫面上都看得見原因**。
+- **不受 7 日窗限制**（它沒有日期可比）。排序 `dueRank`：0=未壓 → 1=有到期日（按剩餘天數）→ 2=沒有到期資訊。
+- ⚠️ **不可以把它塞成一個很小的 `diffDays`（如 -9999）混進同一條數線** —— 那個假天數會流進畫面並被 `diffDays < 0` 算成「已逾期」。
+- ⚠️ `matchDueFilter` 一律比 `e.level`，**不可以拿 `diffDays` 反推**：`unset` 的 `diffDays` 是 `null`，而 **`null <= 7` 在 JS 裡是 `true`**、`null < 0` 是 `false`。
+- ⚠️ `StageCode` 空白或超出 1~5 的**一律不推斷**。
+
+### 7. 其他
+- **日期欄位一律為 `DATE` 型別**，API 與前端之間統一以 `"YYYY-MM-DD"` 字串傳遞。
+- `MpSaving` 是自由文字（可空、可非數字）。`NID` 初期不自動產生，由使用者手動輸入。
 
 ## 開發指令與疑難排解 (Dev Commands & Troubleshooting)
-- 啟動伺服器: `dotnet run` (預設網址 `http://localhost:5242`)
-- 前端編譯: `npm run build` (需在 `c:/Controltable` 目錄下執行)
-- **常見報錯**: 若遇到 `Controltable.exe` 檔案被鎖定 (CS86xx/MSB3026)，可在 PowerShell 執行 `taskkill /F /IM Controltable.exe` 強制關閉背景的 .NET process 後再重新執行。
+- 啟動伺服器: `dotnet run`（或 `preview_start`，見 `.claude/launch.json`）
+- 前端編譯: `npm run build`（在 `c:/Controltable` 執行）
+- **⚠️ `preview_start` 跑的是 `dotnet run --no-build`**：改了 C# 要先 `preview_stop` → `dotnet build` → 再 `preview_start`。舊 process 開著時 build 會「dll 更新了、exe 複製失敗」而且 `--no-build` 照樣起得來 —— 測到的是舊程式。
+- **常見報錯**: 遇到 `Controltable.exe` 被鎖定（CS86xx/MSB3026）可 `taskkill /F /IM Controltable.exe`。⚠️ **但本機那支多半是使用者自己開的**（7127 埠），不要隨手 kill。
+- 更多「這台機器與驗證方法的坑」見 `memory.md` 第 5 節。
