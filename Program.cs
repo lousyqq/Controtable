@@ -1938,12 +1938,15 @@ app.MapPost("/api/requirements", async (Requirement req) =>
         return Results.BadRequest(new { message = "以下必填欄位未填寫：" + string.Join("、", missing), fields = missing });
 
     // 欄位長度（第 82 批）。⚠️ 一定要排在 SQL 之前 —— 讓 DB 去擋的話是 HTTP 500 加一句英文
+    // ⚠️⚠️ 第 107 批：這一句**不可以再叫他「寫在現況描述」** —— 新增視窗自這一批起
+    //    沒有那一格了（使用者 2026-10-05：「新增需求的視窗先移除現況描述、我要在新增後再補」）。
+    //    訊息指向一個畫面上不存在的欄位正是第 37 批那個坑。`PUT` 那一句照舊（編輯視窗還有那一格）。
     var tooLong = TooLongFields(req).Concat(TooLongNotes(req)).ToArray();
     if (tooLong.Length > 0)
         return Results.BadRequest(new
         {
             message = "以下欄位超過長度上限：\n" + string.Join("\n", tooLong.Select(t => "• " + t))
-                    + "\n\n請縮短後再儲存。（現況描述沒有字數上限，長篇說明可以寫在那裡）",
+                    + "\n\n請縮短後再送出。（長篇說明可以等這筆建立好，再用編輯視窗寫進「現況描述」—— 那一欄沒有字數上限）",
             fields = tooLong
         });
 
