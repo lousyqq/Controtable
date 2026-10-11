@@ -272,7 +272,7 @@
     flex-shrink: 0;
     padding: 0 12px;
     border-radius: 7px;
-    font-size: 11px;
+    font-size: 12px;  /* 第 157 批 11 → 12（T3）：頁籤是主要導覽，原本比表格內容還小。頁首在 1280 還有約 270px 空位 */
     font-weight: 700;
     color: var(--text-tertiary);
     transition: background 0.15s, color 0.15s;
@@ -551,11 +551,54 @@
 .legend-strip.is-collapsed { display: none; }
 .chips-print { display: none; }
 
+/* ── 深色模式的頁面捲軸（2026-10-11 / 第 176 批）──
+   `.dark` 掛在 body 上，但瀏覽器畫「整頁的捲軸」看的是 html 的 color-scheme ——
+   只宣告在 body 時，深色畫面右邊是一條白色捲軸。html 另掛 `ct-dark`（app.jsx 切深色的那支 effect），
+   只管 color-scheme，不帶色盤（色盤仍只在 body 的 .dark）。列印時在 @media print 裡改回 light。 */
+html.ct-dark { color-scheme: dark; }
+
+/* ══ 需求列表表格字級 +1px（2026-10-09 / 第 154 批，使用者問「字體再大一點」）══
+   ▶▶ 要改回原本的字級：把下面四行規則整段刪掉（或用註解包起來），然後 npm run build，
+      並把 wwwroot/index.html 的 app.css?v= 與 app.js?v= 往上帶。只有這一個地方，app.jsx 不用動。
+   表格裡原本是 12px（內容）／11px（表頭、StatusID、選單）／10px（NID 底下的徽章），
+   12px 是全頁最多的字級。一律 +1px，只作用在這張表（含展開明細），工具列與其他頁不動。
+   量過：表格最小寬度 1133 → 1193px，1280 螢幕可用 1215px 仍放得下（剩約 22px）；
+   1440／1920 列高只多約 1px，1280 平均多 4px（Main／Sub Cat 被擠窄、長名稱多折行）。
+   ⚠️ **不可再 +1（+2px＝1254px，1280 會出現橫捲）**—— 要更大請用頁首「Ａ」（.ui-zoom）。
+   ⚠️ 中文字寬在使用者機器上量起來比開發機大（memory.md 第 6 節），1280 那 22px 不要再拿去用。
+   ⚠️ 第 155 批做過頁首「表格字 大／標準」切換鈕，使用者決定不要按鈕、自己改這裡測（第 156 批拿掉）。
+   選擇器 (0,2,0) 高於 Tailwind 工具類 (0,1,0)，不需要 !important；line-height 刻意不動（列高才不會變）。 */
+.sticky-table .text-\[10px\] { font-size: 11px; }
+.sticky-table .text-\[11px\] { font-size: 12px; }
+.sticky-table .text-xs,
+.sticky-table .text-\[12px\] { font-size: 13px; }
+
+/* ══ 字級整理（2026-10-09 / 第 157 批，使用者看過三頁的字級量測後選 T1～T4）══
+   原則：畫面上不再出現 10px；11px 只留給徽章這類輔助小字；操作控制項不可比資料內容還小。
+   T2 統計報表（.dash-view）的 10px 一律 11px：長條圖的數字與年月、交叉表說明、風險預警日期、人員負載的分組名。
+      那一頁是 max-w-[1440px] 的卡片版面、寬度有餘裕。
+   T3 工具列（.toolbar-card）的 .ctl 11 → 12px：下拉選單固定 140px 不會變寬，Excel／新增需求只多幾 px（1280 原本剩 30px）。
+      ⚠️ **階段那一排（ALL＋五顆＋需關注…）刻意不動**：1280 只剩十幾 px，加大會折行（CLAUDE.md 版面預算）。
+      頁籤 .seg-item 在上面 @layer components 直接改 12px；T1、T4 在 app.jsx 直接改 class。
+   寫在 @layer 外：.dash-view／.toolbar-card 是新 class，unlayered 規則一律保留。 */
+.dash-view .text-\[10px\] { font-size: 11px; }
+.toolbar-card .ctl { font-size: 12px; }
+
+/* ══ 其餘的 10px 一律 11px（2026-10-11 / 第 177 批，接第 157 批「畫面上不再出現 10px」）══
+   第 157 批只收了表格／工具列／統計報表三個範圍，視窗沒有收到：編輯視窗的「現在輪到」「異動紀錄 (N 次)」
+   「完整軌跡 ↗」「原訂 …」「🔒 還沒輪到」、新增視窗的 Main Cat／Sub Cat 代號、字數提示 LenHint、
+   精簡模式鈕的 ✓、條件晶片列…（app.jsx 有 79 處 text-[10px]）。這一條收全部，不再逐處改 class。
+   ⚠️ 單一 class 選擇器 (0,1,0)，靠「unlayered 贏過 @layer utilities」生效 —— 不可搬進 @layer。
+   ⚠️ 表格那條 (.sticky-table .text-[10px] → 11px) 照留：兩條結果相同，表格那條是第 154 批「要改回就刪四行」的開關。
+   ⚠️ 漏斗鈕上的數字徽章是 text-[9px]（15px 圓圈裡），刻意不動。 */
+.text-\[10px\] { font-size: 11px; }
+
 @media print {
   /* ── 1. 紙上一律白底黑字 ──
      深淺色兩組色盤同時覆寫（`.dark` 掛在 body 上，選擇器要一起收）。
      這裡把對比拉到最大是**為了紙**，與螢幕上「不可把 muted 調淡」是同一個目的
      的兩個方向：輸出裝置不同，看得見才是重點。 */
+  html.ct-dark { color-scheme: light; }
   :root, .dark {
     color-scheme: light;
     --bg-body:#ffffff; --bg-header:#ffffff; --bg-header-border:#999999;
