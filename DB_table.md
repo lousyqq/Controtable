@@ -19,6 +19,7 @@
 | `dbo.AppSettings` | 開關類設定（目前只有 `AccessControlEnabled`） | `18_add_access_control.sql`（同上） |
 | `dbo.AccessLog` | 瀏覽權限規則增刪／開關切換／管理者增刪的稽核 | `18_add_access_control.sql`（同上；`19` 擴充 CHECK） |
 | `dbo.AccessAdmins` | **瀏覽權限的管理者清單**（第 75 批） | `19_add_access_admins.sql`（`Program.cs` 啟動時另有 idempotent bootstrap，只建空表） |
+| `dbo.NotifyRecipients` | **信件通知的固定收件名單**（第 185 批）：需關注批次提醒的收件者／副本，群組信箱與個人信箱混放 | `22_add_notify_recipients.sql`（`Program.cs` 啟動時另有 idempotent bootstrap，獨立一段、失敗不連累卡控） |
 | `dbo.AppLog` | **後端錯誤日誌**（第 82 批）。⚠️ **不是稽核表**，可以定期清 | `20_add_applog.sql`（**刻意沒有 bootstrap**：沒建也不影響任何功能，見下方說明） |
 | `[WEB].[dbo].[notes_person]` | **人員名冊（唯讀、不屬於本專案）**：`EMPNO / NAME / ENAME / DEPTNAME / DEPT_1~4 / EMAIL …`。瀏覽權限拿登入工號來查部門 | 遠端是跨 server 的 VIEW；本機是 `C:\Gantt\sim_create_WEB_notes_person.sql` 建的模擬表。**本專案不建立、不修改它**，名稱由 `appsettings` 的 `Access:PersonView` 指定 |
 > ⚠️ 2026-08-21 起人員名單改用 `dbo.Assignee`。舊的 `dbo.Personnel` 已由 `12_drop_personnel.sql` **刪除**，
@@ -392,7 +393,7 @@
 | 欄位 | 型別 | 說明 |
 |---|---|---|
 | `Id` | INT IDENTITY PK | |
-| `EMPO` | NVARCHAR(20) NULL | **工號**。~~初期一律留空~~ → **2026-08-31 使用者已把 13 筆全部補齊**（8 位數字，如 `00045896`）。模擬帳號的挑選鈕有工號時會優先送工號。⚠️ 2026-08-31 / 第 39 批起這一欄是**這張表與登入者之間唯一的接點**：Windows 帳號剝掉網域（`UMC\00045896` → `00045896`，見 `StripDomain`）就是工號，`/notify-unset` 靠它查出「按下按鈕的人」的信箱來當**寄件者**。沒填的人寄信時會退回設定檔的 `Mail:From` |
+| `EMPO` | NVARCHAR(20) NULL | **工號**。~~初期一律留空~~ → **2026-08-31 使用者已把 13 筆全部補齊**（8 位數字，如 `00045896`）。模擬帳號的挑選鈕有工號時會優先送工號。⚠️ 2026-08-31 / 第 39 批起這一欄是**這張表與登入者之間唯一的接點**：Windows 帳號剝掉網域（`UMC\00045896` → `00045896`，見 `StripDomain`）就是工號，`/notify-unset` 靠它查出「按下按鈕的人」的信箱來當**寄件者**。沒填的人寄信時會退回設定檔的 `Mail:From`。⚠️ **第 184 批（2026-10-12）起寄件者一律 `Mail:From`**，這一欄只剩批次提醒（`/notify-attention`）拿來給按按鈕的人一份副本 |
 | `NAME` | NVARCHAR(100) NOT NULL | 姓名。**控表的 `EmsOwner` / `MsdOwner` 存的就是這個值**（字串比對，沒有外鍵） |
 | `DEPT` | NVARCHAR(10) NOT NULL | `EMS` 或 `MSD`，有 `CK_Assignee_Dept` 檢查限制 |
 | `EMAIL` | NVARCHAR(255) NULL | **信箱**（`15_add_assignee_email.sql`，2026-08-31）。與 `EMPO` 同一個定位：可空、由使用者在 SSMS 人工維護。⚠️ **唯讀**：`GET /api/assignees` 會回傳（JSON `email`），但 `POST`／`PUT` 的 SQL **刻意不寫這一欄**（2026-08-31 使用者要求：「若有新增或修改的，我直接從 DB 端修改就好」）。實測 `PUT` 帶 `email` 進去：`EMPO` 有被改到、`EMAIL` 原值不動。⚠️ 2026-08-31 / 第 39 批起這一欄**有實際用途**了：`POST /api/requirements/{id}/notify-unset` 的收件者與副本信箱就是查這裡（`(DEPT, NAME)` 比對，兩邊 trim、**不濾 `IsActive`**）。沒填的話那個人**收不到通知**，端點會回 400 明講「請在 SSMS 補上」而不是靜靜跳過 |
@@ -525,6 +526,22 @@
 
 ---
 
+## dbo.NotifyRecipients（信件通知收件名單，第 185 批 / 2026-10-12，`22_add_notify_recipients.sql`）
+
+🔐 管理設定 →「信件通知」分頁維護，一個信箱一列。⚠️ **刻意不放進 `dbo.AppSettings`**：那張表 Value 只有 NVARCHAR(200)，而且瀏覽權限卡控的總開關在裡面 —— 信件設定與卡控的資料完全分開。
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| `Id` | INT IDENTITY PK | |
+| `Purpose` | NVARCHAR(20) NOT NULL | 用途。目前只有 `attn`（需關注批次提醒）；之後的自動寄信（結案通知名單等）換一個值共用這張表 |
+| `Kind` | NVARCHAR(10) NOT NULL | `to`（收件者）／`cc`（副本） |
+| `Email` | NVARCHAR(200) NOT NULL | 個人或群組信箱。`UX_NotifyRecipients_Purpose_Email`＝(Purpose, Email) 唯一：同一用途裡不會既是收件者又是副本 |
+| `Label` | NVARCHAR(50) NULL | 顯示名稱（選填） |
+| `GroupDept` | NVARCHAR(10) NULL | `MSD`／`EMS`／NULL：哪個部門的群組信箱。只用在批次視窗「負責人有沒有都收得到」的比對（系統看不到群組裡有誰） |
+| `CreatedBy` / `CreatedAt` | NVARCHAR(50) NULL / DATETIME2(0) | 誰加的、什麼時候 |
+
+不寫 `dbo.AccessLog`（那是瀏覽權限的稽核，混進去會出現在卡控的「最近異動」）。
+
 ## dbo.AppLog（後端錯誤日誌，第 82 批 / 2026-09-25，`20_add_applog.sql`）
 
 | 欄位 | 型別 | 說明 |
@@ -600,6 +617,7 @@
 | `19_add_access_admins.sql` | 2026-09-21 | **已執行**（本機） | 瀏覽權限的管理者清單搬進 DB（第 75 批）：建立 `dbo.AccessAdmins`（`Empno` UNIQUE）、種入 `00002732` / `00041817` / `yu-tinglin`、`CK_AccessLog_Action` 擴充 `ADD_ADMIN` / `DELETE_ADMIN`。實際執行：表建立、種入 3 筆、CHECK 重建成功；重跑確認 idempotent（種入 0 筆、CHECK 走「已含，跳過」）。⚠️ 正式 DB 執行前可先把 `yu-tinglin` 那一列從 VALUES 拿掉（開發機本機帳號） |
 | `21_add_history_field_audit.sql` | 2026-09-28 | **已執行**（本機） | 非日期欄位的稽核（第 84 批）：`dbo.Controltable_History` 新增 `FieldKey NVARCHAR(50)` / `OldValue NVARCHAR(MAX)` / `NewValue NVARCHAR(MAX)`，三欄皆可為 NULL、不建索引。實際執行：三欄新增成功，另以 `sys.columns` 複驗（`max_length` 100 / −1 / −1）。⚠️ **純新增欄位，Program.cs 的啟動 bootstrap 補得到** —— 沒跑這支也不會讓 App 壞掉，但「欄位異動」那幾列會寫不進去（整筆 `PUT` 會失敗）。正式主機請執行。
 | `20_add_applog.sql` | 2026-09-25 | **已執行**（本機） | 後端錯誤日誌落地（第 82 批）：建立 `dbo.AppLog` ＋ `IX_AppLog_LoggedAt`。實際執行：表建立成功、重跑走「已存在，跳過」。⚠️ **刻意沒有啟動時 bootstrap**，而且沒跑這支也不影響任何功能（`AppDiag` 寫不進去一律靜靜跳過）。⚠️ 正式主機要跑它才查得到錯誤紀錄；連線帳號需要對這張表的 `INSERT` 權限 |
+| `22_add_notify_recipients.sql` | 2026-10-12 | **已執行**（本機；表先由啟動 bootstrap 建好，腳本重跑走「已存在，略過」） | 信件通知固定收件名單（第 185 批）：建立 `dbo.NotifyRecipients` ＋ `UX_NotifyRecipients_Purpose_Email`。⚠️ 正式 DB：網站啟動時會自動建；要手動跑也可以 |
 | `15_add_assignee_email.sql` | 2026-08-31 | **已執行** | `dbo.Assignee` 新增 `EMAIL NVARCHAR(255) NULL`，並回填「玉婷／MSD」＝`Sariel_Lin@UMCG`。回填比對 `(DEPT, NAME)`（＝`UX_Assignee_Dept_Name` 的鍵，**不用 `Id`** —— IDENTITY 各環境不保證一致），且只在 `EMAIL IS NULL` 時才寫，重跑不會蓋掉人工改過的值。實際執行：欄位已新增、回填 **1 筆**（`Id 9`），13 筆中僅該筆有值。⚠️ 本檔含中文，`sqlcmd` 要加 **`-f 65001`**，否則 `N'玉婷'` 會被當 ANSI 讀進去、比對不到任何一列，而且**不報錯只回填 0 筆** |
 
 > 📌 **第 14 批（階段順序 gating）沒有 DB 變更**，純前端 + 後端驗證，所以沒有它專屬的腳本。

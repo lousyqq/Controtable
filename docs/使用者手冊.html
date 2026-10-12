@@ -382,7 +382,7 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
     <h1>MSD 需求管控表</h1>
     <p class="lede">EMS 提需求、MSD 開發、EMS 驗收 —— 這套系統把一筆需求從提出到結案的四個階段、每一次日期異動的理由、以及每週要 review 的逾期項目，全部收在同一張表裡。<b>第一部</b>依你的角色（EMS／MSD／主管）一步一步講「輪到我時要按哪裡」，<b>第二部</b>是逐一功能的完整參考。第一次用請從 <a href="#ra">A 章</a> 開始。</p>
     <p class="meta">
-      <span><b>版本</b> 20261011030</span>
+      <span><b>版本</b> 20261012005</span>
       <span><b>適用</b> 我的待辦 · 需求列表 · 統計報表</span>
       <span><b>對象</b> EMS／MSD 負責人、主管</span>
     </p>
@@ -451,7 +451,7 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
     <h3>怎麼知道輪到你了</h3>
     <ul>
       <li><span class="ui">我的待辦</span> 的 <b>「要你處理」</b>有卡片 ＝ 有事要做；空的就是沒你的事。</li>
-      <li>收到主旨「<b>[需求管控表] 請壓定「◯◯」日期</b>」的信 ＝ 上一關做完了，請你壓日期。可以直接回信問寄件者。</li>
+      <li>收到主旨「<b>[需求管控表] 請壓定「◯◯」日期</b>」的信 ＝ 上一關做完了，請你壓日期。信由系統信箱寄出、不能直接回信；副本是另一邊的負責人，有問題找他。</li>
       <li>卡片上的紅字「<b>逾期 N 天</b>」＝ 預計完成日過了，還沒按「做完了」。</li>
     </ul>
 
@@ -582,7 +582,7 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
 
     <h3>第 3 步　<span class="wt ems">EMS</span>　通知 MSD</h3>
     <ol class="steps">
-      <li><b>展開「追蹤中」，NID 99 那一列按 <span class="ui">✉ 提醒 MSD</span></b>視窗會列出收件者智寬、副本建翰。</li>
+      <li><b>展開「追蹤中」，NID 99 那一列按 <span class="ui">✉ 提醒 MSD</span></b>視窗會列出寄給智寬、副本建翰。</li>
       <li><b>按寄出</b>智寬收到「請壓定「② MSD確認」日期」的信。</li>
     </ol>
 
@@ -939,7 +939,7 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
       <tbody>
         <tr><td><span class="ui">我的待辦</span></td><td>只列你名下的需求（<a href="#c18">第 18 章</a>）。紅點＝「要你處理」有東西。</td></tr>
         <tr><td><span class="ui">需求列表</span>／<span class="ui">統計報表</span></td><td>切換頁籤。紅點＝那一頁有需關注的項目。</td></tr>
-        <tr><td><span class="ui">🔐</span></td><td>只有管理者看得到：瀏覽權限設定（<a href="#c14">第 14 章</a>）。</td></tr>
+        <tr><td><span class="ui">🔐</span></td><td>只有管理者看得到：管理設定（瀏覽權限、信件通知的固定名單，<a href="#c14">第 14 章</a>）。</td></tr>
         <tr><td><span class="ui">🖥️ 工號</span></td><td>你現在登入的身分，變更紀錄記的就是這個工號。測試主機上可以點它模擬別人（<a href="#h-simulate">第 14 章</a>）。</td></tr>
         <tr><td><span class="ui">📽 投影</span></td><td>會議室投影用。要先在需求列表開「精簡模式」（<a href="#c12">第 12 章</a>）。</td></tr>
         <tr><td><span class="ui">Ａ 100%</span></td><td>字放大：100% → 115% → 130%，會記住。</td></tr>
@@ -1326,8 +1326,8 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
       <li><b>在哪裡按</b>：我的待辦「追蹤中」那一列的 <span class="ui">✉ 提醒 ○○</span>（還沒壓日期、或已經逾期的那幾列才有）；MSD、管理者在需求列表 ⚠ 未壓日期底下的 <span class="ui">✉</span>。</li>
       <li><b>逾期的也可以催</b>：「追蹤中」裡已經逾期的那一列，<span class="ui">✉ 提醒 ○○</span> 寄的是「已逾期」提醒，請對方標記完成，或更新日期並寫原因。還沒到期的（含 7 天內）不放按鈕。</li>
       <li><b>寄給誰</b>：收件者是那一關的負責人，副本給另一邊的負責人。信箱來自指派人員主檔。</li>
-      <li><b>用誰的名義</b>：寄件者是<b>按按鈕的你本人</b>，對方可以直接回信。你也會收到一份副本。查不到你的信箱時改用系統信箱（視窗上會寫）。</li>
-      <li><b>先確認再寄</b>：視窗會列出寄件者、收件者、副本，按確認才寄。已經通知過的會提醒「這會是第二封」。</li>
+      <li><b>寄件者</b>：一律是系統信箱（需求管控表），不是按按鈕的人。對方不能直接回信，有問題會找副本裡的人。</li>
+      <li><b>先確認再寄</b>：視窗只列「寄給」與「副本」（滑鼠移到名字上看信箱），按 <span class="ui">寄出提醒</span> 才寄。已經寄過的會多一行黃字「已寄過一次」，按鈕變成 <span class="ui">再寄一次</span>。</li>
       <li><b>系統不會自動寄</b>，存檔後也不會問，一定要自己按。次數不限，每次都會留「通知寄送」紀錄（明細裡「✉ 已通知 N 次」）。</li>
     </ul>
     <div class="note warn">
@@ -1341,13 +1341,14 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
       </ul>
     </div>
 
-    <h3 id="h-attn-mail">✉ 一次提醒所有需關注的負責人（MSD、管理者）</h3>
-    <p>需求列表「<span class="ui">需關注 N</span>」左邊的 <span class="ui">✉</span>：</p>
+    <h3 id="h-attn-mail">✉ 一次提醒所有需關注的需求（MSD、管理者）</h3>
+    <p>需求列表「<span class="ui">需關注 N</span>」左邊的 <span class="ui">✉</span>：寄<strong>一封</strong> Dear all 的信給固定名單，依負責人分組列出全部需關注的需求，請大家回控表確認。</p>
     <ol class="steps">
-      <li><b>按下去先預覽，不會馬上寄</b>列出每封信寄給誰、副本誰、包含哪幾筆。今天已經提醒過的會標出來。</li>
-      <li><b>不想寄的取消勾選</b>沒指派負責人或沒有信箱的會灰掉，並寫明原因。</li>
-      <li><b>按寄出</b>每位負責人收到一封彙整信；副本給另一邊的負責人和你本人。寄完會列出每一封的結果。</li>
+      <li><b>按下去先看視窗，不會馬上寄</b>視窗列出這封信會寄給誰（收件者、副本），這裡只能看、不能改。</li>
+      <li><b>按 <span class="ui">寄出提醒</span></b>寄完視窗會寫結果；每一筆需求的變更軌跡各留一筆「通知寄送」。</li>
     </ol>
+    <p><b>名單在哪裡改</b>：頁首 <span class="ui">🔐</span> →「管理設定」→「信件通知」分頁（只有管理者，見 <a href="#c14">第 14 章</a>）。按 <span class="ui">＋ 新增信箱</span>，選「收件者」或「副本」、打信箱、按 Enter；不要的按信箱旁的 ✕。改了直接存。群組信箱與個人信箱可以混著放，例如 MSD 的群組信箱＋某位主管的個人信箱。</p>
+    <p>⚠ 系統不會檢查名單有沒有涵蓋所有負責人（看不到群組信箱裡有誰），設定名單時請自己確認。</p>
   </section>
 
   <!-- ═══ 11 ═══ -->
@@ -1431,7 +1432,7 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
     <p class="sub">限制誰能打開這個網頁。用登入者的 Windows 工號查公司人員名冊拿部門，再比對允許規則。</p>
 
     <h3>面板</h3>
-    <p>只有管理者看得到頁首 <span class="ui">🔐</span>。卡控開著時它會變成 <span class="ui">🔐 卡控中</span>。</p>
+    <p>只有管理者看得到頁首 <span class="ui">🔐</span>。卡控開著時它會變成 <span class="ui">🔐 卡控中</span>。按下去是「管理設定」面板，分兩個分頁：<strong>瀏覽權限</strong>（下表）與<strong>信件通知</strong>（需關注批次提醒的固定名單，見 <a href="#h-attn-mail">第 10 章</a>）。頂端那條狀態列兩邊的狀態都看得到。兩個分頁是分開的資料，改信件通知不會影響卡控。</p>
     <div class="tw"><table>
       <thead><tr><th style="width:150px">區塊</th><th>作用</th></tr></thead>
       <tbody>
@@ -1470,7 +1471,7 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
     <p>每次切換（含 <span class="ui">還原真實帳號</span>），需求列表的篩選、排序、展開的列都會回到預設，頁籤也回到那個人一打開網頁會看到的那一頁 —— 等於他剛登入。精簡模式、深淺色、縮放這類顯示偏好不變。</p>
     <details class="adv"><summary>模擬測不到的三件事</summary>
       <p><b>瀏覽權限卡控</b>：進站時用你的真實帳號檢查，請改用「以工號測試規則」。</p>
-      <p><b>寄件者</b>：單筆 ✉ 模擬時一律用系統信箱；批次提醒一律用你的真實帳號寄。</p>
+      <p><b>寄件者</b>：單筆 ✉ 與批次提醒一律用系統信箱寄。批次提醒能不能按，看的是你的真實帳號（MSD 或管理者）。</p>
       <p><b>模擬管理者</b>：你自己要是管理者，才查得出被模擬的人是不是管理者。</p>
     </details>
   </section>
@@ -1654,11 +1655,12 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
         <tr><td>負責人還沒指派</td><td>那一邊的負責人是空的</td><td>自己：卡片的「需求資料編輯 ↗」或編輯視窗指派</td></tr>
         <tr><td>不需要通知</td><td>這一關已經有日期而且沒有逾期（多半是對方剛壓好、改了日期或標記完成）</td><td>按 ⟳ 再看一次，不用寄</td></tr>
         <tr><td>已寄出，但沒有副本</td><td>信寄出了；副本那一位沒有信箱或格式不對</td><td>管理者（在資料庫補信箱）</td></tr>
-        <tr><td>找不到可用的寄件者信箱</td><td>你的工號不在主檔，也沒設系統信箱</td><td>管理者</td></tr>
+        <tr><td>還沒有設定寄件的系統信箱</td><td>appsettings.json 的 Mail:From 沒填或格式不對</td><td>管理者</td></tr>
         <tr><td><b>尚未確認送出</b></td><td>信交出去了，但還不確定送到</td><td><b>先問對方收到沒</b>，不要馬上再按</td></tr>
         <tr><td><b>等太久，已停止等待</b>（90 秒）</td><td>畫面不等了，不代表沒寄出</td><td>按 ⟳，看明細有沒有「通知寄送」</td></tr>
-        <tr><td>只有 MSD 負責人或管理者可以寄批次提醒</td><td>批次 ✉ 一次寄很多封，用你的 Windows 帳號確認身分</td><td>請 MSD 或管理者按；單筆 ✉ 不受限</td></tr>
-        <tr><td><b>無法寄出提醒</b></td><td>寄件者或郵件主機沒設定好，一封都沒寄</td><td>照訊息補信箱，或請管理者設定</td></tr>
+        <tr><td>只有 MSD 負責人或管理者可以寄批次提醒</td><td>批次 ✉ 一次寄給一群人，用你的 Windows 帳號確認身分</td><td>請 MSD 或管理者按；單筆 ✉ 不受限</td></tr>
+        <tr><td><b>無法寄出提醒</b></td><td>郵件主機或寄件的系統信箱沒設定好、收件名單是空的、或名單裡有信箱格式不正確，信沒有寄出</td><td>請管理者到管理設定 → 信件通知修正名單，或設定郵件主機</td></tr>
+        <tr><td>新增信箱失敗／已經在名單裡了</td><td>管理設定 → 信件通知：同一個信箱只能放一次（收件者與副本也不能重複）、一次只能加一個信箱</td><td>放錯邊就按 ✕ 刪掉再加到另一邊，或修正信箱</td></tr>
         <tr><td>沒有要提醒的需求（批次提醒）</td><td>需關注的那幾筆已經被處理掉了</td><td>按 ⟳ 再看一次</td></tr>
         <tr><td><b>無法確認提醒寄出了沒</b></td><td>沒收到伺服器回應，可能有幾封已寄出</td><td>先看明細有沒有「通知寄送」，不要立刻再按</td></tr>
       </tbody>

@@ -1411,7 +1411,10 @@ const { useState, useMemo, Fragment, useEffect } = React;
         //    箭頭就落在 select 外面，使用者點箭頭等於點空白（2026-10-11 回報「點旁邊下拉無反應，要點中間才會顯示」）。
         //    ⚠️ select 的寬度用 inline style，不用 Tailwind 的 w-full：input.css 的 `select.ctl{width:140px}`
         //    權重（元素＋class）比 .w-full 高，w-full 會靜靜不生效（實測仍是 140px）。
-        const FilterSelect = ({ label, value, onChange, options, allLabel, hint, full = false }) => {
+        // width：只給「進度」用（第 183 批）。字級 12px（第 157 批）之後「進度：進行中 (22)」量到 98px，
+        //   140px 扣掉左右 padding 只剩 96px → 收合時被截成「進度：進行中 (…」。其餘下拉維持 140。
+        //   ⚠️ 用 inline style，不用 w-[…] class（輸給 select.ctl 的 width）
+        const FilterSelect = ({ label, value, onChange, options, allLabel, hint, full = false, width }) => {
             const active = value !== 'All';
             return (
                 <div className={full ? 'relative w-full' : 'relative'}>
@@ -1425,7 +1428,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     <select value={value} onChange={e=>onChange(e.target.value)}
                         className={`ctl appearance-none pr-8 focus:outline-none focus:ring-2 focus:ring-indigo-500/40${active ? ' ctl-on' : ''}`}
                         title={`依 ${label} 篩選${hint ? `\n${hint}` : ''}`}
-                        style={full ? {width:'100%'} : undefined}>
+                        style={full ? {width:'100%'} : (width ? {width} : undefined)}>
                         <option value="All">{allLabel}</option>
                         {options.map(o => <option key={o.value} value={o.value}>{label}：{o.label}</option>)}
                     </select>
@@ -1589,7 +1592,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
             if (/未完成|尚未儲存|未儲存/.test(t))            return 'm-save';
             if (/退回|撤銷/.test(t))                          return 'm-rollback';
             // 「等太久，已停止等待」＝寄信的 90 秒保險絲燒掉（第 44 批）。在此之前它退回整章 c17
-            if (/寄信|寄出|通知|送出|郵件|副本|等太久/.test(t)) return 'm-mail';
+            if (/寄信|寄出|通知|送出|郵件|副本|等太久|信箱/.test(t)) return 'm-mail';   // 第 185 批加「信箱」：管理設定的收件名單
             if (/完成日|標記完成|補記|一併記錄|規格文件/.test(t)) return 'm-done';
             // 瀏覽權限面板的失敗（第 82 批把那六處從 toast 改成彈窗之後才會用到標題）。
             // ⚠️ 一定要排在 /刪除/ **前面** —— 否則「刪除規則失敗」會被判到 m-misc（其他）那一節去
@@ -2181,6 +2184,23 @@ const { useState, useMemo, Fragment, useEffect } = React;
 
         // 規則的五個條件欄位。同一條規則內有填的欄位**全部符合**才通過（AND）；多條規則之間任一符合即放行（OR）。
         // key 對齊後端 AccessRuleRequest 與 /api/access-rules 回傳的欄名
+        // 信箱格式檢查（第 44 批）。⚠️ **刻意比後端的 MailAddress.TryCreate 寬鬆**：
+        // 這裡誤判成壞值會擋掉一封後端其實寄得出去的信，反過來只是讓後端再擋一次而已。
+        // ⚠️ **不可以要求網域裡一定有點**（`a@b.com` 那種）—— 公司內部信箱長得像
+        //    `Chih_Kuan_Chang@UMCG`，加了那條規則會把整份名單判成壞的。
+        // 擋的是實際會出事的那幾種：空白、逗號／分號串接、角括號夾姓名、兩個 @。
+        const MAIL_ADDR_RE = /^[^\s,;<>"()[\]\\@]+@[^\s,;<>"()[\]\\@]+$/;
+        const isMailAddr = (e) => {
+            let a = (e || '').trim();
+            // ⚠️ 從 Outlook 貼過來的「姓名 <位址>」後端**是接受的**（實測 MailAddress.TryCreate
+            //    收 `王小明 <a@x.com>`）—— 這裡不還原成內層位址就會比後端嚴，
+            //    把一個其實寄得出去的信箱標成「格式不正確」。角括號沒收尾的（`王小明 <a@x.com`）
+            //    兩邊都判壞，不必特別處理
+            const m = a.match(/<([^<>]*)>\s*$/);
+            if (m) a = m[1].trim();
+            return MAIL_ADDR_RE.test(a);
+        };
+
         const RULE_FIELDS = [
             { key: 'empno',    label: '工號',     ph: '如 00058897',        hint: 'notes_person.EMPNO。只填這一欄＝白名單，不查名冊也放行' },
             { key: 'deptName', label: 'DEPTNAME', ph: '如 12A_PTI/ESI/MSD', hint: '名冊上的完整部門路徑' },
@@ -2200,6 +2220,178 @@ const { useState, useMemo, Fragment, useEffect } = React;
         //    管理者會以為卡控已經開了，而它其實沒有。
         //    alertModal 的 z-index 與這個面板相同，但它在 DOM 裡排在後面 → 疊在上面；
         //    Esc 的順序（alertModal 排第一）與焦點管理（取 DOM 最後一個 data-ct-modal）都已經對。
+        // ─── 🔐 管理設定 →「信件通知」分頁（第 185 批；第 186 批精簡）───
+        // 需關注批次提醒的固定收件名單（dbo.NotifyRecipients）。使用者：「我要固定寄給同一批人，
+        // 這些需求的負責人一定包含」、「有的會放群組信箱、有的會放個人信箱」。
+        // ⚠️ 第 186 批（使用者看過三版示意圖）：只剩「收件者／副本」兩列信箱標籤（✕ 刪除）＋底部一行「＋ 新增信箱」，
+        //    按下去才換成「收件者｜副本、輸入框、加入、取消」一排。**拿掉**群組標註、顯示名稱、從指派名單挑、
+        //    改成副本 —— 使用者：「不用加入的是群組或個人，就是讓我可以加入收件者跟副本的信箱就好」。
+        //    放錯邊就 ✕ 掉重加。DB 的 Label／GroupDept 兩欄保留不刪（之後要加回來不必改表），畫面不再寫。
+        // ⚠️ 每一筆新增／刪除直接存（與瀏覽權限的規則同一種手感），沒有「儲存」鈕、沒有未儲存狀態。
+        // ⚠️ 資料與瀏覽權限完全分開（另一張表、另一組端點）；權限沿用「誰是管理者」。
+        // ⚠️ 這個元件在 AccessPanel 裡**一直掛著**（切到瀏覽權限分頁只是 hidden）：頂端狀態列的件數靠它回報。
+        const MailSettingsPanel = ({ showToast, onError, onSummary }) => {
+            const [loaded, setLoaded] = useState(false);
+            const [loadError, setLoadError] = useState('');
+            const [items, setItems] = useState([]);
+            const [meta, setMeta] = useState({ from:'', fromOk:false, mailReady:false });
+            const [saving, setSaving] = useState(false);
+            const [adding, setAdding] = useState(null);   // null＝收起；{ kind:'to'|'cc', email:'' }＝新增列展開
+            const addInputRef = React.useRef(null);
+
+            // ⚠️ 只有第一次載入才顯示「載入中…」：每存一筆就重抓，若每次都換成載入畫面，
+            //    輸入框會被卸載重建 —— 游標跑掉、整塊閃一下（第 185 批實際踩到）
+            const load = async () => {
+                setLoadError('');
+                try {
+                    const res = await fetch(api('/api/notify-recipients'));
+                    const j = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(j.message || `伺服器回應 ${res.status}`);
+                    setItems(j.items || []);
+                    setMeta({ from: j.from || '', fromOk: !!j.fromOk, mailReady: !!j.mailReady });
+                    onSummary && onSummary({ to: (j.items || []).filter(x => x.kind === 'to').length,
+                                             cc: (j.items || []).filter(x => x.kind === 'cc').length });
+                } catch (e) {
+                    setLoadError(e.message || '載入失敗');
+                    onSummary && onSummary({ error: true });
+                } finally { setLoaded(true); }
+            };
+            useEffect(() => { load(); }, []);
+            // 新增列一展開就把游標放進輸入框（加完一筆之後也放回去，方便連續加）
+            useEffect(() => { if (adding && addInputRef.current) addInputRef.current.focus(); }, [!!adding, items.length]);
+
+            const jsonReq = async (url, method, body) => {
+                const res = await fetch(api(url), { method, headers: body ? {'Content-Type':'application/json'} : undefined, body: body ? JSON.stringify(body) : undefined });
+                const j = await res.json().catch(() => ({}));
+                // status 一定要掛（第 82 批）：onError 靠它分辨「伺服器回了」與「連回覆都沒收到」
+                if (!res.ok) { const e = new Error(j.message || `伺服器回應 HTTP ${res.status}`); e.status = res.status; throw e; }
+                return j;
+            };
+            const addEmail = adding ? adding.email.trim() : '';
+            const addBad = addEmail !== '' && !isMailAddr(addEmail);
+            const addLong = isOverLimit(addEmail, 200);
+            const addDup = addEmail !== '' && items.some(x => x.email.toLowerCase() === addEmail.toLowerCase());
+            const add = async () => {
+                if (saving || !adding || !addEmail || addBad || addLong || addDup) return;
+                setSaving(true);
+                try {
+                    await jsonReq('/api/notify-recipients', 'POST', { kind: adding.kind, email: addEmail });
+                    showToast(`已加入${adding.kind === 'to' ? '收件者' : '副本'}：${addEmail}`);
+                    // 加完不收起來、留在同一邊（使用者通常一次加好幾個），只清掉輸入框
+                    setAdding(a => a ? { ...a, email:'' } : a);
+                    await load();
+                } catch (e) { onError('新增信箱失敗', e); }
+                finally { setSaving(false); }
+            };
+            const remove = async (x) => {
+                if (saving) return;
+                setSaving(true);
+                try {
+                    await jsonReq(`/api/notify-recipients/${x.id}`, 'DELETE');
+                    showToast(`已移除：${x.email}`, 'warn');
+                    await load();
+                } catch (e) { onError('移除信箱失敗', e); }
+                finally { setSaving(false); }
+            };
+
+            const chips = (kind) => {
+                const list = items.filter(x => x.kind === kind);
+                if (!list.length) return <span className="text-[12px]" style={{color:'var(--text-muted)'}}>{kind === 'to' ? '還沒有收件者' : '沒有副本'}</span>;
+                return (
+                    <div className="flex flex-wrap gap-1.5">
+                        {list.map(x => (
+                            <span key={x.id} className="inline-flex items-center gap-1 pl-2.5 pr-1 py-0.5 rounded-full border text-[12px]"
+                                  style={{borderColor:'var(--border-table)', background:'var(--bg-detail-card)', color:'var(--text-primary)'}}>
+                                <span className="break-all">{x.email}</span>
+                                <button type="button" disabled={saving} onClick={() => remove(x)}
+                                        className="w-5 h-5 rounded-full flex items-center justify-center text-[11px] hover:bg-black/10 dark:hover:bg-white/10 disabled:opacity-40"
+                                        style={{color:'var(--text-muted)'}} title="從名單移除" aria-label={`從名單移除 ${x.email}`}>✕</button>
+                            </span>
+                        ))}
+                    </div>
+                );
+            };
+            const nTo = items.filter(x => x.kind === 'to').length, nCc = items.filter(x => x.kind === 'cc').length;
+            const countPill = (n) => <span className="px-1.5 rounded-full text-[11px]" style={{background:'var(--bg-detail-card)', color:'var(--text-muted)'}}>{n}</span>;
+
+            if (!loaded) return <div className="text-center text-sm py-10" style={{color:'var(--text-muted)'}}>載入中…</div>;
+            if (loadError) return (
+                <div className="rounded-lg border p-3 text-sm font-bold" style={{background:'var(--tone-alert-bg)', borderColor:'var(--tone-alert-border)', color:'var(--tone-alert)'}}>
+                    載入失敗：{loadError}
+                    <button onClick={load} className="ml-2 underline">重試</button>
+                </div>
+            );
+            return (
+                <div className="space-y-3">
+                    <div className="rounded-xl border overflow-hidden" style={{borderColor:'var(--border-table)'}}>
+                        <div className="px-3.5 py-2.5 flex items-baseline gap-2 flex-wrap border-b" style={{borderColor:'var(--border-table)'}}>
+                            <span className="text-[13px] font-bold">👥 需關注批次提醒</span>
+                            <span className="text-[12px]" style={{color:'var(--text-muted)'}}>按「需關注」旁的 ✉ 時寄給這份名單</span>
+                        </div>
+                        {[{k:'to', t:'收件者', n:nTo}, {k:'cc', t:'副本', n:nCc}].map(r => (
+                            <div key={r.k} className="px-3.5 py-2.5 grid gap-3 items-center border-b" style={{gridTemplateColumns:'64px minmax(0,1fr)', borderColor:'var(--border-table)'}}>
+                                <span className="text-[13px] flex items-center gap-1.5" style={{color:'var(--text-secondary)'}}>{r.t} {countPill(r.n)}</span>
+                                {chips(r.k)}
+                            </div>
+                        ))}
+                        {!adding ? (
+                            <div className="px-3.5 py-2.5 flex items-center gap-2 flex-wrap">
+                                <button type="button" onClick={() => setAdding({ kind:'to', email:'' })}
+                                        className="text-[13px] font-bold" style={{color:'var(--brand)'}}>＋ 新增信箱</button>
+                                <span className="ml-auto text-[11px]" style={{color: meta.fromOk && meta.mailReady ? 'var(--text-muted)' : 'var(--tone-alert)'}}>
+                                    {!meta.fromOk ? `⚠ 寄件的系統信箱（appsettings.json 的 Mail:From）${meta.from ? `格式不正確（${meta.from}）` : '還沒有設定'}，設好之前寄不出去`
+                                     : !meta.mailReady ? '⚠ 郵件伺服器（Mail:Host）還沒有設定，寄不出去'
+                                     : <>寄件者：系統信箱 <span className="font-mono">{meta.from}</span></>}
+                                </span>
+                            </div>
+                        ) : (
+                            <div className="px-3.5 py-2.5" style={{background:'var(--bg-detail-card)'}}>
+                                <div className="flex items-center gap-2">
+                                    <div className="inline-flex rounded-lg border overflow-hidden shrink-0 text-[13px]" role="radiogroup" aria-label="加成收件者或副本"
+                                         style={{borderColor:'var(--border-table)'}}>
+                                        {[{k:'to', t:'收件者'}, {k:'cc', t:'副本'}].map(o => (
+                                            <button key={o.k} type="button" role="radio" aria-checked={adding.kind === o.k}
+                                                    onClick={() => setAdding(a => ({ ...a, kind: o.k }))}
+                                                    className="px-3 py-1.5 font-bold"
+                                                    style={adding.kind === o.k
+                                                        ? {background:'var(--brand-soft)', color:'var(--brand)'}
+                                                        : {background:'var(--bg-card)', color:'var(--text-secondary)'}}>{o.t}</button>
+                                        ))}
+                                    </div>
+                                    <input ref={addInputRef} type="text" value={adding.email} disabled={saving}
+                                           placeholder="輸入信箱，例如 MSD_All@umc.com" aria-label="要加入的信箱"
+                                           className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg text-sm border outline-none focus:ring-2 ring-indigo-500/50"
+                                           style={{background:'var(--bg-main)', borderColor: addBad || addLong ? 'var(--tone-alert)' : 'var(--border-table)', color:'var(--text-primary)'}}
+                                           onChange={e => { const v = e.target.value; setAdding(a => ({ ...a, email: v })); }}
+                                           onKeyDown={e => {
+                                               if (e.key === 'Enter' && !e.nativeEvent.isComposing) add();
+                                               // Esc 只收起新增列，不關整個面板（面板的 Esc 掛在 window 上，這裡擋掉往上冒）
+                                               if (e.key === 'Escape') { e.stopPropagation(); setAdding(null); }
+                                           }} />
+                                    <button type="button" onClick={() => add()} disabled={saving || !addEmail || addBad || addLong || addDup}
+                                            className="shrink-0 px-4 py-1.5 rounded-lg text-[13px] font-bold text-white shadow-sm disabled:opacity-40"
+                                            style={{background:'var(--brand)'}}>{saving ? '儲存中…' : '加入'}</button>
+                                    <button type="button" onClick={() => setAdding(null)}
+                                            className="shrink-0 px-3 py-1.5 rounded-lg text-[13px] font-bold border"
+                                            style={{background:'var(--bg-input)', color:'var(--text-secondary)', borderColor:'var(--bg-input-border)'}}>取消</button>
+                                </div>
+                                {(addBad || addLong || addDup) && (
+                                    <div className="mt-1.5 text-[12px] font-bold" style={{color:'var(--tone-alert)'}}>
+                                        {addLong ? `信箱太長（上限 200 字，目前 ${addEmail.length} 字）`
+                                         : addBad ? '信箱格式不正確（一次只能加一個信箱，不要用逗號或分號串在一起）'
+                                         : '這個信箱已經在名單裡了（同一個信箱不能同時是收件者和副本）'}
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                    <div className="rounded-xl border border-dashed px-3.5 py-2.5 text-[12px]" style={{borderColor:'var(--border-table)', color:'var(--text-muted)'}}>
+                        ⚡ 自動寄信（交棒、退回、結案）：之後做，目前不會自動寄任何信
+                    </div>
+                </div>
+            );
+        };
+
         const AccessPanel = ({ myCheck, showToast, onError, onClose, onChanged }) => {
             const [loading, setLoading] = useState(true);
             const [loadError, setLoadError] = useState('');
@@ -2218,6 +2410,10 @@ const { useState, useMemo, Fragment, useEffect } = React;
             const [testResult, setTestResult] = useState(null);
             const [testing, setTesting] = useState(false);
             const [logOpen, setLogOpen] = useState(false);
+            // 第 185 批：面板改名「管理設定」、分「瀏覽權限」「信件通知」兩個分頁。瀏覽權限分頁的內容一行沒改，
+            // 只是包進 tab === 'access' 的條件裡。每次打開都停在瀏覽權限（不記住上次的分頁）。
+            const [tab, setTab] = useState('access');
+            const [mailSummary, setMailSummary] = useState(null);   // { to, cc } | { error:true }，由 MailSettingsPanel 回報
 
             const load = async () => {
                 setLoading(true); setLoadError('');
@@ -2322,22 +2518,55 @@ const { useState, useMemo, Fragment, useEffect } = React;
 
             return (
                 <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4"
-                     data-ct-modal role="dialog" aria-modal="true" aria-label="瀏覽權限" tabIndex={-1}
+                     data-ct-modal role="dialog" aria-modal="true" aria-label="管理設定" tabIndex={-1}
                      onClick={onClose}>
                     <div className="rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col" style={{background:'var(--bg-card)', color:'var(--text-primary)'}} onClick={e=>e.stopPropagation()}>
-                        <div className="p-4 border-b flex items-start justify-between gap-3" style={{borderColor:'var(--border-table)'}}>
+                        <div className="px-4 pt-4 flex items-start justify-between gap-3">
                             <div className="min-w-0">
-                                <div className="flex items-center gap-1.5"><h3 className="text-base font-bold">🔐 瀏覽權限</h3><ManualLink anchor="c14" label="瀏覽權限（管理者）" /></div>
+                                <div className="flex items-center gap-1.5">
+                                    <h3 className="text-base font-bold">🔐 管理設定</h3>
+                                    {tab === 'access'
+                                        ? <ManualLink anchor="c14" label="瀏覽權限（管理者）" />
+                                        : <ManualLink anchor="h-attn-mail" label="需關注批次提醒" />}
+                                </div>
                                 <p className="text-[11px] mt-1" style={{color:'var(--text-muted)'}}>
-                                    依人員名冊的部門（DEPT_1 / 2 / 3）或工號白名單卡控，任一規則符合即可瀏覽。
-                                    名冊來源：<span className="font-mono">{personView || '—'}</span>
+                                    {tab === 'access'
+                                        ? <>依人員名冊的部門（DEPT_1 / 2 / 3）或工號白名單卡控，任一規則符合即可瀏覽。
+                                            名冊來源：<span className="font-mono">{personView || '—'}</span></>
+                                        : '寄信的收件名單。與瀏覽權限是分開的資料，改這裡不會影響卡控。'}
                                 </p>
                             </div>
                             <button onClick={onClose} className="shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-sm hover:bg-black/10" aria-label="關閉" title="關閉（Esc）" style={{color:'var(--text-tertiary)'}}>✕</button>
                         </div>
+                        {/* 兩個分頁共用的狀態列：不必切過去就看得到另一邊的狀態 */}
+                        <div className="px-4 pt-3 grid gap-2 text-[12px]" style={{gridTemplateColumns:'repeat(auto-fit, minmax(200px, 1fr))'}}>
+                            <div className="rounded-lg px-3 py-2 font-bold"
+                                 style={enabled ? {background:'var(--tone-alert-bg)', color:'var(--tone-alert)'} : {background:'var(--bg-detail-card)', color:'var(--text-secondary)'}}>
+                                {loading ? '瀏覽權限：讀取中…' : loadError ? '瀏覽權限：讀取失敗' : enabled ? `🔒 瀏覽權限：卡控中（${rules.length} 條規則）` : '🔓 瀏覽權限：未卡控'}
+                            </div>
+                            <div className="rounded-lg px-3 py-2" style={{background:'var(--bg-detail-card)', color:'var(--text-secondary)'}}>
+                                ✉ 批次提醒：{!mailSummary ? '讀取中…' : mailSummary.error ? '讀取失敗'
+                                    : `收件者 ${mailSummary.to}、副本 ${mailSummary.cc}`}
+                            </div>
+                        </div>
+                        <div className="px-4 mt-2 flex gap-5 border-b" role="tablist" style={{borderColor:'var(--border-table)'}}>
+                            {[{k:'access', t:'瀏覽權限'}, {k:'mail', t:'信件通知'}].map(x => (
+                                <button key={x.k} type="button" role="tab" aria-selected={tab === x.k} onClick={() => setTab(x.k)}
+                                        className="py-2 text-[13px] font-bold -mb-px"
+                                        style={tab === x.k
+                                            ? {color:'var(--brand)', borderBottom:'2px solid var(--brand)'}
+                                            : {color:'var(--text-secondary)', borderBottom:'2px solid transparent'}}>
+                                    {x.t}
+                                </button>
+                            ))}
+                        </div>
 
                         <div className="p-4 space-y-5 overflow-y-auto">
-                            {loading ? (
+                            {/* 信件通知分頁一直掛著（狀態列的件數靠它），切走只是 hidden */}
+                            <div hidden={tab !== 'mail'}>
+                                <MailSettingsPanel showToast={showToast} onError={onError} onSummary={setMailSummary} />
+                            </div>
+                            {tab !== 'access' ? null : loading ? (
                                 <div className="text-center text-sm py-10" style={{color:'var(--text-muted)'}}>載入中…</div>
                             ) : loadError ? (
                                 <div className="rounded-lg border p-3 text-sm font-bold" style={{background:'var(--tone-alert-bg)', borderColor:'var(--tone-alert-border)', color:'var(--tone-alert)'}}>
@@ -2752,6 +2981,8 @@ const { useState, useMemo, Fragment, useEffect } = React;
             const [alertModal, setAlertModal] = useState(null);
             // 確認型視窗（刪除需求、刪除人員），取代原生 confirm()
             const [confirmModal, setConfirmModal] = useState(null); // { title, message, onConfirm }
+            // 單筆 ✉ 的寄信確認視窗（第 184 批）：{ item, p, isOd, prev, onConfirm }，見 askNotifyUnset
+            const [notifyModal, setNotifyModal] = useState(null);
             // 規格回退視窗（第 16 批）：{ id, nid, curStage, target, note }
             const [rollbackModal, setRollbackModal] = useState(null);
             // 撤銷上一次標記完成的視窗（第 66 批，2026-09-11）：{ id, nid, phaseKey, done, curStage, note }
@@ -5430,7 +5661,8 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 if (e.key !== 'Escape') return;
                 if (alertModal)          { setAlertModal(null); return; }
                 if (confirmModal)        { setConfirmModal(null); return; }
-                if (doneModal)           { setDoneModal(null); return; }
+                if (notifyModal)         { setNotifyModal(null); return; }
+                if (doneModal)          { setDoneModal(null); return; }
                 // ⚠️ 新開一個視窗就要**回來這裡加一行**：少了它，那個視窗按 Esc 不會關，
                 //    而使用者會接著按第二次 Esc —— 那時關掉的是底下那個編輯視窗（第 111／112 批各補過一次）
                 if (dateModal)           { setDateModal(null); return; }
@@ -5460,7 +5692,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // 只寫一份共用的（每個視窗各自寫一次遲早會漂移成「有的有、有的沒有」）：
             // 視窗的最外層都標了 data-ct-modal，DOM 裡的最後一個就是疊在最上面的那個。
             const openModalCount = [isAssigneeModalOpen, !!editingData, isActorModalOpen, isAccessPanelOpen,
-                                    !!alertModal, !!rollbackModal, !!confirmModal,
+                                    !!alertModal, !!rollbackModal, !!confirmModal, !!notifyModal,
                                     !!doneModal, !!undoModal, !!histModal, !!dateModal,
                                     !!viewModal, !!attnModal].filter(Boolean).length;
             const topModalEl = () => {
@@ -6322,22 +6554,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // ⚠️ 不濾 isActive：這裡問的是「這個名字的信箱是什麼」，不是「可不可以指派給他」。
             //    停用的人仍掛在既有需求上（ownerSelectOptions 會把他補回選項），
             //    濾掉的話那些需求打開就看不到信箱，而畫面上也不會說為什麼。
-            // 信箱格式檢查（第 44 批）。⚠️ **刻意比後端的 MailAddress.TryCreate 寬鬆**：
-            // 這裡誤判成壞值會擋掉一封後端其實寄得出去的信，反過來只是讓後端再擋一次而已。
-            // ⚠️ **不可以要求網域裡一定有點**（`a@b.com` 那種）—— 公司內部信箱長得像
-            //    `Chih_Kuan_Chang@UMCG`，加了那條規則會把整份名單判成壞的。
-            // 擋的是實際會出事的那幾種：空白、逗號／分號串接、角括號夾姓名、兩個 @。
-            const MAIL_ADDR_RE = /^[^\s,;<>"()[\]\\@]+@[^\s,;<>"()[\]\\@]+$/;
-            const isMailAddr = (e) => {
-                let a = (e || '').trim();
-                // ⚠️ 從 Outlook 貼過來的「姓名 <位址>」後端**是接受的**（實測 MailAddress.TryCreate
-                //    收 `王小明 <a@x.com>`）—— 這裡不還原成內層位址就會比後端嚴，
-                //    把一個其實寄得出去的信箱標成「格式不正確」。角括號沒收尾的（`王小明 <a@x.com`）
-                //    兩邊都判壞，不必特別處理
-                const m = a.match(/<([^<>]*)>\s*$/);
-                if (m) a = m[1].trim();
-                return MAIL_ADDR_RE.test(a);
-            };
+            // isMailAddr 第 185 批搬到模組層（管理設定的信件通知分頁也要用），見 AccessPanel 上方
 
             const assigneeEmailOf = (dept, name) => {
                 const n = (name || '').trim();
@@ -6468,14 +6685,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 // 否則視窗會顯示「副本：宸詳 <a@x.com;b@y.com>」像是真的會寄給他
                 const ccEmail = isMailAddr(ccEmailRaw) ? ccEmailRaw : '';
                 const ccBadFormat = ccEmailRaw !== '' && ccEmail === '';
-                // 寄件者＝按下按鈕的那個人本人（2026-08-31 使用者要求）：
-                // Windows 帳號剝掉網域就是工號，對 dbo.Assignee 的 EMPO 查出信箱。
-                // ⚠️ 只認 source === 'windows' —— 模擬帳號用本人身分寄信是真的冒名，
-                //    後端也是同一條界線（見 AssigneeByEmpNoAsync 的說明）。
-                // ⚠️ 查不到不是錯誤：後端會退回設定檔的 Mail:From，這裡就顯示成「系統預設信箱」
-                const me = (actor.source === 'windows' && actor.empId)
-                    ? assigneeList.find(a => (a.empNo || '').trim() === String(actor.empId).trim() && (a.email || '').trim())
-                    : null;
+                // 寄件者第 184 批起一律是系統信箱（後端 Mail:From），這裡不再算、視窗也不寫
                 // ⚠️ 寄不出去的原因要講得夠具體到可以直接去修（EMAIL 欄是唯讀的，
                 //    只能在 SSMS 改）—— 只說「無法寄出」的話沒有人知道要去哪裡補
                 // ⚠️ 「格式打錯」也要算進 problem（第 44 批）。它與「沒填」的後果一模一樣：
@@ -6495,8 +6705,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                       + '常見打錯：夾雜全形字元、多個信箱用逗號或分號串在一起、前後多了角括號或姓名。'
                     : '';
                 return { phase: ph, kind, end: od ? od.end : '', alert: od ? od.alert : null,
-                         side, toName, toEmail, ccDept, ccName, ccEmail, ccBadFormat, problem,
-                         fromName: me ? me.name : '', fromEmail: me ? (me.email || '').trim() : '' };
+                         side, toName, toEmail, ccDept, ccName, ccEmail, ccBadFormat, problem };
             };
 
             // ─── 這封通知的收件者，是不是登入的這個人自己？（第 110 批，2026-10-05）───
@@ -6526,13 +6735,12 @@ const { useState, useMemo, Fragment, useEffect } = React;
             };
             const notifyToMe = (p) => !!p && isMeAssignee(p.side, p.toName);
 
-            // ─── 「需關注」批次提醒（第 125 批，2026-10-06 使用者要求）───
-            // 需求列表工具列「需關注」左邊那顆 ✉。先打一次 send:false 拿預覽（寄給誰、哪幾筆、今天提醒過沒），
-            // 確認視窗列完、他勾選完才打 send:true。
-            // ⚠️⚠️ 哪幾筆、寄給誰一律由後端算（/api/notify-attention），這裡送的 ids 只能縮小範圍。
-            // ⚠️⚠️ 今天已經提醒過的**照寄、只標出來**（使用者選的），所以預設全部勾選。
-            // ⚠️ 兩次 fetch 都要有 AbortController（第 44 批那條）：寄信那一次的保險絲按封數放寬 ——
-            //    後端是一封一封寄的，每封最壞要等 TCP 探測＋SMTP 對話兩段逾時。
+            // ─── 「需關注」批次提醒（第 125 批；第 185 批改成寄一封給固定名單）───
+            // 需求列表工具列「需關注」左邊那顆 ✉。先打一次 send:false 拿預覽（哪幾筆、分組、固定名單、負責人信箱），
+            // 視窗只顯示 🔐 管理設定 →「信件通知」的固定名單（第 186 批：只看不改），按「寄出提醒」才打 send:true。
+            // ⚠️⚠️ 哪幾筆、寄給誰一律由後端算（/api/notify-attention 寄送時自己讀名單），前端什麼都不送。
+            // ⚠️⚠️ 今天已經提醒過的**照寄、只標出來**（第 125 批使用者選的）。
+            // ⚠️ 兩次 fetch 都要有 AbortController（第 44 批那條）：寄信那一次只寄一封，保險絲 90 秒（同單筆 ✉）。
             const openAttnNotify = async () => {
                 setAttnModal({ loading:true });
                 const ctl = new AbortController();
@@ -6543,45 +6751,43 @@ const { useState, useMemo, Fragment, useEffect } = React;
                         body: JSON.stringify({ send:false }), signal: ctl.signal });
                     const b = await res.json().catch(() => ({}));
                     if (!res.ok) { setAttnModal({ error: b.message || `讀取失敗 (HTTP ${res.status})` }); return; }
-                    setAttnModal({ data:b, unchecked:[] });
+                    const rec = b.recipients || [];
+                    setAttnModal({ data:b, listOpen:false,
+                                   to: rec.filter(r => r.kind === 'to'), cc: rec.filter(r => r.kind === 'cc') });
                 } catch (err) {
                     setAttnModal({ error: err.name === 'AbortError' ? '等太久，已停止等待（30 秒內沒有回應）。請稍後再試。'
                                                                     : '連不到伺服器，請確認後端服務與資料庫連線是否正常。' });
                 } finally { clearTimeout(fuse); }
             };
             const sendAttnNotify = () => {
-                const d = attnModal && attnModal.data;
-                if (!d) return;
-                const un = new Set(attnModal.unchecked || []);
-                const sendable = d.groups.filter(g => !g.problem);
-                const ids = sendable.flatMap(g => g.items.map(i => i.id)).filter(id => !un.has(id));
-                const mails = sendable.filter(g => g.items.some(i => !un.has(i.id))).length;
-                if (!ids.length) return;
+                const a = attnModal;
+                const d = a && a.data;
+                if (!d || !(a.to || []).length) return;
                 runExclusive(async () => {
                     setAttnModal(p => p ? { ...p, sending:true } : p);
-                    showToast(`寄送中…（共 ${mails} 封，一封一封寄，請稍候）`);
+                    showToast('寄送中…（連不到郵件主機時最多會等 20 秒）');
                     const ctl = new AbortController();
-                    const fuse = setTimeout(() => ctl.abort(), Math.min(600000, 60000 + mails * 45000));
+                    const fuse = setTimeout(() => ctl.abort(), 90000);
                     try {
                         const res = await fetch(api('/api/notify-attention'), {
                             method:'POST', headers:{'Content-Type':'application/json'},
-                            body: JSON.stringify({ send:true, ids }), signal: ctl.signal });
+                            body: JSON.stringify({ send:true }),
+                            signal: ctl.signal });
                         const b = await res.json().catch(() => ({}));
                         if (!res.ok) {
                             setAttnModal(p => p ? { ...p, sending:false } : p);
                             setAlertModal({ title:'無法寄出提醒', message: b.message || `寄信被拒絕 (HTTP ${res.status})` });
                             return;
                         }
-                        setAttnModal(p => p ? { ...p, sending:false, results: b.results || [] } : p);
+                        setAttnModal(p => p ? { ...p, sending:false, result: b } : p);
                         await fetchHistory();
-                        const n = (b.results || []).filter(r => r.status === 'sent' || r.status === 'uncertain').length;
-                        showToast(`已處理 ${n} 封提醒，結果列在視窗上`);
+                        showToast(b.message || '已寄出提醒', b.status === 'uncertain' ? 'warn' : 'success');
                     } catch (err) {
                         setAttnModal(p => p ? { ...p, sending:false } : p);
-                        // ⚠️ 沒拿到回應 ≠ 沒寄出（第 44 批「未確認送出」同一條界線）：可能有幾封已經送出去了
+                        // ⚠️ 沒拿到回應 ≠ 沒寄出（第 44 批「未確認送出」同一條界線）
                         setAlertModal({ title:'無法確認提醒寄出了沒',
                             message: (err.name === 'AbortError' ? '等太久，已停止等待。' : '連線中斷，沒有收到伺服器的回應。')
-                                   + '\n\n其中幾封可能已經寄出 —— 請先展開那幾筆需求的「變更軌跡」看有沒有「通知寄送」紀錄，不要立刻再按一次（對方會收到第二封）。' });
+                                   + '\n\n信可能已經寄出 —— 請先展開其中一筆需求的「變更軌跡」看有沒有今天的「通知寄送」紀錄，不要立刻再按一次（大家會收到第二封）。' });
                         fetchHistory();
                     } finally { clearTimeout(fuse); }
                 });
@@ -6599,40 +6805,15 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 //    讀成「這一階段已經壓好日期了」，那正好是相反的意思
                 if (p.problem) { setAlertModal({ title: '無法寄出通知', message: p.problem }); return; }
 
-                const who = [item.nid && `NID ${item.nid}`, item.mainCat, item.subCat].filter(Boolean).join(' / ');
-                const ccLine = p.ccEmail    ? `副本　：${p.ccName} <${p.ccEmail}>`
-                             : p.ccBadFormat ? `副本　：${p.ccName}（信箱格式不正確，這次不會有副本）`
-                             : p.ccName     ? `副本　：${p.ccName}（指派人員主檔裡沒有信箱，這次不會有副本）`
-                                            : `副本　：（${p.ccDept} 還沒指派負責人，這次不會有副本）`;
-                // 寄件者一定要寫在視窗上：這封信會用他的名義寄出去，
-                // 按下去之前看不到是誰寄的，等於替他簽了一個名
-                // 本人也收一份副本（第 62 批，2026-09-11）：這封信不經過他的郵件客戶端、
-                // 寄件匣裡不會有，所以後端會把他自己加進副本 —— 這裡要先講。
-                // ⚠️ 判斷與後端 selfCcEmail 同一套（本人 ≠ 收件者 ≠ 副本才加），這裡只是預告
-                const fromLc = (p.fromEmail || '').toLowerCase();
-                const selfCc = !!fromLc && fromLc !== (p.toEmail || '').toLowerCase() && fromLc !== (p.ccEmail || '').toLowerCase();
-                const fromLine = p.fromEmail
-                    ? `寄件者：${p.fromName} <${p.fromEmail}>（你本人，對方可以直接回信${selfCc ? '；你自己也會收到一份副本' : ''}）`
-                    : '寄件者：系統預設信箱（你的工號在指派人員主檔裡查不到信箱）';
-                // 已經通知過同一個人時，把上一次的時間講出來（2026-09-02 / 第 43 批）。
-                // ⚠️ **只告知、不擋**：存檔後的自動詢問已經因為這一列而不再跳，所以走到這裡
-                //    就代表他是自己按了 ✉ —— 那多半正是「對方沒回，我要再催一次」。擋下來
-                //    等於把「通知過了沒」這個他唯一查得到答案的地方改成一道關卡。
+                // ─── 第 184 批（2026-10-12，使用者看過示意圖）：改成專用的 notifyModal ───
+                // 使用者：「一般不懂程式的人只想要越簡單越好」—— 視窗只留「寄給、副本」兩行＋兩顆按鈕；
+                // 信箱地址收進名字的 title、寄件者不寫（一律系統信箱）、「會留一筆通知寄送」不寫。
+                // 已經通知過同一個人時多一行黃字、按鈕改「再寄一次」（第 43 批：**只告知、不擋** ——
+                // 走到這裡就代表他是自己按了 ✉，多半正是「對方沒回，我要再催一次」）。
                 const isOd = p.kind === 'overdue';
                 const prev = phaseNotifiedEntry(item.id, p.phase.key, p.toEmail, null, isOd ? p.end : undefined);
-                const againLine = prev
-                    ? `⚠️ 這個${isOd ? '期限' : '階段'}已經在 ${prev.changedAt} 通知過 ${p.toName} 了，這會是第二封。\n\n`
-                    : '';
-                setConfirmModal({
-                    title: isOd ? '寄信提醒已逾期' : '寄信通知壓定日期',
-                    message: (isOd
-                              ? `需求「${who}」目前在「${p.phase.label}」，原訂 ${p.end} 完成，${p.alert.label}。\n\n`
-                                + `要寄信提醒 ${p.side} 負責人嗎？（做完了就標記完成；要延後就更新日期並寫原因）\n\n`
-                              : `需求「${who}」目前已經走到「${p.phase.label}」，但這個階段還沒有壓日期。\n\n`
-                                + `要寄信通知 ${p.side} 負責人進系統把日期壓上去嗎？\n\n`)
-                           + `${fromLine}\n收件者：${p.toName} <${p.toEmail}>\n${ccLine}\n\n`
-                           + againLine
-                           + '按「確定」會立刻寄出，並在這筆需求的變更軌跡留下一筆「通知寄送」紀錄。',
+                setNotifyModal({
+                    item, p, isOd, prev,
                     onConfirm: () => runExclusive(async () => {
                         // ⚠️ 一定要先講「正在寄」（2026-09-01 補）。寄信是這個 App 裡**唯一**要等
                         // 網路對方回應的動作，連不到 relay 時後端會等到逾時 —— 在此之前那段時間
@@ -7394,10 +7575,11 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                 {!present && accessCheck && actingAdmin && (
                                 <button onClick={()=>setIsAccessPanelOpen(true)}
                                         className={`ctl-sm flex-shrink-0${accessCheck.enabled ? ' ctl-on' : ''}`}
-                                        aria-label="瀏覽權限設定"
-                                        title={accessCheck.enabled
-                                            ? '瀏覽權限：卡控啟用中（不符合規則的人看不到這個網頁）\n點擊管理允許規則'
-                                            : '瀏覽權限：目前未卡控（所有人皆可瀏覽）\n點擊設定允許規則與開關'}>
+                                        aria-label="管理設定（瀏覽權限、信件通知）"
+                                        title={(accessCheck.enabled
+                                            ? '管理設定\n瀏覽權限：卡控啟用中（不符合規則的人看不到這個網頁）'
+                                            : '管理設定\n瀏覽權限：目前未卡控（所有人皆可瀏覽）')
+                                            + '\n點擊設定瀏覽權限與信件通知的收件名單'}>
                                     🔐{accessCheck.enabled ? ' 卡控中' : ''}
                                 </button>
                                 )}
@@ -9101,7 +9283,9 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         ⚠️ 第 179 批：「到期狀態」「警示」收進「更多篩選」，**進度刻意留在外面** ——
                                         預設的「只看進行中」是一直生效的條件，而只剩它時條件晶片列不出現（第 50 批），
                                         收進面板就沒有任何地方看得到「我正在只看進行中」 */}
-                                    <FilterSelect label="進度" value={progressFilter} onChange={setProgressFilter} allLabel="不限進度"
+                                    {/* 寬 164（第 183 批）：140 會把「進度：進行中 (22)」截掉；留到三位數＋公司桌機字型較寬的餘裕，
+                                        1280 第一列原本剩約 185px，這裡用掉 24 */}
+                                    <FilterSelect label="進度" value={progressFilter} onChange={setProgressFilter} allLabel="不限進度" width={164}
                                                   options={[
                                                       { value:'ongoing', label:`進行中 (${analytics.ongoing})` },
                                                       { value:'done',    label:`已完成 (${analytics.done})` }
@@ -9285,9 +9469,9 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         {canAttnNotify && dueAlerts.length > 0 && (
                                             <button type="button" onClick={()=>openAttnNotify()}
                                                     className="ctl ctl-icon no-print"
-                                                    aria-label={`寄信提醒需關注的 ${dueAlerts.length} 筆需求的負責人`}
-                                                    title={`寄信提醒「需關注」這 ${dueAlerts.length} 筆的負責人（逾期／${DUE_WINDOW_DEFAULT} 日內到期／未壓日期）。
-每位負責人一封彙整信，副本給另一邊的負責人與你本人；寄出前會先列出清單讓你確認。`}>
+                                                    aria-label={`寄信提醒需關注的 ${dueAlerts.length} 筆需求`}
+                                                    title={`寄信提醒「需關注」這 ${dueAlerts.length} 筆（逾期／${DUE_WINDOW_DEFAULT} 日內到期／未壓日期）。
+寄一封信給固定名單（管理設定 → 信件通知），寄出前會先讓你確認收件者。`}>
                                                 <span aria-hidden="true" style={{fontSize:'15px', lineHeight:1}}>✉</span>
                                             </button>
                                         )}
@@ -11903,144 +12087,147 @@ ${cur}`
                             ⚠️ 今天提醒過的照樣勾選、只標琥珀色小字（使用者選的）；收件者有問題（沒指派／沒信箱）的整組灰掉、不寄。
                             ⚠️ 寄完不關視窗，原地換成每一封的結果 —— 有幾封失敗時那是唯一講得清楚「哪幾封」的地方。 */}
                         {attnModal && (() => {
+                            // 第 185 批：寄一封 Dear all 給固定名單。第 186 批（使用者選 A「只顯示不能改」）：
+                            // 收件者／副本**唯讀**，就是 🔐 管理設定 →「信件通知」那一份；要改請去那裡。
+                            // 用分號接成一段文字（像 Notes 收件者欄）—— 標籤在 460px 寬的視窗裡一個信箱一行，太佔版面（使用者看過截圖）。
+                            // ⚠️ 「負責人不在名單裡」的黃字檢查第 186 批拿掉：名單放群組信箱時系統看不到群組裡有誰，
+                            //    不標群組就只會一直誤報（使用者：「不用加入的是群組或個人」）。名單是否涵蓋所有負責人由設定的人負責。
                             const a = attnModal;
                             const d = a.data;
-                            const un = new Set(a.unchecked || []);
-                            const toggle = (id) => setAttnModal(p => {
-                                if (!p) return p;
-                                const s = new Set(p.unchecked || []);
-                                if (s.has(id)) s.delete(id); else s.add(id);
-                                return { ...p, unchecked: [...s] };
-                            });
-                            const sendable = d ? d.groups.filter(g => !g.problem) : [];
-                            const pickCount = sendable.reduce((n, g) => n + g.items.filter(i => !un.has(i.id)).length, 0);
-                            const mailCount = sendable.filter(g => g.items.some(i => !un.has(i.id))).length;
+                            const to = a.to || [], cc = a.cc || [];
+                            const unassigned = d ? d.groups.filter(g => !g.name).reduce((n, g) => n + g.items.length, 0) : 0;
                             const blocked = !!d && (!d.mailReady || !d.fromOk);
                             const levelColor = (lv) => lv === 'soon' ? 'var(--tone-warn)' : 'var(--tone-alert)';
-                            const RESULT_STYLE = {
-                                sent:      { color:'var(--tone-good)',  label:'✓ 已寄出' },
-                                uncertain: { color:'var(--tone-warn)',  label:'⚠ 未確認送出' },
-                                failed:    { color:'var(--tone-alert)', label:'✕ 寄送失敗' },
-                                skipped:   { color:'var(--text-muted)', label:'— 沒有寄' }
-                            };
+                            const addrText = (list, emptyText) => list.length === 0
+                                ? <span style={{color:'var(--text-muted)'}}>{emptyText}</span>
+                                : <span className="break-words" style={{overflowWrap:'anywhere'}}>
+                                      {list.map((x, i) => <React.Fragment key={x.email}>{i > 0 && <span style={{color:'var(--text-muted)'}}>; </span>}{x.email}</React.Fragment>)}
+                                  </span>;
+                            const parts = d ? [d.overdue ? { t:`逾期 ${d.overdue}`, c:'var(--tone-alert)' } : null,
+                                               d.unset ? { t:`未壓日期 ${d.unset}`, c:'var(--tone-alert)' } : null,
+                                               d.soon ? { t:`${DUE_WINDOW_DEFAULT} 日內 ${d.soon}`, c:'var(--tone-warn)' } : null].filter(Boolean) : [];
+                            const sendTitle = blocked ? '郵件伺服器或寄件的系統信箱沒有設定好，寄不出去'
+                                            : !d || d.total === 0 ? '目前沒有需關注的需求'
+                                            : to.length === 0 ? '至少要有一位收件者' : '';
                             return (
                             <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4"
-                                 data-ct-modal role="dialog" aria-modal="true" aria-label="提醒需關注的負責人" tabIndex={-1}>
+                                 data-ct-modal role="dialog" aria-modal="true" aria-label="寄出需關注提醒" tabIndex={-1}>
                                 {/* ⚠️ 高度上限只靠 .modal-card-tall，不可以再寫 inline maxHeight:'90vh'（第 62 批：<main> 的 zoom 會放大 vh，字級 115% 時底部按鈕落到螢幕外；第 130 批拿掉） */}
-                                <div className="rounded-xl shadow-2xl w-full max-w-2xl modal-card-tall flex flex-col" style={{background:'var(--bg-card)', color:'var(--text-primary)'}} onClick={e=>e.stopPropagation()}>
-                                    <div className="p-4 border-b" style={{borderColor:'var(--border-table)'}}>
-                                        <h3 className="text-base font-bold">✉ 提醒需關注的負責人</h3>
-                                        <p className="mt-1 text-[12px] leading-relaxed" style={{color:'var(--text-muted)'}}>
-                                            需關注＝逾期、{DUE_WINDOW_DEFAULT} 日內到期、或已到階段卻沒壓日期。
-                                            每位負責人一封彙整信；副本給那幾筆另一邊的負責人與你本人。
-                                            {!a.results && '按「確認寄出」才會寄，取消勾選的那幾筆不會寫進信裡。'}
-                                        </p>
+                                <div className="rounded-xl shadow-2xl w-full max-w-xl modal-card-tall flex flex-col" style={{background:'var(--bg-card)', color:'var(--text-primary)'}} onClick={e=>e.stopPropagation()}>
+                                    <div className="px-5 pt-5 flex items-center gap-3">
+                                        <span className="flex items-center justify-center w-8 h-8 rounded-full shrink-0 text-base"
+                                              style={{background:'var(--brand-soft)', color:'var(--brand)'}} aria-hidden="true">✉</span>
+                                        <div className="min-w-0">
+                                            <div className="flex items-center gap-1.5"><h3 className="text-base font-bold">寄出需關注提醒</h3><ManualLink anchor="h-attn-mail" label="需關注批次提醒" /></div>
+                                            {d && (
+                                                <p className="text-xs" style={{color:'var(--text-secondary)'}}>
+                                                    {d.total} 筆
+                                                    {parts.map(x => <span key={x.t}> · <span className="font-bold" style={{color:x.c}}>{x.t}</span></span>)}
+                                                    <span style={{color:'var(--text-muted)'}}>　寄一封信給下面的名單</span>
+                                                </p>
+                                            )}
+                                        </div>
                                     </div>
-                                    <div className="p-4 space-y-3 overflow-y-auto" style={{flex:'1 1 auto'}}>
+                                    <div className="px-5 py-4 space-y-3 overflow-y-auto" style={{flex:'1 1 auto'}}>
                                         {a.loading && <div className="text-[13px]" style={{color:'var(--text-muted)'}}>讀取中…</div>}
                                         {a.error && <div className="text-[13px] whitespace-pre-wrap" style={{color:'var(--tone-alert)'}}>{a.error}</div>}
-                                        {a.results && (
-                                            <div className="space-y-2">
-                                                {a.results.map((r, i) => {
-                                                    const st = RESULT_STYLE[r.status] || RESULT_STYLE.skipped;
-                                                    return (
-                                                        <div key={i} className="p-2.5 rounded-lg border text-[13px]" style={{borderColor:'var(--border-table)'}}>
-                                                            <div className="flex items-baseline gap-2 flex-wrap">
-                                                                <span className="font-bold" style={{color:st.color}}>{st.label}</span>
-                                                                <span className="font-bold">{r.toName}</span>
-                                                                {r.toEmail && <span className="text-[12px]" style={{color:'var(--text-muted)'}}>&lt;{r.toEmail}&gt;</span>}
-                                                                <span className="text-[12px]" style={{color:'var(--text-muted)'}}>· {r.count} 筆</span>
-                                                            </div>
-                                                            <div className="mt-1 text-[12px] whitespace-pre-wrap" style={{color:'var(--text-secondary)'}}>{r.message}</div>
-                                                        </div>
-                                                    );
-                                                })}
-                                                {a.results.some(r => r.status === 'uncertain') && (
-                                                    <div className="text-[12px]" style={{color:'var(--tone-warn)'}}>
-                                                        「未確認送出」＝信已經交給郵件系統，但還沒確認真的送到 —— 對方有沒有收到請直接確認，不要先假設沒寄成功。
+                                        {a.result && (
+                                            <div className="p-3 rounded-lg border text-[13px]" style={{borderColor:'var(--border-table)'}}>
+                                                <div className="font-bold" style={{color: a.result.status === 'uncertain' ? 'var(--tone-warn)' : 'var(--tone-good)'}}>
+                                                    {a.result.status === 'uncertain' ? '⚠ 未確認送出' : '✓ 已寄出'}
+                                                </div>
+                                                <div className="mt-1 text-[12px] whitespace-pre-wrap" style={{color:'var(--text-secondary)'}}>{a.result.message}</div>
+                                                {a.result.status === 'uncertain' && (
+                                                    <div className="mt-1 text-[12px]" style={{color:'var(--tone-warn)'}}>
+                                                        「未確認送出」＝信已經交給郵件系統，但還沒確認真的送到 —— 有沒有收到請直接確認，不要先假設沒寄成功。
                                                     </div>
                                                 )}
                                             </div>
                                         )}
-                                        {d && !a.results && (<>
+                                        {d && (<>
                                             {!d.mailReady && (
                                                 <div className="p-2.5 rounded-lg text-[12px]" style={{background:'var(--tone-alert-bg)', color:'var(--tone-alert)'}}>
                                                     尚未設定郵件伺服器（appsettings.json 的 Mail:Host），可以先看清單，但寄不出去。
                                                 </div>
                                             )}
-                                            <div className="text-[12px] leading-relaxed" style={{color:'var(--text-secondary)'}}>
-                                                寄件者：{d.fromOk ? `${d.fromName} <${d.fromEmail}>` : '（找不到可用的寄件者信箱）'}
-                                                {d.fromOk && !d.fromIsSelf && <span style={{color:'var(--text-muted)'}}>（系統預設信箱）</span>}
-                                                {d.selfReason && <div style={{color:'var(--tone-warn)'}}>{d.selfReason}</div>}
-                                                {/* 第 135 批：模擬時寄件者／本人副本仍是真實帳號（後端看 ctx.User），先講，免得以為是用被模擬的人寄的 */}
-                                                {actor.source === 'simulated' && (
-                                                    <div style={{color:'var(--tone-warn)'}}>
-                                                        你正在模擬 {actor.empId}，但批次提醒一律用你的真實 Windows 帳號（{(accessCheck && accessCheck.empId) || '—'}）寄出，「你本人」的副本也是寄給真實帳號。
-                                                    </div>
-                                                )}
-                                            </div>
-                                            {d.groups.length === 0 && (
-                                                <div className="text-[13px]" style={{color:'var(--text-muted)'}}>目前沒有需關注的需求。</div>
-                                            )}
-                                            {d.groups.map((g, gi) => (
-                                                <div key={gi} className="rounded-lg border" style={{borderColor:'var(--border-table)', opacity: g.problem ? 0.75 : 1}}>
-                                                    <div className="px-3 py-2 border-b text-[13px]" style={{borderColor:'var(--border-table)'}}>
-                                                        <div className="flex items-baseline gap-2 flex-wrap">
-                                                            <span className="text-[11px] font-bold" style={{color:'var(--text-muted)'}}>收件者</span>
-                                                            <span className="font-bold">{g.toName || `（${g.side} 未指派）`}</span>
-                                                            <span className="text-[11px]" style={{color:'var(--text-muted)'}}>{g.side}</span>
-                                                            {g.toEmail && <span className="text-[12px]" style={{color:'var(--text-muted)'}}>&lt;{g.toEmail}&gt;</span>}
-                                                        </div>
-                                                        {g.problem ? (
-                                                            <div className="mt-0.5 text-[12px]" style={{color:'var(--tone-alert)'}}>
-                                                                這一組不會寄：{g.problem}（信箱請在 SSMS 的 dbo.Assignee 補，負責人請 MSD 在編輯視窗指派）
-                                                            </div>
-                                                        ) : (
-                                                            <div className="mt-0.5 text-[12px]" style={{color:'var(--text-secondary)'}}>
-                                                                副本：{[...g.cc.map(c => c.name), g.selfCc ? '你本人' : null].filter(Boolean).join('、') || '（無）'}
-                                                                {g.ccMissing.length > 0 && <span style={{color:'var(--tone-warn)'}}>　{g.ccMissing.join('、')} 查無信箱，不會收到副本</span>}
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                    <div className="px-3 py-1.5">
-                                                        {g.items.map(it => (
-                                                            <label key={it.id} className="flex items-start gap-2 py-1 text-[13px] cursor-pointer">
-                                                                <input type="checkbox" className="mt-1" disabled={!!g.problem || a.sending}
-                                                                       checked={!g.problem && !un.has(it.id)} onChange={()=>toggle(it.id)} />
-                                                                <span className="min-w-0">
-                                                                    <span className="font-mono text-[11px]" style={{color:'var(--text-muted)'}}>NID {it.nid || '—'}</span>{' '}
-                                                                    <span className="font-bold break-words">{it.title || '—'}</span>
-                                                                    <span className="block text-[12px]">
-                                                                        <span style={{color:'var(--text-secondary)'}}>{it.phaseLabel}</span>
-                                                                        {' · '}<span className="font-bold" style={{color:levelColor(it.level)}}>{it.text}</span>
-                                                                        {it.notifiedToday && <span style={{color:'var(--tone-warn)'}}>　今天 {it.notifiedToday} 已提醒過</span>}
-                                                                    </span>
-                                                                </span>
-                                                            </label>
-                                                        ))}
-                                                    </div>
+                                            {d.mailReady && !d.fromOk && (
+                                                <div className="p-2.5 rounded-lg text-[12px]" style={{background:'var(--tone-alert-bg)', color:'var(--tone-alert)'}}>
+                                                    寄件的系統信箱（appsettings.json 的 Mail:From）{d.fromEmail ? `格式不正確（${d.fromEmail}）` : '還沒有設定'}，可以先看清單，但寄不出去。
                                                 </div>
-                                            ))}
+                                            )}
+                                            {d.recipientsError && (
+                                                <div className="p-2.5 rounded-lg text-[12px]" style={{background:'var(--tone-warn-bg)', color:'var(--tone-warn)'}}>{d.recipientsError}</div>
+                                            )}
+                                            <div className="rounded-lg border text-[12px]" style={{borderColor:'var(--border-table)'}}>
+                                                {[{t:'收件者', l:to, e:'還沒有設定收件者'}, {t:'副本', l:cc, e:'沒有副本'}].map((r, i) => (
+                                                    <div key={r.t} className={`px-3 py-2 grid gap-2.5 items-start${i === 0 ? ' border-b' : ''}`}
+                                                         style={{gridTemplateColumns:'48px minmax(0,1fr)', borderColor:'var(--border-table)', lineHeight:1.7}}>
+                                                        <span style={{color:'var(--text-secondary)'}}>{r.t}</span>
+                                                        {addrText(r.l, r.e)}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                            {!a.result && (to.length === 0
+                                                ? <div className="p-2.5 rounded-lg text-[12px] font-bold" style={{background:'var(--tone-warn-bg)', color:'var(--tone-warn)'}}>
+                                                      還沒有設定收件者，寄不出去。請管理者到 🔐 管理設定 →「信件通知」加信箱。
+                                                  </div>
+                                                : <div className="text-[11px]" style={{color:'var(--text-muted)'}}>要改名單請到 🔐 管理設定 →「信件通知」</div>)}
+                                            {!a.result && unassigned > 0 && (
+                                                <div className="text-[12px]" style={{color:'var(--tone-warn)'}}>⚠ 其中 {unassigned} 筆還沒指派負責人，信裡會寫「未指派負責人」。</div>
+                                            )}
+                                            {!a.result && d.notifiedToday > 0 && (
+                                                <div className="text-[12px]" style={{color:'var(--tone-warn)'}}>其中 {d.notifiedToday} 筆今天已經提醒過（照樣會列進信裡）。</div>
+                                            )}
+                                            {d.total === 0 ? (
+                                                <div className="text-[13px]" style={{color:'var(--text-muted)'}}>目前沒有需關注的需求。</div>
+                                            ) : (
+                                                <div className="rounded-lg border" style={{borderColor:'var(--border-table)'}}>
+                                                    <button type="button" aria-expanded={!!a.listOpen}
+                                                            onClick={() => setAttnModal(p => p ? { ...p, listOpen: !p.listOpen } : p)}
+                                                            className="w-full px-3 py-2 text-left text-[13px] font-bold flex items-center gap-1.5">
+                                                        <span style={{display:'inline-block', transform: a.listOpen ? 'rotate(90deg)' : 'none', transition:'transform 0.15s'}}>▸</span>
+                                                        看信裡會列的 {d.total} 筆
+                                                    </button>
+                                                    {a.listOpen && (
+                                                        <div className="px-3 pb-2 space-y-2 border-t" style={{borderColor:'var(--border-table)'}}>
+                                                            {d.groups.map((g, gi) => (
+                                                                <div key={gi} className="pt-2">
+                                                                    <div className="text-[12px] font-bold" style={{color:'var(--text-secondary)'}}>
+                                                                        ■ {g.side} {g.name || '（未指派負責人）'}（{g.items.length} 筆）
+                                                                    </div>
+                                                                    {g.items.map(it => (
+                                                                        <div key={it.id} className="pl-3 py-0.5 text-[12px]">
+                                                                            <span className="font-mono text-[11px]" style={{color:'var(--text-muted)'}}>NID {it.nid || '—'}</span>{' '}
+                                                                            <span className="break-words">{it.title || '—'}</span>
+                                                                            <span style={{color:'var(--text-secondary)'}}>　{it.phaseLabel}　</span>
+                                                                            <span className="font-bold" style={{color:levelColor(it.level)}}>{it.text}</span>
+                                                                            {it.notifiedToday && <span style={{color:'var(--tone-warn)'}}>　今天 {it.notifiedToday} 已提醒過</span>}
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            )}
                                         </>)}
                                     </div>
-                                    <div className="p-3 flex justify-end items-center gap-3 border-t" style={{borderColor:'var(--border-table)'}}>
-                                        {d && !a.results && (
+                                    <div className="p-4 flex justify-end items-center gap-2 border-t" style={{borderColor:'var(--border-table)'}}>
+                                        {d && !a.result && (
                                             <span className="mr-auto text-[12px]" style={{color:'var(--text-muted)'}}>
-                                                將寄出 <b style={{color:'var(--text-primary)'}}>{mailCount}</b> 封，涵蓋 <b style={{color:'var(--text-primary)'}}>{pickCount}</b> 筆
+                                                收件者 <b style={{color:'var(--text-primary)'}}>{to.length}</b>、副本 <b style={{color:'var(--text-primary)'}}>{cc.length}</b>
                                             </span>
                                         )}
                                         <button type="button" onClick={()=>setAttnModal(null)} disabled={!!a.sending}
-                                                className="px-4 py-2 rounded-lg text-sm font-bold disabled:opacity-40"
-                                                style={{color:'var(--text-secondary)'}}>
-                                            {a.results ? '關閉' : '取消'}
+                                                className="px-5 py-2 rounded-lg text-sm font-bold hover:bg-black/5 dark:hover:bg-white/5 transition-colors disabled:opacity-40">
+                                            {a.result ? '關閉' : '取消'}
                                         </button>
-                                        {d && !a.results && (
+                                        {d && !a.result && (
                                             <button type="button" onClick={()=>sendAttnNotify()}
-                                                    disabled={!!a.sending || isSubmitting || blocked || pickCount === 0}
+                                                    disabled={!!a.sending || isSubmitting || !!sendTitle}
                                                     className="px-5 py-2 rounded-lg text-sm font-bold text-white shadow-md disabled:opacity-40 disabled:cursor-not-allowed"
-                                                    style={{background:'var(--brand)'}}
-                                                    title={blocked ? '郵件伺服器或寄件者信箱沒有設定好，寄不出去' : pickCount === 0 ? '一筆都沒勾' : ''}>
-                                                {a.sending ? '寄送中…' : '確認寄出'}
+                                                    style={{background:'var(--brand)'}} title={sendTitle}>
+                                                {a.sending ? '寄送中…' : '寄出提醒'}
                                             </button>
                                         )}
                                     </div>
@@ -12669,6 +12856,71 @@ ${cur}`
                                 </div>
                             </div>
                         )}
+
+                        {/* 第 184 批：單筆 ✉ 的寄信確認視窗（取代原本借用的 confirmModal）。
+                            ⚠️ 不共用 confirmModal：那一個還給刪除需求／刪除人員用，紅色「?」＋紅色「確認」是對的；
+                               寄信不是危險動作 —— 紅色只給逾期／未壓日期（第 59 批），動作鈕用 --brand。
+                            ⚠️ 只留「寄給、副本」：寄件者一律系統信箱不寫；信箱地址收在名字的 title（查問題的人才需要）。
+                            ⚠️ 黃字「已寄過」只告知不擋（第 43 批），按鈕字跟著換成「再寄一次」 */}
+                        {notifyModal && (() => {
+                            const { item, p, isOd, prev } = notifyModal;
+                            const prevAt = prev && prev.changedAt
+                                ? (prev.changedAt.slice(0, 10) === TODAY_ISO ? `今天 ${prev.changedAt.slice(11, 16)}` : prev.changedAt)
+                                : '';
+                            const ccNote = p.ccEmail ? null
+                                : p.ccBadFormat ? `${p.ccName}（信箱格式不正確，這次沒有副本）`
+                                : p.ccName      ? `${p.ccName}（指派人員主檔沒有信箱，這次沒有副本）`
+                                                : `（${p.ccDept} 還沒指派負責人，這次沒有副本）`;
+                            const title = isOd ? `提醒 ${p.side}：已逾期` : `提醒 ${p.side} 壓日期`;
+                            return (
+                            <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4"
+                                 data-ct-modal role="dialog" aria-modal="true" aria-label={title} tabIndex={-1}>
+                                <div className="rounded-xl shadow-2xl w-full max-w-sm" style={{background:'var(--bg-card)', color:'var(--text-primary)'}} onClick={e=>e.stopPropagation()}>
+                                    <div className="px-5 pt-5 flex items-center gap-3">
+                                        <span className="flex items-center justify-center w-8 h-8 rounded-full shrink-0 text-base"
+                                              style={{background:'var(--brand-soft)', color:'var(--brand)'}} aria-hidden="true">✉</span>
+                                        <div className="min-w-0">
+                                            <h3 className="text-base font-bold">{title}</h3>
+                                            <p className="text-xs" style={{color:'var(--text-secondary)'}}>
+                                                {item.nid ? `NID ${item.nid}` : (item.mainCat || '（未填 NID）')} · {p.phase.label}{' '}
+                                                <span className="font-bold" style={{color:'var(--tone-alert)'}}>{isOd ? (p.alert ? p.alert.label : '已逾期') : '未壓日期'}</span>
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <div className="mx-5 mt-4 grid gap-x-3 gap-y-1.5 text-sm" style={{gridTemplateColumns:'auto minmax(0,1fr)'}}>
+                                        <span style={{color:'var(--text-secondary)'}}>寄給</span>
+                                        <span title={p.toEmail}>
+                                            <b>{p.toName}</b>
+                                            <span className="ml-1.5 text-xs" style={{color:'var(--text-muted)'}}>{p.side} 負責人</span>
+                                        </span>
+                                        <span style={{color:'var(--text-secondary)'}}>副本</span>
+                                        {ccNote
+                                            ? <span style={{color:'var(--text-muted)'}}>{ccNote}</span>
+                                            : <span title={p.ccEmail}>
+                                                  {p.ccName}
+                                                  <span className="ml-1.5 text-xs" style={{color:'var(--text-muted)'}}>{p.ccDept} 負責人</span>
+                                              </span>}
+                                    </div>
+                                    {prev && (
+                                        <div className="mx-5 mt-3 px-3 py-2 rounded-lg text-sm flex items-center gap-1.5"
+                                             style={{background:'var(--tone-warn-bg)', color:'var(--tone-warn)'}}>
+                                            <span aria-hidden="true">⚠</span>{prevAt} 已寄過一次
+                                        </div>
+                                    )}
+                                    <div className="p-4 pt-5 flex justify-end gap-2">
+                                        <button type="button" onClick={()=>setNotifyModal(null)}
+                                                className="px-5 py-2 rounded-lg text-sm font-bold hover:bg-black/5 dark:hover:bg-white/5 transition-colors">取消</button>
+                                        <button type="button" autoFocus disabled={isSubmitting}
+                                                onClick={()=>{ const m = notifyModal; setNotifyModal(null); m.onConfirm(); }}
+                                                className="px-5 py-2 rounded-lg text-sm font-bold text-white shadow-md disabled:opacity-40 disabled:cursor-not-allowed"
+                                                style={{background:'var(--brand)'}}>
+                                            {prev ? '再寄一次' : '寄出提醒'}
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                            );
+                        })()}
 
                     </main>
                 </div>

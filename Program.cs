@@ -171,11 +171,10 @@ var mailPort     = builder.Configuration.GetValue<int?>("Mail:Port") ?? 25;
 var mailSsl      = builder.Configuration.GetValue<bool>("Mail:UseSsl");
 var mailUser     = (builder.Configuration["Mail:User"] ?? "").Trim();
 var mailPass     = builder.Configuration["Mail:Password"] ?? "";
-// ⚠️ Mail:From 是**後備**的寄件者，不是主要的（2026-08-31 使用者要求）。
-//    正常情況下寄件者是「按下按鈕的那個人本人」——
-//    Windows 帳號（工號）→ dbo.Assignee.EMPO → EMAIL，見 AssigneeByEmpNoAsync()。
-//    這裡設的信箱只在「操作者不在指派名單上／沒填信箱／是模擬帳號」時才用得到，
-//    留空也可以（那時那些人會拿到一句看得懂的 400，而不是靜靜寄不出去）。
+// ⚠️ Mail:From ＝**所有提醒信的寄件者**（第 184 批，2026-10-12 使用者選的：一律用系統信箱寄）。
+//    在此之前（2026-08-31 起）寄件者是「按下按鈕的那個人本人」、Mail:From 只是後備；
+//    使用者在公司 IIS 實測 From 填 Controltable@umc.com 可正常寄出後改成一律用它。
+//    ⚠️ 現在**一定要填**：留空時兩支寄信端點都會回一句講得出原因的 400。
 var mailFrom     = (builder.Configuration["Mail:From"] ?? "").Trim();
 var mailFromName = (builder.Configuration["Mail:FromName"] ?? "需求管控表").Trim();
 // 信裡那句「請至系統壓日期」要附的網址。空的就不附連結（總比附一個開不起來的好）
@@ -186,9 +185,8 @@ var mailAppUrl   = (builder.Configuration["Mail:AppUrl"] ?? "").Trim();
 //    「按了沒反應」，而真正的原因（連不到 relay）一個字都沒說。實際回報過。
 //    20 秒足夠內網 relay 回應，又短到使用者還願意等著看結果。
 var mailTimeout  = (builder.Configuration.GetValue<int?>("Mail:TimeoutSeconds") ?? 20) * 1000;
-// ⚠️ 只看 Host。寄件者現在由 dbo.Assignee 決定（見上面 Mail:From 的說明），
-//    所以 From 空著也算「設定好了」—— 拿不到寄件者是**那一次呼叫**的問題，
-//    在端點裡另外回一句講得出原因的 400，不是整個功能沒開
+// ⚠️ 只看 Host。From 空著是**那一次呼叫**的問題，在端點裡另外回一句講得出原因的 400，
+//    不是整個功能沒開（沿用第 39 批的分法）
 // dbmail 模式的傳輸就是本來就有的那條 SQL 連線，沒有東西要設定；
 // smtp 模式則一定要有 Host
 var mailReady    = useDbMail || mailHost != "";
@@ -459,7 +457,27 @@ Bootstrap("dbo.Controltable 的欄位與稽核表", @"
             ALTER TABLE dbo.Controltable_History ADD NewValue NVARCHAR(MAX) NULL
         END
         ");
-// 四段都跑完（或都跳過）之後才收掉那條共用連線
+// 第 185 批：信件通知的固定收件名單（需關注批次提醒）。正式的變更紀錄在 22_add_notify_recipients.sql。
+// ⚠️ 刻意**另開一張表、不放進 dbo.AppSettings**：那張表的 Value 只有 NVARCHAR(200)，
+//    而且瀏覽權限卡控的總開關就在裡面 —— 信件設定與卡控的資料完全分開，這一段失敗也只影響寄信。
+// ⚠️ 自己一段 Bootstrap（獨立 try）：失敗不會連累上面瀏覽權限那幾段。
+Bootstrap("信件通知收件名單", @"
+        IF OBJECT_ID(N'dbo.NotifyRecipients', N'U') IS NULL
+        BEGIN
+            CREATE TABLE dbo.NotifyRecipients (
+                Id        INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_NotifyRecipients PRIMARY KEY,
+                Purpose   NVARCHAR(20)  NOT NULL,
+                Kind      NVARCHAR(10)  NOT NULL,
+                Email     NVARCHAR(200) NOT NULL,
+                Label     NVARCHAR(50)  NULL,
+                GroupDept NVARCHAR(10)  NULL,
+                CreatedBy NVARCHAR(50)  NULL,
+                CreatedAt DATETIME2(0)  NOT NULL CONSTRAINT DF_NotifyRecipients_CreatedAt DEFAULT (SYSDATETIME())
+            )
+            CREATE UNIQUE INDEX UX_NotifyRecipients_Purpose_Email ON dbo.NotifyRecipients (Purpose, Email)
+        END
+        ");
+// 每一段都跑完（或都跳過）之後才收掉那條共用連線
 bootstrapConn?.Dispose();
 
 // ─── 日期處理 ───
@@ -1181,6 +1199,171 @@ app.MapDelete("/api/access-admins/{id:int}", async (HttpContext ctx, int id) =>
     {
         app.Logger.LogError(ex, "access-admins 刪除失敗");
         return ServerError("移除管理者失敗：" + ex.Message);
+    }
+}).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
+
+// ─── 信件通知收件名單（第 185 批，2026-10-12）───
+// 🔐 管理設定 →「信件通知」分頁。目前只有 Purpose = 'attn'（需關注批次提醒的固定收件者／副本）。
+// ⚠️ 權限沿用瀏覽權限的「誰是管理者」（IsAccessAdminAsync，只讀不改）；寫入套跨站防護。
+// ⚠️ 資料在 dbo.NotifyRecipients，**不碰** dbo.AppSettings／AccessRules／AccessAdmins／AccessLog ——
+//    使用者問過「新增信箱功能會不會影響瀏覽權限卡控」，答案是不會，這裡就要守住。
+// ⚠️ 每一次新增／修改／刪除直接存（與瀏覽權限的規則同一種手感），沒有「儲存」鈕、沒有未儲存狀態。
+const int NotifyRecipientMax = 50;
+static (string? Error, string Kind, string Email, string Label, string Dept) NormNotifyRecipient(NotifyRecipientRequest? b, bool needEmail)
+{
+    var kind = (b?.kind ?? "").Trim().ToLowerInvariant();
+    if (kind != "to" && kind != "cc") return ("收件類型只能是收件者或副本", "", "", "", "");
+    var email = (b?.email ?? "").Trim();
+    if (needEmail)
+    {
+        if (email == "") return ("請填寫信箱", "", "", "", "");
+        if (email.Length > 200) return ($"信箱太長（上限 200 字，目前 {email.Length} 字）", "", "", "", "");
+        if (!IsValidMailAddress(email)) return ($"信箱格式不正確：{email}（一格只能放一個信箱，不要用逗號或分號串在一起）", "", "", "", "");
+    }
+    var label = (b?.label ?? "").Trim();
+    if (label.Length > 50) return ($"顯示名稱太長（上限 50 字，目前 {label.Length} 字）", "", "", "", "");
+    var dept = (b?.groupDept ?? "").Trim().ToUpperInvariant();
+    if (dept != "" && dept != "MSD" && dept != "EMS") return ("群組只能標 MSD 或 EMS", "", "", "", "");
+    return (null, kind, email, label, dept);
+}
+static async Task<List<(int Id, string Kind, string Email, string Label, string Dept, string CreatedBy, string CreatedAt)>> ReadNotifyRecipientsAsync(SqlConnection conn, string purpose)
+{
+    var list = new List<(int, string, string, string, string, string, string)>();
+    using var cmd = new SqlCommand(@"
+        SELECT Id, Kind, Email, Label, GroupDept, CreatedBy, CreatedAt FROM dbo.NotifyRecipients
+        WHERE Purpose = @P ORDER BY CASE Kind WHEN N'to' THEN 0 ELSE 1 END, Id", conn);
+    cmd.Parameters.AddWithValue("@P", purpose);
+    using var r = await cmd.ExecuteReaderAsync();
+    while (await r.ReadAsync())
+        list.Add((r.GetInt32(0), r.GetString(1).Trim(), r.GetString(2).Trim(),
+                  r.IsDBNull(3) ? "" : r.GetString(3).Trim(), r.IsDBNull(4) ? "" : r.GetString(4).Trim(),
+                  r.IsDBNull(5) ? "" : r.GetString(5), r.GetDateTime(6).ToString("yyyy-MM-dd HH:mm")));
+    return list;
+}
+
+app.MapGet("/api/notify-recipients", async (HttpContext ctx) =>
+{
+    var me = WindowsEmpId(ctx);
+    if (!await IsAccessAdminAsync(me))
+        return Results.Json(new { message = "只有管理者可以查看信件通知設定" }, statusCode: 403);
+    try
+    {
+        using var conn = new SqlConnection(connectionString);
+        await conn.OpenAsync();
+        var list = await ReadNotifyRecipientsAsync(conn, "attn");
+        return Results.Ok(new
+        {
+            from = mailFrom, fromName = mailFromName, mailReady,
+            fromOk = mailFrom != "" && IsValidMailAddress(mailFrom),
+            max = NotifyRecipientMax,
+            items = list.Select(x => new { id = x.Id, kind = x.Kind, email = x.Email, label = x.Label, groupDept = x.Dept, createdBy = x.CreatedBy, createdAt = x.CreatedAt })
+        });
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(ex, "notify-recipients 讀取失敗");
+        return ServerError("讀取信件通知設定失敗：" + ex.Message
+            + "（若訊息是 Invalid object name 'dbo.NotifyRecipients'，代表 22_add_notify_recipients.sql 還沒執行、啟動時也沒建成功）");
+    }
+}).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
+
+app.MapPost("/api/notify-recipients", async (HttpContext ctx, NotifyRecipientRequest body) =>
+{
+    if (IsCrossSiteRequest(ctx)) return Results.Json(new { message = "拒絕跨站請求" }, statusCode: 403);
+    var me = WindowsEmpId(ctx);
+    if (!await IsAccessAdminAsync(me))
+        return Results.Json(new { message = "只有管理者可以修改信件通知設定" }, statusCode: 403);
+    var (err, kind, email, label, dept) = NormNotifyRecipient(body, needEmail: true);
+    if (err != null) return Results.BadRequest(new { message = err });
+    try
+    {
+        using var conn = new SqlConnection(connectionString);
+        await conn.OpenAsync();
+        using var tx = conn.BeginTransaction();
+        using (var chk = new SqlCommand(@"
+            SELECT COUNT(*), SUM(CASE WHEN LOWER(Email) = LOWER(@E) THEN 1 ELSE 0 END)
+            FROM dbo.NotifyRecipients WITH (UPDLOCK, HOLDLOCK) WHERE Purpose = N'attn'", conn, tx))
+        {
+            chk.Parameters.AddWithValue("@E", email);
+            using var r = await chk.ExecuteReaderAsync();
+            await r.ReadAsync();
+            var count = r.GetInt32(0); var dup = r.IsDBNull(1) ? 0 : r.GetInt32(1);
+            if (dup > 0) return Results.Json(new { message = $"{email} 已經在名單裡了" }, statusCode: 409);
+            if (count >= NotifyRecipientMax) return Results.BadRequest(new { message = $"名單最多 {NotifyRecipientMax} 個信箱" });
+        }
+        int newId;
+        using (var ins = new SqlCommand(@"
+            INSERT INTO dbo.NotifyRecipients (Purpose, Kind, Email, Label, GroupDept, CreatedBy)
+            OUTPUT INSERTED.Id VALUES (N'attn', @K, @E, @L, @D, @By)", conn, tx))
+        {
+            ins.Parameters.AddWithValue("@K", kind);
+            ins.Parameters.AddWithValue("@E", email);
+            ins.Parameters.AddWithValue("@L", label == "" ? DBNull.Value : label);
+            ins.Parameters.AddWithValue("@D", dept == "" ? DBNull.Value : dept);
+            ins.Parameters.AddWithValue("@By", me!);
+            newId = (int)(await ins.ExecuteScalarAsync())!;
+        }
+        await tx.CommitAsync();
+        return Results.Ok(new { success = true, id = newId });
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(ex, "notify-recipients 新增失敗");
+        return ServerError("新增信箱失敗：" + ex.Message);
+    }
+}).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
+
+// 改收件類型（收件者 ↔ 副本）、顯示名稱、群組標註。信箱本身不改（要改就刪掉重加）
+app.MapPut("/api/notify-recipients/{id:int}", async (HttpContext ctx, int id, NotifyRecipientRequest body) =>
+{
+    if (IsCrossSiteRequest(ctx)) return Results.Json(new { message = "拒絕跨站請求" }, statusCode: 403);
+    var me = WindowsEmpId(ctx);
+    if (!await IsAccessAdminAsync(me))
+        return Results.Json(new { message = "只有管理者可以修改信件通知設定" }, statusCode: 403);
+    var (err, kind, _, label, dept) = NormNotifyRecipient(body, needEmail: false);
+    if (err != null) return Results.BadRequest(new { message = err });
+    try
+    {
+        using var conn = new SqlConnection(connectionString);
+        await conn.OpenAsync();
+        using var cmd = new SqlCommand(@"
+            UPDATE dbo.NotifyRecipients SET Kind = @K, Label = @L, GroupDept = @D
+            WHERE Id = @Id AND Purpose = N'attn'", conn);
+        cmd.Parameters.AddWithValue("@K", kind);
+        cmd.Parameters.AddWithValue("@L", label == "" ? DBNull.Value : label);
+        cmd.Parameters.AddWithValue("@D", dept == "" ? DBNull.Value : dept);
+        cmd.Parameters.AddWithValue("@Id", id);
+        if (await cmd.ExecuteNonQueryAsync() == 0)
+            return Results.NotFound(new { message = "這個信箱不在名單裡（可能已被別人移除），請重新整理" });
+        return Results.Ok(new { success = true });
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(ex, "notify-recipients 修改失敗");
+        return ServerError("修改信箱設定失敗：" + ex.Message);
+    }
+}).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
+
+app.MapDelete("/api/notify-recipients/{id:int}", async (HttpContext ctx, int id) =>
+{
+    if (IsCrossSiteRequest(ctx)) return Results.Json(new { message = "拒絕跨站請求" }, statusCode: 403);
+    var me = WindowsEmpId(ctx);
+    if (!await IsAccessAdminAsync(me))
+        return Results.Json(new { message = "只有管理者可以修改信件通知設定" }, statusCode: 403);
+    try
+    {
+        using var conn = new SqlConnection(connectionString);
+        await conn.OpenAsync();
+        using var cmd = new SqlCommand("DELETE FROM dbo.NotifyRecipients WHERE Id = @Id AND Purpose = N'attn'", conn);
+        cmd.Parameters.AddWithValue("@Id", id);
+        if (await cmd.ExecuteNonQueryAsync() == 0)
+            return Results.NotFound(new { message = "這個信箱不在名單裡（可能已被別人移除），請重新整理" });
+        return Results.Ok(new { success = true });
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(ex, "notify-recipients 刪除失敗");
+        return ServerError("移除信箱失敗：" + ex.Message);
     }
 }).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
 
@@ -3764,27 +3947,6 @@ static (string Phase, string Label, string Side, string Date, int Days)? Overdue
     return (phase, label, side, d, days);
 }
 
-// ─── 寄件者：按下按鈕的那個人本人（2026-08-31 / 第 39 批，使用者要求）───
-// 使用者把 dbo.Assignee 的 EMPO（工號）補齊了，而 Windows 帳號剝掉網域之後就是工號
-// （`UMC\00045896` → `00045896`，見 StripDomain）—— 那就是這張表與登入者之間唯一的接點。
-// 用操作者本人當寄件者，收件者可以直接**回信**給他，而不是回給一個沒人看的系統信箱。
-//
-// ⚠️ **只有 source == "windows" 才可以這樣用**。模擬帳號（AllowSimulation，開發環境開著）
-//    走這條路等於讓任何人挑一個名字、用他的身分把信寄出去 —— 那是真的冒名，
-//    比稽核列標一個 `simulated` 嚴重得多。模擬與取不到帳號時一律退回設定檔的 Mail:From。
-// ⚠️ 找不到（工號不在名單上、或那筆沒填 EMAIL）也退回 Mail:From，**不可以直接失敗** ——
-//    主管或不在指派名單上的人也會按這顆鈕，為了寄件者擋掉整封通知是本末倒置。
-static async Task<(string Email, string Name)> AssigneeByEmpNoAsync(SqlConnection conn, string empNo)
-{
-    var no = (empNo ?? "").Trim();
-    if (no == "") return ("", "");
-    using var cmd = new SqlCommand(
-        "SELECT TOP 1 EMAIL, NAME FROM dbo.Assignee WHERE LTRIM(RTRIM(EMPO)) = @No AND EMAIL IS NOT NULL", conn);
-    cmd.Parameters.AddWithValue("@No", no);
-    using var r = await cmd.ExecuteReaderAsync();
-    if (!await r.ReadAsync()) return ("", "");
-    return ((r.IsDBNull(0) ? "" : r.GetString(0)).Trim(), (r.IsDBNull(1) ? "" : r.GetString(1)).Trim());
-}
 
 // 指派人員的信箱。⚠️ 與前端 assigneeEmailOf() 同一套：(DEPT, NAME) 兩邊都 trim、
 // **不濾 IsActive** —— 這裡問的是「這個名字的信箱是什麼」，不是「可不可以指派給他」。
@@ -3810,7 +3972,9 @@ async Task<(string? Error, bool Uncertain, string Detail)> SendNotifyMailAsync(
     string subject, string body, string htmlBody,
     // 第 125 批（批次提醒）：一封彙整信可能要副本給好幾位另一邊的負責人。**只是多一個選填參數**，
     // /notify-unset 那條呼叫一個字都沒改（不帶 = 與原本完全相同）。呼叫端必須先用 IsValidMailAddress() 濾過
-    IEnumerable<string>? moreCc = null)
+    IEnumerable<string>? moreCc = null,
+    // 第 185 批（批次提醒寄一封給固定名單）：其餘收件者。同 moreCc，不帶 = 原本行為；呼叫端先驗過格式
+    IEnumerable<string>? moreTo = null)
 {
     // ─── 先用一個「逾時真的算數」的 TCP 探測（2026-09-01）───
     // ⚠️ `SmtpClient.Timeout` **管不到 TCP 連線建立那一段**。實測：Timeout 設 8 秒、
@@ -3842,6 +4006,8 @@ async Task<(string? Error, bool Uncertain, string Detail)> SendNotifyMailAsync(
         using var msg = new MailMessage();
         msg.From = new MailAddress(fromEmail, fromName, System.Text.Encoding.UTF8);
         msg.To.Add(new MailAddress(toEmail));
+        foreach (var t in moreTo ?? Enumerable.Empty<string>())
+            if (!string.IsNullOrWhiteSpace(t)) msg.To.Add(new MailAddress(t));
         if (!string.IsNullOrWhiteSpace(ccEmail)) msg.CC.Add(new MailAddress(ccEmail));
         if (!string.IsNullOrWhiteSpace(selfCcEmail)) msg.CC.Add(new MailAddress(selfCcEmail));
         foreach (var c in moreCc ?? Enumerable.Empty<string>())
@@ -4001,9 +4167,12 @@ string MailFailureHint(System.Net.Sockets.SocketException? sock, bool selfTimeou
 async Task<(string? Error, bool Queued, int MailItemId, string Detail)> SendViaDbMailAsync(
     SqlConnection conn, string fromEmail, string fromName, string toEmail, string ccEmail, string selfCcEmail,
     string subject, string body,
-    IEnumerable<string>? moreCc = null)   // 第 125 批：同 SendNotifyMailAsync 的 moreCc，不帶 = 原本行為
+    IEnumerable<string>? moreCc = null,   // 第 125 批：同 SendNotifyMailAsync 的 moreCc，不帶 = 原本行為
+    IEnumerable<string>? moreTo = null)   // 第 185 批：其餘收件者，@recipients 一樣吃分號清單
 {
     int mailItemId;
+    var toList = string.Join(";", new[] { toEmail }.Concat(moreTo ?? Enumerable.Empty<string>())
+                                     .Where(s => !string.IsNullOrWhiteSpace(s)));
     // @copy_recipients 本來就吃分號分隔的清單（第 44 批已實測），本人副本就接在後面。
     // ⚠️ 兩個都已在端點層通過 IsValidMailAddress()，這裡不會把壞值串進去
     var ccList = string.Join(";", new[] { ccEmail, selfCcEmail }.Concat(moreCc ?? Enumerable.Empty<string>())
@@ -4028,7 +4197,7 @@ async Task<(string? Error, bool Queued, int MailItemId, string Detail)> SendViaD
             SELECT @Id;", conn);
         cmd.CommandTimeout = Math.Max(30, mailTimeout / 1000);
         cmd.Parameters.AddWithValue("@Profile", dbMailProfile == "" ? DBNull.Value : dbMailProfile);
-        cmd.Parameters.AddWithValue("@To", toEmail);
+        cmd.Parameters.AddWithValue("@To", toList);
         cmd.Parameters.AddWithValue("@Cc", ccList == "" ? DBNull.Value : ccList);
         cmd.Parameters.AddWithValue("@Subject", subject);
         cmd.Parameters.AddWithValue("@Body", body);
@@ -4227,62 +4396,40 @@ app.MapPost("/api/requirements/{id}/notify-unset", async (int id, NotifyRequest?
                  : ccBadFormat ? $"副本 {ccName} 在指派人員主檔裡的 EMAIL 格式不正確（目前的值：{ccBadValue}），這一封沒有副本給他。"
                                : $"副本 {ccName} 在指派人員主檔裡沒有填 EMAIL，這一封沒有副本給他。";
 
-    // ── 3b. 寄件者：按下按鈕的那個人本人（工號 → dbo.Assignee.EMPO → EMAIL）──
-    // 使用者要求：寄件者信箱從 dbo.Assignee 讀，不要另外設一個。收件者可以直接回信給他。
-    // ⚠️ 只有真的 Windows 登入（source == "windows"）才用本人身分；模擬帳號一律退回
-    //    設定檔的 Mail:From —— 讓模擬身分把信寄出去是真的冒名（見 AssigneeByEmpNoAsync）。
+    // ── 3b. 寄件者：一律是設定檔的 Mail:From（第 184 批，2026-10-12 使用者選的）──
+    // 在此之前寄件者是「按下按鈕的那個人本人」（工號 → dbo.Assignee.EMPO → EMAIL），本人另收一份副本。
+    // 使用者看過示意圖後改成一律用系統信箱寄、**不另加按按鈕的人的副本**：副本本來就是另一邊的負責人
+    // ＝上一階段做完、在等這一棒的人（③ 例外：上一棒 ② 也是 MSD 本人，副本仍給 EMS 提需求的人），
+    // 而按 ✉ 的人多半就是他。actor 仍要解析 —— 稽核列記「誰按的」。
     var (actor, actorSrc) = ResolveActor(new Requirement { actorEmpId = body?.actorEmpId, actorSource = body?.actorSource });
-    var fromEmail = ""; var fromName = ""; var fromIsSelf = false; var fromBad = "";
-    if (actorSrc == "windows" && !string.IsNullOrWhiteSpace(actor))
-    {
-        var (e, n) = await AssigneeByEmpNoAsync(conn, actor!);
-        // ⚠️ 自己的信箱格式壞掉時**退回 Mail:From，不可以直接失敗**（第 44 批）——
-        //    與上面「查不到 EMPO／沒填 EMAIL」同一條界線：為了寄件者擋掉整封通知是本末倒置，
-        //    卡住的是「下一棒不知道輪到他了」，而寄件者只影響「回信會回到誰手上」。
-        //    真的擋住（連後備也沒有）時，下面那句 400 會把這個值講出來。
-        if (e != "" && IsValidMailAddress(e)) { fromEmail = e; fromName = n == "" ? mailFromName : n; fromIsSelf = true; }
-        else if (e != "") fromBad = e;
-    }
-    if (fromEmail == "") { fromEmail = mailFrom; fromName = mailFromName; }
+    var fromEmail = mailFrom; var fromName = mailFromName;
     if (fromEmail == "")
         return Results.BadRequest(new
         {
-            message = "找不到可用的寄件者信箱，無法寄出通知。\n\n"
-                    + (fromBad != ""
-                        ? $"你在指派人員主檔（dbo.Assignee）裡的 EMAIL 格式不正確（目前的值：{fromBad}）。\n\n"
-                        : $"你的工號（{(string.IsNullOrWhiteSpace(actor) ? "取不到 Windows 帳號" : actor)}）"
-                          + "在指派人員主檔（dbo.Assignee）裡查不到對應的 EMPO／EMAIL。\n\n")
-                    + "請在 SSMS 修正你的工號與信箱，或請管理者在 appsettings.json 的 Mail:From 設一個共用的系統信箱。"
+            message = "還沒有設定寄件的系統信箱，無法寄出通知。\n\n"
+                    + "請管理者在 appsettings.json 的 Mail:From 填入系統信箱（例如 Controltable@umc.com）後重新啟動服務。"
         });
-    // 後備的 Mail:From 自己被打錯時也要講清楚 —— 否則畫面上會冒出一句
-    // 「The specified string is not in the form required for an e-mail address.」，
-    // 而真正該去改的是 appsettings.json，不是任何人的 dbo.Assignee 資料
+    // Mail:From 自己被打錯時也要講清楚 —— 否則畫面上會冒出一句
+    // 「The specified string is not in the form required for an e-mail address.」
     if (!IsValidMailAddress(fromEmail))
         return Results.BadRequest(new
         {
             message = $"寄件者信箱的格式不正確（{fromEmail}），無法寄出通知。\n\n"
                     + "這個值來自 appsettings.json 的 Mail:From，請管理者修正後重新啟動服務。"
         });
-
-    // ── 3c. 按按鈕的人自己也收一份副本（2026-09-11 / 第 62 批，使用者要求）──
-    // 寄件者是本人時，他的寄件匣裡**不會**有這封信（信是這台主機透過 relay 送出去的，
-    // 不經過他的郵件客戶端），所以在此之前他自己完全沒有留底，只能回這裡看稽核列。
-    // ⚠️ 只在 fromIsSelf 時做：退回 Mail:From 的那條路我們根本不知道他是誰。
-    // ⚠️ 他自己已經是收件者或副本時不再加（同一個人收兩封）。
-    // ⚠️ 走 CC 不走 BCC：收件者看得到「發信的人自己也在副本裡」，這封信才對得起「有問題可以直接回覆本信」那句。
-    var selfCcEmail = fromIsSelf
-                   && !string.Equals(fromEmail, toEmail, StringComparison.OrdinalIgnoreCase)
-                   && !string.Equals(fromEmail, ccEmail, StringComparison.OrdinalIgnoreCase)
-                    ? fromEmail : "";
+    // SendNotifyMailAsync／SendViaDbMailAsync 的 selfCc 參數保留（批次提醒還在用），這一支一律不加
+    var selfCcEmail = "";
 
     // ── 4. 組信 ──
     var who = string.Join(" / ", new[] { cur.nid == "" ? null : $"NID {cur.nid}", cur.mainCat, cur.subCat }
                                  .Where(s => !string.IsNullOrWhiteSpace(s)));
     // ⚠️ 第 160 批：逾期那一種只換主旨、開頭兩句與「待壓定階段」那一行，其餘（表格、現況描述、
     //    連結、落款、HTML 版）與未壓日期那一種同一份 —— 不要另寫第二套組信。
+    // ⚠️ 主旨不放圈號（第 184 批）：Notes 收件匣的主旨字型畫不出「②」，實際顯示成方框（使用者附截圖）；
+    //    內文同一個字顯示正常，所以只有主旨用 SubjectStageName() 剝掉，內文照舊
     var subject = isOverdue
-        ? $"[需求管控表] 「{phaseLabel}」已逾期 {overDays} 天：{who}"
-        : $"[需求管控表] 請壓定「{phaseLabel}」日期：{who}";
+        ? $"[需求管控表] 「{SubjectStageName(phaseLabel)}」已逾期 {overDays} 天：{who}"
+        : $"[需求管控表] 請壓定「{SubjectStageName(phaseLabel)}」日期：{who}";
     var lines = new List<string>
     {
         $"{toName} 您好：",
@@ -4317,11 +4464,7 @@ app.MapPost("/api/requirements/{id}/notify-unset", async (int id, NotifyRequest?
         lines.Add($"需求管控表：{mailAppUrl}");
     }
     lines.Add("");
-    // ⚠️ 落款要跟著寄件者是誰改口。寄件者是本人時「請勿回覆本信箱」是錯的 ——
-    //    用本人當寄件者的**理由**就是讓收件者可以直接回信問他
-    lines.Add(fromIsSelf
-        ? $"（本信由「{fromName}」透過需求管控表發出，有問題可以直接回覆本信。）"
-        : "（本信由需求管控表系統自動發出，請勿直接回覆本信箱。）");
+    lines.Add("（本信由需求管控表系統自動發出，請勿直接回覆本信箱。）");
     var mailBody = string.Join("\r\n", lines);
     // ── 4b. 同一封信的 HTML 版（2026-09-11 / 第 62 批，使用者要求「點擊網址就可以開啟」）──
     // 純文字信裡的網址在 Notes 客戶端**不會自動變成超連結**（使用者實際回報），
@@ -4368,9 +4511,7 @@ app.MapPost("/api/requirements/{id}/notify-unset", async (int id, NotifyRequest?
                   + (ccEmail != "" ? $"，副本 {ccName} <{ccEmail}>"
                      : ccMissing ? $"，副本 {ccName}（{(ccBadFormat ? "信箱格式不正確" : "查無信箱")}，未寄送）" : "")
                   // 寄件者也要記：日後查「這封信到底是誰的名義寄出去的」只有這裡查得到
-                  + $"；寄件者 {fromName} <{fromEmail}>" + (fromIsSelf ? "" : "（系統預設信箱）")
-                  // ⚠️ 寫在寄件者**後面**：前端 NOTIFY_TO_RE 抓的是「收件者」後第一個 <…>，這裡不能插到它前面
-                  + (selfCcEmail != "" ? "（本人亦收副本）" : "")
+                  + $"；寄件者 {fromName} <{fromEmail}>（系統信箱）"
                   // ⚠️ 「排入佇列但沒確認送出」一定要在軌跡上跟「已確認送出」分得出來 ——
                   //    這一列日後就是「到底通知了沒」的唯一依據，兩種混在一起等於這一列不能用
                   // ⚠️ 「未確認送出」這四個字是這一列日後唯一分得出兩種狀態的依據，
@@ -4396,34 +4537,36 @@ app.MapPost("/api/requirements/{id}/notify-unset", async (int id, NotifyRequest?
     var okMsg = (queued ? $"通知已交給郵件系統，但尚未確認送出（收件者 {toName} <{toEmail}>）"
                         : $"已寄出通知給 {toName} <{toEmail}>")
               + (ccEmail != "" ? $"，副本 {ccName} <{ccEmail}>" : "")
-              + (selfCcEmail != "" ? "，你自己也會收到一份副本" : "")
               + (ccMissing ? $"\n\n⚠️ {ccReason}" : "");
     return Results.Ok(new
     {
         message = okMsg, phase = phaseKey, phaseLabel, kind = isOverdue ? "overdue" : "unset",
         to = toEmail, toName, cc = ccEmail, ccName, ccMissing, ccReason, subject,
-        from = fromEmail, fromName, fromIsSelf, selfCc = selfCcEmail,
+        from = fromEmail, fromName,
         transport = useDbMail ? "dbmail" : "smtp", queued, mailItemId, queuedNote
     });
 });
 
 // ─── 「需關注」批次提醒（第 125 批，2026-10-06 使用者要求）───
-// 需求列表「需關注 N」左邊那顆 ✉ 提醒：把需關注的那 N 筆（逾期／7 日內到期／未壓日期）
-// 依「目前要盯的那一階段的負責人」分組，**每位負責人一封彙整信**；副本＝那幾筆另一邊的負責人
-// ＋按按鈕的人本人（使用者原話：「確保這些人真的有收到」）。同一支端點兩種用法：
-//   send = false → 只回預覽（給確認視窗列出來），一封都不寄、一列都不寫；
-//   send = true  → 真的寄，每一筆寫一列「通知寄送」稽核。
-// ⚠️⚠️ **哪幾筆、寄給誰一律由後端自己算**（與 /notify-unset 同一條，第 39 批）：前端的 ids
-//    **只能把範圍縮小**（確認視窗裡取消勾選的那幾筆），不能加進任何一筆不在需關注裡的需求。
-// ⚠️⚠️ 與 /notify-unset 刻意不同的兩件事：
-//   1. 掛 Negotiate、**只有管理者或指派名單裡 DEPT = MSD 的人**才可以呼叫（403）。一次會寄好幾封信給
-//      好幾個人，而 actorSource 是前端自己送的、冒得了名 —— 單筆的 ✉ 可以匿名，這一支不行。
-//   2. 寄件者與本人副本一律看 ctx.User 的 Windows 工號，不看前端送的 actor。
+// 需求列表「需關注 N」左邊那顆 ✉ 提醒：把需關注的那 N 筆（逾期／7 日內到期／未壓日期）寄出去。
+// ⚠️⚠️ 第 185 批（2026-10-12 使用者要求）改成**只寄一封、Dear all**，收件者是固定名單：
+//    「我要固定寄給同一批人，這些需求的負責人一定包含」—— 名單在 🔐 管理設定 →「信件通知」
+//    （dbo.NotifyRecipients，群組信箱與個人信箱混放、群組可標 MSD／EMS）。信裡依負責人分組列出全部。
+//    在此之前（第 125 批）是每位負責人一封、副本另一邊＋按按鈕的人本人。
+// 同一支端點兩種用法：
+//   send = false → 只回預覽（筆數、分組、固定名單、負責人信箱），一封都不寄、一列都不寫；
+//   send = true  → 寄一封給固定名單（第 186 批起後端自己讀 dbo.NotifyRecipients，視窗只顯示、不能改），
+//                  每一筆需求寫一列「通知寄送」稽核。
+// ⚠️⚠️ **哪幾筆、寄給誰一律由後端自己算**（與 /notify-unset 同一條，第 39 批）：ids 只能把範圍縮小。
+// ⚠️ 第 186 批拿掉「負責人有沒有都在名單裡」的比對（群組信箱看不到裡面有誰，不標群組只會誤報）。
+// ⚠️⚠️ 與 /notify-unset 刻意不同：掛 Negotiate、**只有管理者或指派名單裡 DEPT = MSD 的人**才可以呼叫（403）。
+//    一次寄給一群人，而 actorSource 是前端自己送的、冒得了名 —— 單筆的 ✉ 可以匿名，這一支不行。
+//    寄件者一律 Mail:From（第 184 批）；不加本人副本（要收就把自己加進名單）。
 // ⚠️ 需關注的判定是 app.jsx getDueEntry()（resolveFocusPhase → unset／overdue／soon，7 日窗）的**鏡像**，
 //    走的是 UnsetPhaseOf()／StagePassed() 同一組 —— 改了要兩邊一起改，否則確認視窗列的筆數會與
 //    畫面上「需關注 N」對不起來。
 // ⚠️ 寄信本身走既有的 SendNotifyMailAsync／SendViaDbMailAsync（TCP 探測、CancellationToken、
-//    dbmail 輪詢、「未確認送出」全部照舊），只多帶一個 moreCc。⚠️ 這一支**還沒在 IIS 上實測過**。
+//    dbmail 輪詢、「未確認送出」全部照舊），只多帶 moreCc／moreTo。⚠️ 這一支**還沒在 IIS 上實測過**。
 static (int Stage, string Phase, string Label, string Side, string Level, int? Days, string Date)? AttentionOf(Requirement r, DateTime today)
 {
     if (StatusIs(r.status, "Done")) return null;
@@ -4520,71 +4663,46 @@ app.MapPost("/api/notify-attention", async (NotifyAttentionRequest? body, HttpCo
             while (await r.ReadAsync())
                 notifiedToday[r.GetInt32(0)] = r.IsDBNull(1) ? "" : r.GetDateTime(1).ToString("HH:mm");
 
-        // ── 3. 信箱（同一個名字只查一次）──
-        var emailCache = new Dictionary<string, string>();
-        async Task<string> EmailOf(string dept, string name)
-        {
-            var k = dept + "|" + name;
-            if (!emailCache.TryGetValue(k, out var e)) emailCache[k] = e = name == "" ? "" : await AssigneeEmailAsync(conn, dept, name);
-            return e;
-        }
-
-        // ── 4. 寄件者與本人副本：一律看真實的 Windows 帳號 ──
-        var fromEmail = ""; var fromName = ""; var fromIsSelf = false;
-        if (me != null)
-        {
-            var (e, n) = await AssigneeByEmpNoAsync(conn, me);
-            if (e != "" && IsValidMailAddress(e)) { fromEmail = e; fromName = n == "" ? mailFromName : n; fromIsSelf = true; }
-        }
-        if (fromEmail == "") { fromEmail = mailFrom; fromName = mailFromName; }
+        // ── 3. 寄件者＝Mail:From（第 184 批起一律系統信箱）──
+        var fromEmail = mailFrom; var fromName = mailFromName;
         var fromOk = fromEmail != "" && IsValidMailAddress(fromEmail);
-        var selfReason = fromIsSelf ? ""
-            : $"你的工號（{me ?? "取不到"}）在指派人員主檔裡查不到有效的信箱，所以你不會收到副本（寄件者會用系統預設信箱）。";
 
-        // ── 5. 依「那一階段的負責人」分組 ──
-        var groups = new List<(string Side, string ToName, string ToEmail, string Problem,
-                               List<(string Name, string Email)> Cc, List<string> CcMissing,
+        // ── 4. 依「那一階段的負責人」分組（信裡也照這個分組列）──
+        var groups = new List<(string Side, string Name,
                                List<(Requirement Req, (int Stage, string Phase, string Label, string Side, string Level, int? Days, string Date) At)> Items)>();
         foreach (var g in items.GroupBy(x => (Side: x.At.Side, Name: ((x.At.Side == "MSD" ? x.Req.msdOwner : x.Req.emsOwner) ?? "").Trim()))
                                .OrderBy(g => g.Key.Side).ThenBy(g => g.Key.Name))
         {
-            var toEmail = await EmailOf(g.Key.Side, g.Key.Name);
-            var problem = g.Key.Name == "" ? $"{g.Key.Side} 負責人還沒指派"
-                        : toEmail == "" ? $"指派人員主檔裡「{g.Key.Name}／{g.Key.Side}」沒有填 EMAIL"
-                        : !IsValidMailAddress(toEmail) ? $"「{g.Key.Name}／{g.Key.Side}」的 EMAIL 格式不正確（{toEmail}）" : "";
-            var cc = new List<(string, string)>(); var ccMissing = new List<string>();
-            var ccDept = g.Key.Side == "MSD" ? "EMS" : "MSD";
-            foreach (var cn in g.Select(x => ((g.Key.Side == "MSD" ? x.Req.emsOwner : x.Req.msdOwner) ?? "").Trim())
-                                .Where(n => n != "").Distinct())
-            {
-                var ce = await EmailOf(ccDept, cn);
-                if (ce != "" && IsValidMailAddress(ce))
-                {
-                    if (!string.Equals(ce, toEmail, StringComparison.OrdinalIgnoreCase) && !cc.Any(c => string.Equals(c.Item2, ce, StringComparison.OrdinalIgnoreCase)))
-                        cc.Add((cn, ce));
-                }
-                else ccMissing.Add(cn);
-            }
-            // 排序與畫面「需關注」一致：未壓日期 → 剩餘天數由少到多
             var list = g.OrderBy(x => x.At.Level == "unset" ? 0 : 1).ThenBy(x => x.At.Days ?? 0).Select(x => (x.Req, x.At)).ToList();
-            groups.Add((g.Key.Side, g.Key.Name, toEmail, problem, cc, ccMissing, list));
+            groups.Add((g.Key.Side, g.Key.Name, list));
         }
-
-        string SelfCcFor(string toEmail, List<(string Name, string Email)> cc) =>
-            fromIsSelf && !string.Equals(fromEmail, toEmail, StringComparison.OrdinalIgnoreCase)
-                       && !cc.Any(c => string.Equals(c.Email, fromEmail, StringComparison.OrdinalIgnoreCase)) ? fromEmail : "";
+        var nOver  = items.Count(x => x.At.Level == "overdue");
+        var nUnset = items.Count(x => x.At.Level == "unset");
+        var nSoon  = items.Count(x => x.At.Level == "soon");
 
         if (!send)
+        {
+            // 固定收件名單（🔐 管理設定 → 信件通知）。讀不到（表還沒建）不擋預覽 —— 視窗上講出來（寄送時會再讀一次，讀不到就不寄）
+            var recipients = new List<object>(); string? recipientsError = null;
+            try
+            {
+                foreach (var x in await ReadNotifyRecipientsAsync(conn, "attn"))
+                    recipients.Add(new { kind = x.Kind, email = x.Email, label = x.Label, groupDept = x.Dept });
+            }
+            catch (Exception ex)
+            {
+                AppDiag.Error("notify-attention", "讀不到信件通知收件名單（dbo.NotifyRecipients）", ex, me);
+                recipientsError = "讀不到管理設定裡的收件名單（22_add_notify_recipients.sql 可能還沒執行），寄不出去。請管理者確認資料表已建立。";
+            }
             return Results.Ok(new
             {
-                mailReady, fromEmail, fromName, fromIsSelf, fromOk, selfReason,
-                total = items.Count,
+                mailReady, fromEmail, fromName, fromOk,
+                total = items.Count, overdue = nOver, unset = nUnset, soon = nSoon,
+                notifiedToday = items.Count(x => notifiedToday.ContainsKey(x.Req.Id)),
+                recipients, recipientsError,
                 groups = groups.Select(g => new
                 {
-                    side = g.Side, toName = g.ToName, toEmail = g.ToEmail, problem = g.Problem,
-                    cc = g.Cc.Select(c => new { name = c.Name, email = c.Email }),
-                    ccMissing = g.CcMissing,
-                    selfCc = g.Problem == "" ? SelfCcFor(g.ToEmail, g.Cc) : "",
+                    side = g.Side, name = g.Name,
                     items = g.Items.Select(x => new
                     {
                         id = x.Req.Id, nid = x.Req.nid,
@@ -4595,112 +4713,134 @@ app.MapPost("/api/notify-attention", async (NotifyAttentionRequest? body, HttpCo
                     })
                 })
             });
+        }
 
-        // ── 6. 真的寄 ──
+        // ── 5. 真的寄：一封信給固定名單 ──
         if (!mailReady)
             return Results.BadRequest(new { message = "尚未設定郵件伺服器，無法寄出提醒。\n\n請在 appsettings.json 的 Mail 區塊填入 Host 後重新啟動服務。" });
         if (!fromOk)
-            return Results.BadRequest(new { message = "找不到可用的寄件者信箱，無法寄出提醒。\n\n" + selfReason
-                                                     + "\n請在 SSMS 補上你的工號與信箱，或請管理者在 appsettings.json 的 Mail:From 設一個共用的系統信箱。" });
+            return Results.BadRequest(new { message = fromEmail == ""
+                ? "還沒有設定寄件的系統信箱，無法寄出提醒。\n\n請管理者在 appsettings.json 的 Mail:From 填入系統信箱（例如 Controltable@umc.com）後重新啟動服務。"
+                : $"寄件者信箱的格式不正確（{fromEmail}），無法寄出提醒。\n\n這個值來自 appsettings.json 的 Mail:From，請管理者修正後重新啟動服務。" });
         if (items.Count == 0)
             return Results.BadRequest(new { message = "沒有要提醒的需求（可能已經被處理掉了，請重新整理後再看一次）。" });
+        // 第 186 批：收件者／副本**由後端自己讀固定名單**（視窗改成只顯示、不能改 —— 使用者選的），
+        // 不再收前端送的清單。逐一驗格式（寫入時驗過，這裡再驗一次）、去重，同一個信箱同時在兩邊時只留收件者
+        List<(int Id, string Kind, string Email, string Label, string Dept, string CreatedBy, string CreatedAt)> saved;
+        try { saved = await ReadNotifyRecipientsAsync(conn, "attn"); }
+        catch (Exception ex)
+        {
+            AppDiag.Error("notify-attention", "寄送時讀不到信件通知收件名單（dbo.NotifyRecipients）", ex, me);
+            return ServerError("讀不到收件名單，信沒有寄出：" + ex.Message
+                + "（若訊息是 Invalid object name 'dbo.NotifyRecipients'，代表 22_add_notify_recipients.sql 還沒執行、啟動時也沒建成功）");
+        }
+        var toList = saved.Where(x => x.Kind == "to").Select(x => x.Email.Trim()).Where(s => s != "")
+                        .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var ccList = saved.Where(x => x.Kind == "cc").Select(x => x.Email.Trim()).Where(s => s != "")
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .Where(c => !toList.Contains(c, StringComparer.OrdinalIgnoreCase)).ToList();
+        var bad = toList.Concat(ccList).Where(a => a.Length > 200 || !IsValidMailAddress(a)).ToList();
+        if (bad.Count > 0)
+            return Results.BadRequest(new { message = "收件名單裡這幾個信箱格式不正確，信沒有寄出：\n\n" + string.Join("\n", bad)
+                                                     + "\n\n請管理者到 🔐 管理設定 →「信件通知」移除後重新加入。" });
+        if (toList.Count == 0)
+            return Results.BadRequest(new { message = "還沒有設定收件者，信沒有寄出。\n\n請管理者到 🔐 管理設定 →「信件通知」加信箱。" });
+        if (toList.Count + ccList.Count > 100)
+            return Results.BadRequest(new { message = $"收件者加副本最多 100 個信箱（目前 {toList.Count + ccList.Count} 個）。" });
 
-        var results = new List<object>();
-        var empty = ((string?)null, (string?)null, (string?)null);
+        var parts = new List<string>();
+        if (nOver > 0) parts.Add($"逾期 {nOver}");
+        if (nUnset > 0) parts.Add($"未壓日期 {nUnset}");
+        if (nSoon > 0) parts.Add($"7 日內到期 {nSoon}");
+        var subject = $"[需求管控表] 需關注提醒：{items.Count} 筆需求請回控表確認（{string.Join("／", parts)}）";
+        // 純文字（lines）與 HTML（html）一行對一行同時組：內容一字不差，HTML 版只多顏色與粗體（第 186 批，使用者要求「可以有顏色嗎」）。
+        // ⚠️ 顏色寫死 hex、不用 CSS 變數：信是在 Notes 的白底裡看，沒有深色模式。紅＝逾期／未壓日期、橘＝7 日內（與畫面同一組意思）。
+        // ⚠️ 每一段使用者資料都先 HtmlEncode（分類、子分類是自由輸入）；只有我們自己的 <b>／<span>／<a> 是標記。
+        var lines = new List<string>();
+        var html = new List<string>();
+        static string Enc(string s) => System.Net.WebUtility.HtmlEncode(s).Replace("  ", "&nbsp;&nbsp;");
+        void L(string text, string? h = null) { lines.Add(text); html.Add(h ?? Enc(text)); }
+        L("Dear all：");
+        L("");
+        L($"以下 {items.Count} 筆需求目前需要關注（{string.Join("／", parts)}），");
+        L("請各負責人進入需求管控表確認：做完了就標記完成、還沒壓日期就壓上日期、需要延後就更新日期並填寫原因。");
+        L("");
         foreach (var g in groups)
         {
-            if (g.Problem != "")
-            {
-                results.Add(new { toName = g.ToName == "" ? $"（{g.Side} 未指派）" : g.ToName, toEmail = g.ToEmail, count = g.Items.Count, status = "skipped", message = g.Problem });
-                continue;
-            }
-            var selfCc = SelfCcFor(g.ToEmail, g.Cc);
-            var nOver = g.Items.Count(x => x.At.Level == "overdue");
-            var nUnset = g.Items.Count(x => x.At.Level == "unset");
-            var nSoon = g.Items.Count(x => x.At.Level == "soon");
-            var parts = new List<string>();
-            if (nOver > 0) parts.Add($"逾期 {nOver}");
-            if (nUnset > 0) parts.Add($"未壓日期 {nUnset}");
-            if (nSoon > 0) parts.Add($"7 日內到期 {nSoon}");
-            var subject = $"[需求管控表] 需關注提醒：{g.Items.Count} 筆需求請留意（{string.Join("／", parts)}）";
-            var lines = new List<string>
-            {
-                $"{g.ToName} 您好：",
-                "",
-                $"以下 {g.Items.Count} 筆需求目前輪到您（{g.Side}）負責的階段，已經逾期、即將到期或還沒壓定日期，請撥空進入需求管控表處理：",
-                "",
-                "──────────────────────────────"
-            };
-            var k = 0;
+            L("──────────────────────────────", "<span style=\"color:#999999\">──────────────────────────────</span>");
+            var head = $"■ {g.Side} {(g.Name == "" ? "（未指派負責人）" : g.Name)}（{g.Items.Count} 筆）";
+            L(head, $"<b>{Enc(head)}</b>");
             foreach (var x in g.Items)
             {
-                k++;
                 var who = string.Join(" / ", new[] { x.Req.mainCat, x.Req.subCat }.Where(s => !string.IsNullOrWhiteSpace(s)));
-                lines.Add($"{k}. NID {(x.Req.nid == "" ? "（未填）" : x.Req.nid)}　{who}");
-                lines.Add($"   階段：{x.At.Label}　狀態：{AttentionText(x.At.Level, x.At.Days, x.At.Date)}");
+                var nid = $"NID {(x.Req.nid == "" ? "（未填）" : x.Req.nid)}";
+                L($"  {nid}　{who}", $"&nbsp;&nbsp;<span style=\"color:#666666\">{Enc(nid)}</span>　{Enc(who)}");
+                var state = AttentionText(x.At.Level, x.At.Days, x.At.Date);
+                var color = x.At.Level == "soon" ? "#B9770E" : "#C0392B";
+                L($"      {x.At.Label}　{state}",
+                  $"&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{Enc(x.At.Label)}　<b style=\"color:{color}\">{Enc(state)}</b>");
             }
-            lines.Add("──────────────────────────────");
-            if (mailAppUrl != "") { lines.Add(""); lines.Add($"需求管控表：{mailAppUrl}"); }
-            lines.Add("");
-            lines.Add(fromIsSelf
-                ? $"（本信由「{fromName}」透過需求管控表發出，有問題可以直接回覆本信。）"
-                : "（本信由需求管控表系統自動發出，請勿直接回覆本信箱。）");
-            var mailBody = string.Join("\r\n", lines);
-            var mailHtml = "<div style=\"font-family:Segoe UI,Microsoft JhengHei,sans-serif;font-size:14px;line-height:1.6\">"
-                         + string.Join("<br>", lines.Select(l =>
-                               mailAppUrl != "" && l.StartsWith("需求管控表：", StringComparison.Ordinal)
-                                   ? $"需求管控表：<a href=\"{System.Net.WebUtility.HtmlEncode(mailAppUrl)}\">{System.Net.WebUtility.HtmlEncode(mailAppUrl)}</a>"
-                                   : System.Net.WebUtility.HtmlEncode(l).Replace("  ", "&nbsp;&nbsp;")))
-                         + "</div>";
-            var moreCc = g.Cc.Skip(1).Select(c => c.Email).ToList();
-            var firstCc = g.Cc.Count > 0 ? g.Cc[0].Email : "";
-
-            var queued = false; var mailItemId = 0; string? err;
-            if (useDbMail)
-            {
-                var rr = await SendViaDbMailAsync(conn, fromEmail, fromName, g.ToEmail, firstCc, selfCc, subject, mailHtml, moreCc);
-                err = rr.Error; queued = rr.Queued; mailItemId = rr.MailItemId;
-            }
-            else
-            {
-                var rr = await SendNotifyMailAsync(fromEmail, fromName, g.ToEmail, firstCc, selfCc, subject, mailBody, mailHtml, moreCc);
-                err = rr.Error; queued = rr.Uncertain;
-            }
-            if (err != null)
-            {
-                results.Add(new { toName = g.ToName, toEmail = g.ToEmail, count = g.Items.Count, status = "failed", message = err });
-                continue;
-            }
-            // ⚠️ 寄出之後才寫稽核，一筆需求一列（與 /notify-unset 同一個順序與理由）。
-            // ⚠️ Note 的開頭格式「…→ 收件者 姓名 <信箱>」不可以改：前端 NOTIFY_TO_RE 抓的是「收件者」後第一個 <…>
-            var ccText = g.Cc.Count > 0 ? "，副本 " + string.Join("、", g.Cc.Select(c => $"{c.Name} <{c.Email}>")) : "";
-            foreach (var x in g.Items)
-            {
-                var note = $"需關注批次提醒「{x.At.Label}」{AttentionText(x.At.Level, x.At.Days, x.At.Date)} → 收件者 {g.ToName} <{g.ToEmail}>"
-                         + ccText
-                         + (g.CcMissing.Count > 0 ? $"，副本 {string.Join("、", g.CcMissing)}（查無或信箱格式不正確，未寄送）" : "")
-                         + $"；寄件者 {fromName} <{fromEmail}>" + (fromIsSelf ? "" : "（系統預設信箱）")
-                         + (selfCc != "" ? "（本人亦收副本）" : "")
-                         + $"；同一封信共 {g.Items.Count} 筆"
-                         + (queued ? (useDbMail ? $"；⚠ 已排入 Database Mail 佇列（mailitem_id={mailItemId}）但未確認送出"
-                                                : $"；⚠ SMTP 對話在 {mailTimeout / 1000} 秒內未完成，未確認送出") : "");
-                try
-                {
-                    await InsertHistoryAsync(conn, x.Req.Id, x.Req.nid, x.At.Phase, "通知寄送", null, note, me, "windows", empty, empty);
-                }
-                catch (Exception ex)
-                {
-                    AppDiag.Error("notify-attention-audit", "信已經寄出去了，但稽核列沒寫進去", ex, me, x.Req.Id);
-                }
-            }
-            results.Add(new { toName = g.ToName, toEmail = g.ToEmail, count = g.Items.Count,
-                              status = queued ? "uncertain" : "sent",
-                              message = (queued ? "已交給郵件系統，但尚未確認送出" : "已寄出")
-                                      + (g.Cc.Count > 0 ? "，副本 " + string.Join("、", g.Cc.Select(c => c.Name)) : "")
-                                      + (selfCc != "" ? "，你自己也會收到一份副本" : "")
-                                      + (g.CcMissing.Count > 0 ? $"（{string.Join("、", g.CcMissing)} 查無信箱，沒有副本）" : "") });
         }
-        return Results.Ok(new { results });
+        L("──────────────────────────────", "<span style=\"color:#999999\">──────────────────────────────</span>");
+        if (mailAppUrl != "")
+        {
+            L("");
+            L($"需求管控表：{mailAppUrl}",
+              $"需求管控表：<a href=\"{System.Net.WebUtility.HtmlEncode(mailAppUrl)}\">{System.Net.WebUtility.HtmlEncode(mailAppUrl)}</a>");
+        }
+        L("");
+        L("（本信由需求管控表系統自動發出，請勿直接回覆本信箱。）", "<span style=\"color:#888888\">（本信由需求管控表系統自動發出，請勿直接回覆本信箱。）</span>");
+        var mailBody = string.Join("\r\n", lines);
+        var mailHtml = "<div style=\"font-family:Segoe UI,Microsoft JhengHei,sans-serif;font-size:14px;line-height:1.6\">"
+                     + string.Join("<br>", html)
+                     + "</div>";
+
+        var firstTo = toList[0]; var moreTo = toList.Skip(1).ToList();
+        var firstCc = ccList.Count > 0 ? ccList[0] : ""; var moreCc = ccList.Skip(1).ToList();
+        var queued = false; var mailItemId = 0; string? err;
+        if (useDbMail)
+        {
+            var rr = await SendViaDbMailAsync(conn, fromEmail, fromName, firstTo, firstCc, "", subject, mailHtml, moreCc, moreTo);
+            err = rr.Error; queued = rr.Queued; mailItemId = rr.MailItemId;
+        }
+        else
+        {
+            var rr = await SendNotifyMailAsync(fromEmail, fromName, firstTo, firstCc, "", subject, mailBody, mailHtml, moreCc, moreTo);
+            err = rr.Error; queued = rr.Uncertain;
+        }
+        if (err != null)
+            return Results.Json(new { message = "寄信失敗：" + err }, statusCode: 502);
+
+        // ⚠️ 寄出之後才寫稽核，一筆需求一列（與 /notify-unset 同一個順序與理由）。
+        // ⚠️ Note 開頭「…→ 收件者 …」的格式沿用：前端 NOTIFY_TO_RE 抓「收件者」後第一個 <…>，
+        //    批次信的第一個收件者多半不是那一階段的負責人 —— phaseNotifiedEntry() 會判成「還沒單獨通知過」，
+        //    單筆 ✉ 照樣可以寄（判不出來一律當還沒通知，第 43 批）。
+        var toText = string.Join("、", toList.Select(a => $"<{a}>"));
+        var ccText = ccList.Count > 0 ? "，副本 " + string.Join("、", ccList.Select(a => $"<{a}>")) : "";
+        var empty = ((string?)null, (string?)null, (string?)null);
+        foreach (var x in items)
+        {
+            var note = $"需關注批次提醒「{x.At.Label}」{AttentionText(x.At.Level, x.At.Days, x.At.Date)} → 收件者 {toText}"
+                     + ccText
+                     + $"；寄件者 {fromName} <{fromEmail}>（系統信箱）"
+                     + $"；同一封信共 {items.Count} 筆"
+                     + (queued ? (useDbMail ? $"；⚠ 已排入 Database Mail 佇列（mailitem_id={mailItemId}）但未確認送出"
+                                            : $"；⚠ SMTP 對話在 {mailTimeout / 1000} 秒內未完成，未確認送出") : "");
+            try
+            {
+                await InsertHistoryAsync(conn, x.Req.Id, x.Req.nid, x.At.Phase, "通知寄送", null, note, me, "windows", empty, empty);
+            }
+            catch (Exception ex)
+            {
+                AppDiag.Error("notify-attention-audit", "信已經寄出去了，但稽核列沒寫進去", ex, me, x.Req.Id);
+            }
+        }
+        return Results.Ok(new
+        {
+            status = queued ? "uncertain" : "sent", count = items.Count, to = toList, cc = ccList,
+            message = (queued ? "已交給郵件系統，但尚未確認送出" : "已寄出")
+                    + $"：收件者 {toList.Count} 個、副本 {ccList.Count} 個，信裡列了 {items.Count} 筆需求。"
+        });
     }
     catch (Exception ex)
     {
@@ -5429,6 +5569,13 @@ static string StageText(string? s)
     };
     return c == "" ? "未設定" : (name == "" ? c : name);
 }
+// 信件主旨用的階段名：剝掉開頭的圈號（第 184 批）。Notes 收件匣的主旨字型畫不出「②」，
+// 實際顯示成方框；內文同一個字正常，所以只有主旨走這一支。「② MSD確認」→「MSD確認」
+static string SubjectStageName(string label)
+{
+    var v = (label ?? "").Trim();
+    return v.Length > 0 && v[0] >= '①' && v[0] <= '⑳' ? v.Substring(1).TrimStart() : v;
+}
 static string StatusText(string? s) => string.IsNullOrWhiteSpace(s) ? "未設定" : s.Trim();
 static bool SameDates((string? start, string? end, string? confirm) a, (string? start, string? end, string? confirm) b)
     => NormDate(a.start) == NormDate(b.start)
@@ -5820,12 +5967,21 @@ public class DeleteRequest
 //    呼叫端指定不了任何一項（見端點上方的說明）。
 // ⚠️ 宣告成可為 null（`NotifyRequest? body`）：完全沒帶 body 的呼叫端也要進得到端點裡，
 //    才不會拿到一個沒有訊息的 400（與 DeleteRequest 同一個理由）
-// POST /api/notify-attention 的請求內容（第 125 批）。ids 只能縮小範圍（確認視窗裡取消勾選的），
-// 寄給誰、哪幾筆一律由後端自己算。寄件者看 Windows 帳號，所以這裡刻意沒有 actor 欄位
+// POST /api/notify-attention 的請求內容（第 125 批）。ids 只能縮小範圍；哪幾筆一律由後端自己算。
+// 第 185 批起寄一封給固定名單；第 186 批起收件者由後端自己讀 dbo.NotifyRecipients（視窗只顯示、不能改），
+// 所以這裡刻意沒有 to／cc 欄位。
 public class NotifyAttentionRequest
 {
     public bool send { get; set; }
     public int[]? ids { get; set; }
+}
+// 信件通知收件名單（第 185 批，dbo.NotifyRecipients）
+public class NotifyRecipientRequest
+{
+    public string? kind { get; set; }
+    public string? email { get; set; }
+    public string? label { get; set; }
+    public string? groupDept { get; set; }
 }
 
 public class NotifyRequest

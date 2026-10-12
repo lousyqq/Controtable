@@ -38,31 +38,36 @@
 - `GET /api/requirements` 與 `/api/export` 都要 `ORDER BY Id`（列序＝畫面 No）。
 
 ### 寄信：`POST /api/requirements/{id}/notify-unset`（單筆 ✉）
-- **⚠️⚠️ 這條路徑 2026-09-02 已在公司 IIS（p58esiap12）實測通過，未經指示一律不要動，改到附近也不要順手整理。** 生效組合：`Mail:Mode="smtp"`、relay `10.13.2.221:25`、`UseSsl=false`、**`From` 刻意留空（不要以為漏填而補上）**。保護範圍：`Mail:*` 讀取段、端點本體、`UnsetPhaseOf()`/`StagePassed()`/`AssigneeByEmpNoAsync()`/`MailFailureHint()`/TCP 探測/dbmail 輪詢、`appsettings.json` 的 `Mail` 區塊。真的要動，改完必須回 IIS 重測。
-  - ⚠️ 尚未回 IIS 重測：本人收副本與 HTML 版（62）、`moreCc` 參數與 `/notify-attention`（125）、**逾期提醒（160）**—— 回 IIS 時單筆 ✉（未壓／逾期兩種）與批次提醒都要測。
+- **⚠️⚠️ 這條路徑 2026-09-02 已在公司 IIS（p58esiap12）實測通過，未經指示一律不要動，改到附近也不要順手整理。** 生效組合：`Mail:Mode="smtp"`、relay `10.13.2.221:25`、`UseSsl=false`、**`From="Controltable@umc.com"`**（2026-10-12 使用者在公司內網實測可寄；第 184 批起寄件者一律用它，**不可再留空**——空的兩支寄信端點都回 400）。保護範圍：`Mail:*` 讀取段、端點本體、`UnsetPhaseOf()`/`StagePassed()`/`AssigneeByEmpNoAsync()`/`MailFailureHint()`/TCP 探測/dbmail 輪詢、`appsettings.json` 的 `Mail` 區塊。真的要動，改完必須回 IIS 重測。
+  - ⚠️ 尚未回 IIS 重測：HTML 版（62）、`moreCc` 參數與 `/notify-attention`（125）、**逾期提醒（160）**、**寄件者一律系統信箱＋主旨拿掉圈號（184）**—— 回 IIS 時單筆 ✉（未壓／逾期兩種）與批次提醒都要測。
 - **兩種情況（160，使用者選的）**：先問 `UnsetPhaseOf()`（未壓日期），再問 `OverduePhaseOf()`（StatusID 那一階有 End、沒走完、End < 今天；**不是** `AttentionOf()` 的挑最早到期——信講的要是追蹤中那一列紅字那一階）。前端鏡像 `overdueDuePhase()`。逾期那種只換主旨／開頭兩句／「逾期階段」那一行；稽核 Note 寫「已逾期（原訂 YYYY-MM-DD）」——`phaseNotifiedEntry(…, dueEnd)` 靠它分兩種、比對同一個期限，改字兩邊一起改。
 - **收件者、階段、主旨、內文一律由後端算（`UnsetPhaseOf()`）**，前端送什麼都不看。收件者＝那一階段負責人、副本＝另一邊（①④ EMS、②③ MSD）。`UnsetPhaseOf()`/`StagePassed()` 是前端 `unsetDuePhase()`/`isPhasePassed()` 的**鏡像**。套 `IsCrossSiteRequest()`。
 - **先寄信、再寫稽核列**（`ChangeType='通知寄送'`）；稽核寫失敗不可回失敗。`通知寄送` 不進 `isDateChange`、不動計數欄。
 - **寄不出去一律 400／502 講清楚原因**；副本查不到照寄、回 `ccMissing`。失敗訊息走 `MailFailureHint()`（講下一步去查什麼、附 `Test-NetConnection` 並說要在跑網站的主機上跑）；前端有「寄送中…」toast。
-- **寄件者＝按鈕的本人**（工號 → `EMPO` → `EMAIL`）。**⚠️⚠️ 只有 `actorSource=="windows"` 才可用本人身分**，模擬／取不到／不在名單一律退回 `Mail:From`（兩邊都沒有才 400）；稽核 Note 記寄件者。本人另收一份 CC（`selfCcEmail`，只在 `fromIsSelf`、不重複），Note 只在**寄件者後面**加「（本人亦收副本）」—— `NOTIFY_TO_RE` 抓「收件者」後第一個 `<…>`，不可插到前面。
+- **寄件者一律 `Mail:From`（系統信箱）**（184，使用者選的；推翻第 39 批的「寄件者＝按鈕的本人」）：兩支寄信端點都不再用本人信箱寄；稽核 Note 記「寄件者 … （系統信箱）」，寫在「收件者」**後面**（`NOTIFY_TO_RE` 抓「收件者」後第一個 `<…>`）。**單筆 ✉ 不給按的人副本**（副本＝另一邊負責人＝上一階段做完、在等的人，③ 例外仍給 EMS；按的人多半就是他）；`selfCc` 參數保留給批次提醒。落款固定「請勿直接回覆本信箱」。主旨的階段名經 `SubjectStageName()` 剝掉圈號（Notes 主旨字型把「②」畫成方框；內文不動）。
 - **逾時三道都不可拿掉**：①`TcpClient` 連線探測（`SmtpClient.Timeout` 管不到 TCP 建立）；②`SendMailAsync(msg, cts.Token)`（`SmtpClient.Timeout` 對 `SendMailAsync` 無效，否則 `runExclusive` 鎖死整頁）；③前端 90 秒 `AbortController`。
 - **逾時 ≠ 確定失敗**：smtp 逾時與 dbmail 未確認走同一條「未確認送出」（`Uncertain`）；稽核 Note 的「**未確認送出**」四個字兩種模式都要寫（`phaseNotifiedEntry()` 靠它）；前端文案不可以說「沒有寄出」。
 - **兩種模式 `Mail:Mode`**：`smtp`／`dbmail`（`msdb.dbo.sp_send_dbmail`，前置 `16_grant_dbmail_permission.sql`）。**dbmail 一定要輪詢 `sysmail_allitems` 確認 `sent_status`**，確認不到回 `queued:true`、前端措辭不可是「已寄出」。
-- **信箱格式在端點層先驗（`IsValidMailAddress()`）**：收件者壞→400；副本壞→降級沒副本照寄（`ccReason` 分「沒填／格式錯」）；寄件者本人壞→退回 `Mail:From`。dbmail 的 `@recipients` 吃分號清單，不驗會真的寄給兩個人。前端 `isMailAddr()` 同一套但刻意寬鬆（不要求網域有點、接受「姓名 <位址>」），格式壞也算進 `notifyPreview().problem`。
+- **信箱格式在端點層先驗（`IsValidMailAddress()`）**：收件者壞→400；副本壞→降級沒副本照寄（`ccReason` 分「沒填／格式錯」）；`Mail:From` 壞→400 講是設定檔。dbmail 的 `@recipients` 吃分號清單，不驗會真的寄給兩個人。前端 `isMailAddr()` 同一套但刻意寬鬆（不要求網域有點、接受「姓名 <位址>」），格式壞也算進 `notifyPreview().problem`。
 - **HTML 版**（`mailHtml`）：每行先 `HtmlEncode`，只把網址包 `<a>`；smtp `Body` 放純文字、`AlternateViews` 放 HTML，**順序不可反**；dbmail `@body_format='HTML'`。
+- **單筆 ✉ 的確認視窗是專用的 `notifyModal`**（184，使用者：「一般不懂程式的人只想要越簡單越好」，看過示意圖）：只留「寄給／副本」兩行（名字旁灰字「MSD 負責人」、信箱在 `title`）＋`取消`／`寄出提醒`（`--brand`，不用紅）；不寫寄件者、不寫「會留一筆通知寄送」、不做信件預覽（使用者否決）。寄過了才多一行黃字「今天 HH:mm 已寄過一次」、按鈕改 `再寄一次`。**不可改回借用 `confirmModal`**（那個是刪除用的紅色樣式）。寄不出去（`p.problem`）照舊直接跳 alert。
 - **⚠️⚠️ 存檔後一律不再自動詢問要不要寄信**（124，使用者：「改成用使用者點選『提醒』按鈕才跳出視窗詢問」）。不要把 `askNotifyUnset(fresh)` 接回 `saveRequirement`。手動 ✉ 一律出聲、一律不擋。
 - **`phaseNotifiedEntry()`（手動 ✉ 的「這會是第二封」提示）四條界線**（43）：判定鍵是 (需求, 階段)；基準線＝同一階段最後一次 `規格回退`（**按 phase 過濾**）；依據是稽核列不是 localStorage；收件者換人就重問。判不出來一律當「還沒通知」。`fetchHistory()` 要回傳剛抓到的那一份。
 - 編輯視窗 ① End 底下那行灰字：收件者是本人（`isMeAssignee()`，信箱相同或部門＋姓名相同，空字串不算）時寫「會出現在你的『我的待辦』」，否則指向 ✉。
 
-### 寄信：`POST /api/notify-attention`（需關注批次提醒）（125）
-- 需求列表「需關注 N」左邊一顆 ✉。每位負責人一封彙整信；收件者＝那一階段負責人、副本＝另一邊＋按按鈕的人；範圍＝需關注全部（不吃畫面篩選）；今天提醒過的照寄、視窗標出來。
-- **`send:false` 預覽（一封不寄、一列不寫）／`send:true` 真寄。哪幾筆、寄給誰一律後端算**，前端 `ids` 只能縮小範圍。
-- **與 `/notify-unset` 刻意不同**：掛 Negotiate、只有管理者或 `DEPT=MSD` 的**真實 Windows 帳號**可呼叫（403）；寄件者與本人副本看 `ctx.User`，不看前端 actor。
+### 寄信：`POST /api/notify-attention`（需關注批次提醒）（125／185）
+- 需求列表「需關注 N」左邊一顆 ✉。**第 185 批起只寄一封 Dear all 給固定名單**（使用者：「我要固定寄給同一批人，這些需求的負責人一定包含」），信裡依負責人分組列出需關注全部（不吃畫面篩選）；今天提醒過的照寄、視窗標出來。推翻 125 的「每位負責人一封、副本另一邊＋本人」。
+- **固定名單＝`dbo.NotifyRecipients`（Purpose=`attn`）**，在 🔐 管理設定 →「信件通知」分頁維護（`MailSettingsPanel`，端點 `/api/notify-recipients` GET/POST/PUT/DELETE，管理者＋跨站防護，每筆直接存、沒有儲存鈕）。群組信箱與個人信箱混放。**畫面只有「收件者／副本」兩列信箱標籤（✕ 刪）＋底部一行「＋ 新增信箱」**（展開成「收件者｜副本、輸入框、加入、取消」一排；加完不收起、留在同一邊；Esc 只收新增列）（186，使用者看過四版示意圖：「不用加入的是群組或個人」「有點寬、占版面」）。**不要加回**群組標註、顯示名稱、從指派名單挑、改成副本；DB 的 `Label`／`GroupDept` 保留不寫。**刻意另開表、不放 `AppSettings`**（Value 只有 200 字、卡控總開關在裡面）；bootstrap 自己一段。
+- **寄送視窗只顯示、不能改**（186，使用者選 A）：收件者／副本用分號接成一段文字（標籤在 576px 視窗裡一個一行太佔版面），底下「要改名單請到 🔐 管理設定 →『信件通知』」；收件者空時「寄出提醒」disabled 並講去哪裡加。**`send:true` 不收任何清單，後端自己讀 `dbo.NotifyRecipients`**，逐一 `IsValidMailAddress`、去重、收件者不可空、合計 ≤100。哪幾筆、寄給誰一律後端算，`ids` 只能縮小範圍。
+- **批次信的 HTML 版有顏色**（187，使用者：「可以有顏色嗎」）：純文字 `lines` 與 HTML `html` 一行對一行同時組（`L(text, html)`），內容一字不差；狀態紅 `#C0392B`（逾期／未壓日期）、橘 `#B9770E`（7 日內）、負責人分組粗體、NID 灰。顏色寫死 hex（Notes 白底、沒有深色模式）；使用者資料一律先 HtmlEncode。**只改批次信**，單筆 ✉ 的信沒動。
+- **沒有「負責人不在名單裡」的檢查**（186 拿掉）：群組信箱看不到裡面有誰，不標群組只會誤報；名單是否涵蓋負責人由設定的人負責（手冊有寫）。
+- **與 `/notify-unset` 刻意不同**：掛 Negotiate、只有管理者或 `DEPT=MSD` 的**真實 Windows 帳號**可呼叫（403）。寄件者一律 `Mail:From`（184）；**不加本人副本**（要收就把自己加進名單）。
 - **`AttentionOf()` 是前端 `getDueEntry()` 的鏡像**（建在 `UnsetPhaseOf()`/`StagePassed()` 上），筆數要對得上畫面「需關注 N」。
-- 寄信沿用 `SendNotifyMailAsync`/`SendViaDbMailAsync`，只多選填 `moreCc`。稽核每筆一列 `通知寄送`，Note「收件者」後第一個 `<…>` 不可改；「未確認送出」照寫。
-- 前端保險絲 `60s + 45s × 封數`（上限 10 分鐘），寄送中不給關；沒拿到回應不可說「沒寄出」；寄完原地列每封結果。按鈕純圖示 34px。
+- 寄信沿用 `SendNotifyMailAsync`/`SendViaDbMailAsync`，只多選填 `moreCc`／`moreTo`（185；`/notify-unset` 不帶）。稽核每筆需求一列 `通知寄送`，Note「→ 收件者 <…>、<…>」格式沿用（第一個 `<…>` 多半不是那一階段負責人 → `phaseNotifiedEntry()` 判成還沒單獨通知，單筆 ✉ 照樣可寄）；「未確認送出」照寫。
+- 前端保險絲 90 秒（只寄一封），寄送中不給關；沒拿到回應不可說「沒寄出」；寄完原地寫結果。按鈕純圖示 34px。
 
 ### 頁面瀏覽權限卡控（74/75）
+- **🔐 面板＝「管理設定」，分「瀏覽權限」「信件通知」兩個分頁**（185）：瀏覽權限分頁內容原封不動（包在 `tab === 'access'` 裡），頂端狀態列兩邊都看得到；每次打開停在瀏覽權限。**信件通知的資料與卡控完全分開**（使用者問過「會不會影響卡控」），權限只讀用 `IsAccessAdminAsync`。
 - 端點：`/api/access-status`（匿名）、`/api/access-check`（Negotiate；`?testEmpId=` 只給管理者）、`/api/access-rules`、`/api/access-control`、`/api/access-admins`（後幾支 Negotiate＋管理者＋寫入套 `IsCrossSiteRequest()`）。表：`AccessRules`/`AppSettings`（`AccessControlEnabled` 預設 false）/`AccessLog`/`AccessAdmins`。規則：同條 AND、多條 OR；只填工號＝白名單。名冊 `Access:PersonView`（串 SQL 前 regex 白名單）。
 - **與 Gantt 刻意不同，不要對齊回去**：①工號由後端從 `ctx.User` 讀（不收參數、模擬帳號過不了門）；②管理者＝`dbo.AccessAdmins` ∪ `Access:Admins`（設定檔只是後備），管理者一律可瀏覽；③**只擋畫面**，資料端點維持匿名。
 - **⚠️⚠️ `Access:Admins` 不要寫進 `appsettings.Development.json`**（JSON 陣列跨檔依索引覆寫，會靜靜蓋掉）。`ConfigAdmins()` 也接受字串 `"a, b"`。
@@ -94,7 +99,7 @@
 - `showToast(message, type, action)` 的 action 只能放「可以不做」的事（toast 會消失）。
 
 ### 版面預算與縮放
-- **⚠️ 工具列 `<select>` 固定 140px，option 文字不可接說明**（34-37）：原生 select 寬度＝最長 option，且 option 文字就是收合時顯示的字。說明放 `title` 與圖例。
+- **⚠️ 工具列 `<select>` 固定 140px（只有「進度」164px，183：12px 字放不下「進度：進行中 (N)」），option 文字不可接說明**（34-37）：原生 select 寬度＝最長 option，且 option 文字就是收合時顯示的字。說明放 `title` 與圖例。
 - **⚠️ 資料列新加的東西一律疊在既有元素下面，不可貼右邊**（39）：欄寬＝最寬的那一格。
 - **工具列與階段那一排是同一張卡的兩列**（179，使用者看過示意圖說「照你建議的改」）：第一列 `toolbar-card`＋中間細線 `no-print`、第二列照印。第一列下拉只留 EMS／MSD／進度，**「到期狀態」「警示」在 `更多篩選`**（`Popover align="left"`、`MenuButton count`＝裡面生效幾個；面板裡的下拉帶 `full`——外框與 select 不同寬時 ⌄ 會畫在 select 外面、點了沒反應，寬度要用 inline style，`w-full` 輸給 `select.ctl`），生效時照樣出條件晶片；**「進度」不可收進去**（預設「只看進行中」只剩它時晶片列不出現＝收進去就看不到）。Excel 是一顆直接下載的鈕（匯入拿掉後選單只剩一項），title＋toast 一定講「全部 N 筆、不套用篩選」。「顯示 N / M 筆」只在有篩掉東西時出現（沒篩時與 `ALL N` 重複）。量（1280）：兩列各 34px、卡高 119px、第一列餘約 185px。
 - **⚠️ 階段那一排（ALL＋五顆＋右側控制群）1280 只剩十幾 px**（51、73）：控制項一律純圖示 34px（`ctl ctl-icon`），不可放寬度隨資料變的文字（`需關注` 只印總數），條件晶片不併進來。
@@ -131,7 +136,7 @@
 - **切換模擬帳號＝那個人剛打開網頁**（180，使用者選的）：模擬視窗四顆鈕（三個套用＋還原真實帳號）都先呼叫 `resetForIdentitySwitch()` —— 篩選／排序／展開／我的待辦的就地輸入與收合／頁籤全部回預設，`identitySwitchedRef` 讓載入時網址的 `ems=`／`view=` 不再擋、`identityEpoch` 讓同一工號再套一次也重跑自動篩選與預設頁。localStorage 的顯示偏好不動。**新加任何篩選／排序 state 要一起加進這支**。真實登入者不經過這裡（篩選只存在頁面與網址，不寫 localStorage，所以使用者之間本來就不會互相帶到；分享連結是唯一的例外，刻意的）。
 - **⚠️⚠️ 模擬的工號一律經 `stripDomain()`**（後端 `StripDomain()` 的鏡像）—— `meAssignee` 直接比 `EMPO`。
 - 🔐 入口看 `actingAdmin`；批次 ✉ 看 `canAttnNotify` ＝ `canManageList` **且** `realCanAttn`（真實帳號 `accessCheck.empId`，**不可用 `actor.empId`**）。批次視窗模擬時講明寄件者是真實帳號。
-- **⚠️⚠️ 刻意維持不一致（安全邊界，不要對齊）**：瀏覽權限閘門只看真實帳號；單筆 ✉ 模擬時一律走 `Mail:From`；模擬管理者需要真實帳號本身是管理者。手冊第 14 章 `#h-simulate` 有寫。
+- **⚠️⚠️ 刻意維持不一致（安全邊界，不要對齊）**：瀏覽權限閘門只看真實帳號；批次提醒能不能按看真實帳號；模擬管理者需要真實帳號本身是管理者。手冊第 14 章 `#h-simulate` 有寫。
 
 ### 篩選、排序與網址（28、49、63、64）
 - **每個生效中的條件都要在晶片列看得見、可單獨移除**；被收起的欄位的 `colFilters` 照樣在過濾，晶片標警示色。判定走 `colFilterHidden()`，與篩選列共用 `COL_FILTER_META`。
