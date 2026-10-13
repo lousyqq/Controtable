@@ -39,7 +39,7 @@
 
 ### 寄信：`POST /api/requirements/{id}/notify-unset`（單筆 ✉）
 - **⚠️⚠️ 這條路徑 2026-09-02 已在公司 IIS（p58esiap12）實測通過，未經指示一律不要動，改到附近也不要順手整理。** 生效組合：`Mail:Mode="smtp"`、relay `10.13.2.221:25`、`UseSsl=false`、**`From="Controltable@umc.com"`**（2026-10-12 使用者在公司內網實測可寄；第 184 批起寄件者一律用它，**不可再留空**——空的兩支寄信端點都回 400）。保護範圍：`Mail:*` 讀取段、端點本體、`UnsetPhaseOf()`/`StagePassed()`/`AssigneeByEmpNoAsync()`/`MailFailureHint()`/TCP 探測/dbmail 輪詢、`appsettings.json` 的 `Mail` 區塊。真的要動，改完必須回 IIS 重測。
-  - ⚠️ 尚未回 IIS 重測：HTML 版（62）、`moreCc` 參數與 `/notify-attention`（125）、**逾期提醒（160）**、**寄件者一律系統信箱＋主旨拿掉圈號（184）**—— 回 IIS 時單筆 ✉（未壓／逾期兩種）與批次提醒都要測。
+  - ⚠️ 尚未回 IIS 重測：HTML 版（62）、`moreCc` 參數與 `/notify-attention`（125）、**逾期提醒（160）**、**寄件者一律系統信箱＋主旨拿掉圈號（184）**、**信尾連結改成直達（189）**—— 回 IIS 時單筆 ✉（未壓／逾期兩種）與批次提醒都要測。
 - **兩種情況（160，使用者選的）**：先問 `UnsetPhaseOf()`（未壓日期），再問 `OverduePhaseOf()`（StatusID 那一階有 End、沒走完、End < 今天；**不是** `AttentionOf()` 的挑最早到期——信講的要是追蹤中那一列紅字那一階）。前端鏡像 `overdueDuePhase()`。逾期那種只換主旨／開頭兩句／「逾期階段」那一行；稽核 Note 寫「已逾期（原訂 YYYY-MM-DD）」——`phaseNotifiedEntry(…, dueEnd)` 靠它分兩種、比對同一個期限，改字兩邊一起改。
 - **收件者、階段、主旨、內文一律由後端算（`UnsetPhaseOf()`）**，前端送什麼都不看。收件者＝那一階段負責人、副本＝另一邊（①④ EMS、②③ MSD）。`UnsetPhaseOf()`/`StagePassed()` 是前端 `unsetDuePhase()`/`isPhasePassed()` 的**鏡像**。套 `IsCrossSiteRequest()`。
 - **先寄信、再寫稽核列**（`ChangeType='通知寄送'`）；稽核寫失敗不可回失敗。`通知寄送` 不進 `isDateChange`、不動計數欄。
@@ -66,8 +66,22 @@
 - 寄信沿用 `SendNotifyMailAsync`/`SendViaDbMailAsync`，只多選填 `moreCc`／`moreTo`（185；`/notify-unset` 不帶）。稽核每筆需求一列 `通知寄送`，Note「→ 收件者 <…>、<…>」格式沿用（第一個 `<…>` 多半不是那一階段負責人 → `phaseNotifiedEntry()` 判成還沒單獨通知，單筆 ✉ 照樣可寄）；「未確認送出」照寫。
 - 前端保險絲 90 秒（只寄一封），寄送中不給關；沒拿到回應不可說「沒寄出」；寄完原地寫結果。按鈕純圖示 34px。
 
+### 自動寄信：交棒、退回重做（188）
+- **只做兩種**（使用者看過四張示意圖：「先只留交棒+退回重做，要B提示」）：`/done` 推進了目前階段（`!backfill && newStage > curStageNum`）、`/rollback` 成功 → Commit **之後** `QueueAutoNotify()`。結案／新需求／換人／代改／手動調整目前階段、延遲寄送、範本編輯**都不做**，要加先問。
+- **⚠️⚠️ 背景寄、不等**（使用者選的「不等，直接寄」）：`Task.Run` 不 await，完成／退回不可因寄信失敗或變慢而失敗。背景裡自己開連線、重讀需求、走 `UnsetPhaseOf()` 決定收件階段（別人剛壓好日期就不寄）。不做待寄表（App 回收那幾秒的信會掉，接受）。
+- **不寄**：模擬帳號、收件者是按的本人（`dbo.Assignee.EMPO` 剝網域＝actor）、收件者 `IsActive=0`（也不記）、補記／撤銷／匯入（根本不呼叫）。
+- **模式 `AutoMode` 關閉／試寄／開啟，預設關閉**；設定在 `dbo.NotifySettings`、紀錄在 `dbo.NotifyLog`（不碰卡控的表）。試寄只寄 `AutoTestTo`、無副本、**不寫 History**；試寄收件人沒設好一封都不寄（fail-closed、記 failed）。切開啟要就地確認。
+- **正式寄出寫 `通知寄送`，Note 與單筆 ✉「尚未壓定日期」同格式＋「；自動寄送（…）」**：`phaseNotifiedEntry()` 因此認得（之後按 ✉ 顯示「今天已寄過一次」），前端靠「自動寄送」四個字分自動／手動 —— 改字兩邊一起改。
+- 寄信沿用 `SendNotifyMailAsync`／`SendViaDbMailAsync`（**沒改**）；組信是另寫的 `ComposeAutoMail()`，**不要為了共用去抽 `/notify-unset` 的組信**（受保護路徑）。
+- **B 提示**：完成視窗與退回視窗底部一行「✉ 完成後會自動寄信請 ○○（階段）壓日期，副本 ○○」，由 `autoNotifyPreview()`（後端規則的**預告版**，改規則兩邊一起改）＋`/api/auto-notify/status`（匿名、視窗打開就重抓、讀不到＝off 不顯示）。toast 只能說「系統會寄信」，不說「已寄出」。
+- **信裡的連結一律走 `AppLink(Mail:AppUrl, 查詢字串)`**（189，使用者看過示意圖）：單筆 ✉ 與自動信＝「到「我的待辦」處理：…/?view=mytodo」（收件者一定是負責人）；批次提醒＝「看全部需關注：…/?due=attention」（收件者可能是群組或主管，沒有我的待辦）。AppUrl 沒填整行不印；HTML 那一行靠同一組開頭字比對，改字兩邊一起改。
+- **未寄出的紅點**（189）：`GET /api/auto-notify` 回 `failCount`／`failures`＝`NotifyLog` 裡 `Result=failed`、不含樣本、`Id > AutoFailAckId`；「知道了」＝`PUT {ackFailures:true}` 記下當下 `MAX(Id)`（**用 Id 不用時間**：網站與 DB 主機時鐘可能對不上）。頁首 🔐 的紅點絕對定位、不改按鈕寬度，只問真實帳號是管理者的（`accessCheck.isAdmin`），載入時與面板關閉時重問。狀態列那格有未寄出時變紅、點了切到「信件通知」（打開面板仍停在瀏覽權限）。
+- **新需求建立通知：使用者說「先不做」**（189，看過示意圖；卡在新增時 MSD 負責人是選填、多半沒指派）。要做先問收件者是 A 只寄 MSD 負責人還是 B 固定名單。
+- ⚠️ 尚未回 IIS 重測。
+
 ### 頁面瀏覽權限卡控（74/75）
-- **🔐 面板＝「管理設定」，分「瀏覽權限」「信件通知」兩個分頁**（185）：瀏覽權限分頁內容原封不動（包在 `tab === 'access'` 裡），頂端狀態列兩邊都看得到；每次打開停在瀏覽權限。**信件通知的資料與卡控完全分開**（使用者問過「會不會影響卡控」），權限只讀用 `IsAccessAdminAsync`。
+- **🔐 面板＝「管理設定」，分「瀏覽權限」「信件通知」兩個分頁**（185；188 起信件通知下半部是「⚡ 自動寄信」、狀態列第三格是自動寄信模式）：瀏覽權限分頁內容原封不動（包在 `tab === 'access'` 裡），頂端狀態列兩邊都看得到；每次打開停在瀏覽權限。**信件通知的資料與卡控完全分開**（使用者問過「會不會影響卡控」），權限只讀用 `IsAccessAdminAsync`。
+  - **版面（190，使用者看過示意圖）**：狀態列是一排細藥丸（底色規則照 188/189），點了 `goSection()` 切分頁＋捲到那一塊；寄件信箱／郵件主機沒設好**只在信件通知分頁最上面講一次**（`mailBlock`），不要再塞回兩張卡片底部；「寄一封樣本」在試寄收件人那一排；欄位名稱寬共用 `MAIL_LABEL_W`。
 - 端點：`/api/access-status`（匿名）、`/api/access-check`（Negotiate；`?testEmpId=` 只給管理者）、`/api/access-rules`、`/api/access-control`、`/api/access-admins`（後幾支 Negotiate＋管理者＋寫入套 `IsCrossSiteRequest()`）。表：`AccessRules`/`AppSettings`（`AccessControlEnabled` 預設 false）/`AccessLog`/`AccessAdmins`。規則：同條 AND、多條 OR；只填工號＝白名單。名冊 `Access:PersonView`（串 SQL 前 regex 白名單）。
 - **與 Gantt 刻意不同，不要對齊回去**：①工號由後端從 `ctx.User` 讀（不收參數、模擬帳號過不了門）；②管理者＝`dbo.AccessAdmins` ∪ `Access:Admins`（設定檔只是後備），管理者一律可瀏覽；③**只擋畫面**，資料端點維持匿名。
 - **⚠️⚠️ `Access:Admins` 不要寫進 `appsettings.Development.json`**（JSON 陣列跨檔依索引覆寫，會靜靜蓋掉）。`ConfigAdmins()` 也接受字串 `"a, b"`。
@@ -81,6 +95,9 @@
 ### 建置與全站防線
 - **⚠️ 子路徑部署，絕對路徑禁用**：API 一律 `api('/api/xxx')`；`index.html` 靜態資源用 `__BASE__`（由 Program.cs 換成 `PathBase`，所以不走 `UseDefaultFiles`）。
 - **⚠️⚠️ 兩種字串拼接全檔禁止**：Tailwind class（`bg-${c}-500`、`max-w-[${w}px]`）—— 掃不到就不生成；CSS 值（`${color}1a`）—— 遇到 CSS 變數變無效值。半透明用 `color-mix()` 或 `--tone-*-bg`。**新寫 `var(--x)` 前先確認 `input.css` 有定義**（130：`--alert`、`--color-indigo-500` 都是靜默失效）。
+- **⚠️ 淺色色盤一般與投影共用同一版**（191，使用者：「我要投影跟一般模式都共用同一版」「不要改結構，只要先修改顏色」）：層次靠新變數 `--border-row`（橫線較深）／`--border-col`（直線較淡）、`--thead-group-text`、`--text-owner`、`--text-subcat`、`--bg-exp-row／panel／card／card-border`、`--text-chain-date`、`--pill-active-*`（選中態淺色＝淡底，整頁實心只留「＋ 新增需求」）。**深色模式這些變數一律等於改版前的值，不要順手改深色**。淺色的 `.present` 不再覆寫任何顏色（投影只剩放大），不要把那組加深加回來。
+  - **展開列／明細**（194，使用者看過兩輪示意圖）：點開的那一列**維持白色**、明細 `#f1f5f9`、中間線 `--border-exp-row` #e2e8f0；**明細左邊不畫風險色條**（深淺色都不要）。**否決過**：兩塊同一個灰（「感覺很奇怪」）、列淡紫藍 #eef2ff（「點選後變成這個顏色也很奇怪」）、色條延伸到明細（「出現紅色線會很奇怪」）；淡天藍、淡黃也看過沒選。
+- **⚠️⚠️ 階段色是 `var(--c-violet／blue／pink)`，不是 hex**（191，淺深各一組）：任何半透明一律 `color-mix(in srgb, ${c} 10%, transparent)`，**不可再寫 `${color}1a`**。SVG 的 `stroke=` 屬性與 Status 欄的 Ongoing 仍是 hex（刻意沒改）。
 - **深色模式要宣告 `color-scheme`**（否則 select option 像被停用）。`.dark` 在 body 上，整頁捲軸看的是 html → html 另掛 `ct-dark`（只管 color-scheme，列印改回 light）（176）。
 - **套了 `.ctl` 就不要再寫 inline background/border/color**；`select.ctl{display:inline-block}`。
 - **⚠️⚠️ 原生 `<select>` 與疊在別的東西上的元素（凍結欄、sticky、浮動鈕、時間軸點）底色一律不透明實色**（27、56）：transparent 會讓 select 的 popup 畫壞、凍結欄透字。
@@ -107,7 +124,7 @@
 - **「⚠ 右邊被切掉」只在投影模式出現**（46-4）；`clipPx` 不可放進相依陣列（無窮翻轉）；浮動那顆渲染在 `.present` 那一層、底色不透明；`scrolledX` 存布林。
 - **放大一律 CSS `zoom`，掛在 `<header>` 與 `<main>`、同一個倍率**（81）：兩個 zoom class 不可同元素、不可掛最外層。任何新 zoom 功能都要顧到「可用寬度＝視窗寬 ÷ 倍率」並接 `clipPx`；不自動改使用者設定。
 - **⚠️ 跨 zoom 邊界量測一律 `getBoundingClientRect() ÷ 倍率`，不用 `offsetHeight`**（47）；表頭往上多疊 0.5px（寧疊不留縫）；相依含 `presentZoom`。量 `scrollWidth - clientWidth` 要同步量，**不可包 rAF**（背景分頁不執行）。
-- **投影模式**（30、32）：只有精簡模式＋需求列表才能開；投影中不給關精簡；切到統計報表自動退出；載入時 `present && !compact` 直接退出；借用（淺色底）載入時也要套並記 `beforePresent`；投影時不套 `max-w`。
+- **投影模式**（30、32；191 起淺色不另外加深顏色、也沒有斑馬紋，只剩放大）：只有精簡模式＋需求列表才能開；投影中不給關精簡；切到統計報表自動退出；載入時 `present && !compact` 直接退出；借用（淺色底）載入時也要套並記 `beforePresent`；投影時不套 `max-w`。
 - **窄螢幕（≤1024）自動精簡用衍生值 `compactPref || narrow`，不可 `setCompactPref(true)`**；`matchMedia` 配 `resize` 備援。
 - **⚠️ 同一份程式兩台機器版面不同時，先量 `innerWidth` 與 `main` 的 rect 寬度**（106）：寬度上限只在比開發機寬的螢幕生效；中文字寬在開發機量不準（`.seg-item` 的 `nowrap`＋`flex-shrink:0` 不可拿掉）。
 
@@ -115,6 +132,8 @@
 - **需求列表表格字級是 13／12／11px**（154、156）：`input.css` 最後面（@layer 外）`.sticky-table .text-xs／.text-[11px]／.text-[10px]` 各 +1px，只作用在這張表；**要改回 12／11／10 就刪那四行規則**（app.jsx 不用動；10px 那格刪了也會被第 177 批的全域規則接成 11px）。**不可再加大**（+2px 最小寬度 1254 > 1280 可用 1215，會橫捲）；想更大走頁首「Ａ」。第 155 批的「表格字 大／標準」切換鈕使用者不要，第 156 批已拿掉，不要做回去。群組表頭＝「需求基本資料／負責人與各階段時程／效益評估／操作」（畫面一律叫「負責人」，不叫「權責人員」）。
 - **字級規則**（157）：畫面上不出現 10px；11px 只給徽章等輔助小字；操作控制項不可比資料內容小。工具列 `.toolbar-card .ctl`＝12px、頁籤 `.seg-item`＝12px、統計報表 `.dash-view` 的 10px 一律 11px（input.css 最後面、@layer 外）。**階段那一排的 .ctl 刻意維持 11px**（1280 只剩十幾 px）。**其餘的 `text-[10px]` 由 input.css 最後一條全域規則一律 11px**（177：視窗裡漏掉的「現在輪到」「異動紀錄」、LenHint、Main/Sub Cat 代號…），不可搬進 @layer；漏斗鈕的 9px 數字徽章刻意不動。
 - **資料列的徽章不加框、放在「目前階段」那一格底下**（157、158）：延期／退回次數用 `DelayIcon`／`RollbackIcon`（線條 SVG、吃 currentColor，**不用 ⏰ 🔄 emoji**——emoji 顏色由 Windows 決定，「2 次以上轉紅」只會紅數字）、排成一行；日期旁 ⚠N、「逾期／剩 N 天」只用顏色字。NID 欄只放編號（欄寬 51px 不可再加東西：+8px 就會把 1280 的長 Sub Cat 擠斷、列高 110→200）。「⚠ 未壓日期」是按鈕，**保留框**。下拉選單 <option> 畫不了 SVG → 警示選項一律純文字、不放 emoji。
+- **⚠️ No 欄的風險色條是 `inset box-shadow`，不可改回 `border-left`**（192）：表格是 border-collapse，第一欄 3px 左框（透明也算）會讓整張表往內縮 1.5px，展開面板與表頭左邊露出一條卡片白底。列印靠 `td.frz-1{print-color-adjust:exact}`。
+- **表格四角圓角靠 `.sticky-table { clip-path: inset(0 round 9px) }`**（193）：卡片不能 overflow:hidden（sticky 失效），逐格改圓角又擋不住 `<tr>` 的直角底色。圖例列展開時只裁下兩角（`ct-legend-above`）；列印改回 none。clip-path 讓表格自成疊層 → 表格外要蓋過表頭的浮動元素 z-index 要 > 0。
 - **左側 No／NID 凍結**（27）：只能凍連續前綴欄；`--frz-2` 由量測傳入（不可寫死 44px），相依含 `requirementsData.length` 與 `showColFilters`。凍結欄底色＝不透明卡片色＋疊列底色；列底色與 hover 一律走 CSS（`.row-main`/`--row-bg`）；Done 列用 `--bg-row-done` 淡底色，不用 opacity。
 - 頁寬 `max-w-[1920px]`（列表、我的待辦）／`max-w-[1440px]`（統計），完整字面量。保留上限（2560 才置中），不改 `max-w-none`。
 - **展開明細要有真的 `<button>`**（`aria-expanded`＋含 NID 的 `aria-label`），不在 `<tr>` 上掛 `role=button`；可排序表頭走 `sortProps()`（Space 要 `preventDefault`）；資料列裡的按鈕都要 `stopPropagation`；編輯／刪除 `aria-label` 帶 NID。

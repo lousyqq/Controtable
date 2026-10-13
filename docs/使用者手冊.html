@@ -382,7 +382,7 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
     <h1>MSD 需求管控表</h1>
     <p class="lede">EMS 提需求、MSD 開發、EMS 驗收 —— 這套系統把一筆需求從提出到結案的四個階段、每一次日期異動的理由、以及每週要 review 的逾期項目，全部收在同一張表裡。<b>第一部</b>依你的角色（EMS／MSD／主管）一步一步講「輪到我時要按哪裡」，<b>第二部</b>是逐一功能的完整參考。第一次用請從 <a href="#ra">A 章</a> 開始。</p>
     <p class="meta">
-      <span><b>版本</b> 20261012005</span>
+      <span><b>版本</b> 20261013012</span>
       <span><b>適用</b> 我的待辦 · 需求列表 · 統計報表</span>
       <span><b>對象</b> EMS／MSD 負責人、主管</span>
     </p>
@@ -663,7 +663,7 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
       <li><b>展開「追蹤中」</b></li>
       <li><b>那一列右邊按 <span class="ui">✉ 提醒 MSD</span></b>視窗會列出收件者與副本，確認後寄出。</li>
     </ol>
-    <p>MSD 沒回應可以再寄一次。系統不會自動寄信，一定要自己按。</p>
+    <p>MSD 沒回應可以再寄一次。管理者開了<a href="#h-auto-mail">自動寄信</a>的話，按 <span class="ui">做完了</span> 時系統就會自動寄這一封（完成視窗底部會寫寄給誰），按 ✉ 會看到「今天已寄過一次」。</p>
 
     <h3>B-5 等 MSD 的時候</h3>
     <ul>
@@ -727,7 +727,7 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
     </ol>
 
     <h3>C-4 通知 EMS 來驗收</h3>
-    <p>展開「追蹤中」→ 那一列的 <span class="ui">✉ 提醒 EMS</span> → 寄出。系統不會自動寄信。</p>
+    <p>展開「追蹤中」→ 那一列的 <span class="ui">✉ 提醒 EMS</span> → 寄出。管理者開了<a href="#h-auto-mail">自動寄信</a>的話，按 <span class="ui">做完了</span> 時就已經自動寄過了。</p>
 
     <h3>C-5 遇到例外</h3>
     <div class="tw"><table>
@@ -870,7 +870,7 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
     <h3>會議上怎麼用</h3>
     <ol class="list">
       <li>工具列右邊開 <span class="ui">精簡模式</span>：15 欄收成 9 欄，四個階段時程併成一欄「目前階段時程」只留最急的那一階，右邊一整欄現況描述。這個模式是<b>唯讀</b>的，紅色徽章點不動是刻意的（不會在投影時誤改資料）。</li>
-      <li>投影機上按頁首 <span class="ui">📽 投影</span>（要先開精簡模式）：整體放大、加對比、自動淺色底。畫面上若出現 <span class="badge a">⚠ 右邊被切掉</span>，點一下降倍率 —— 台上看自己的螢幕不會發現布幕右邊少了幾欄。</li>
+      <li>投影機上按頁首 <span class="ui">📽 投影</span>（要先開精簡模式）：整體放大、自動淺色底（顏色與平常的淺色畫面相同）。畫面上若出現 <span class="badge a">⚠ 右邊被切掉</span>，點一下降倍率 —— 台上看自己的螢幕不會發現布幕右邊少了幾欄。</li>
       <li>要問某一筆的來龍去脈：點整列展開，「變更軌跡」一階段一行，日期鏈上每一跳滑鼠移上去就有誰、何時、為什麼；「完整軌跡 ↗」看逐筆。</li>
       <li>要留紙本：直接列印，A4 橫向、白底、條件與圖例一定會印出來。</li>
     </ol>
@@ -939,7 +939,7 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
       <tbody>
         <tr><td><span class="ui">我的待辦</span></td><td>只列你名下的需求（<a href="#c18">第 18 章</a>）。紅點＝「要你處理」有東西。</td></tr>
         <tr><td><span class="ui">需求列表</span>／<span class="ui">統計報表</span></td><td>切換頁籤。紅點＝那一頁有需關注的項目。</td></tr>
-        <tr><td><span class="ui">🔐</span></td><td>只有管理者看得到：管理設定（瀏覽權限、信件通知的固定名單，<a href="#c14">第 14 章</a>）。</td></tr>
+        <tr><td><span class="ui">🔐</span></td><td>只有管理者看得到：管理設定（瀏覽權限、信件通知的固定名單與自動寄信，<a href="#c14">第 14 章</a>）。</td></tr>
         <tr><td><span class="ui">🖥️ 工號</span></td><td>你現在登入的身分，變更紀錄記的就是這個工號。測試主機上可以點它模擬別人（<a href="#h-simulate">第 14 章</a>）。</td></tr>
         <tr><td><span class="ui">📽 投影</span></td><td>會議室投影用。要先在需求列表開「精簡模式」（<a href="#c12">第 12 章</a>）。</td></tr>
         <tr><td><span class="ui">Ａ 100%</span></td><td>字放大：100% → 115% → 130%，會記住。</td></tr>
@@ -1120,6 +1120,7 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
       <li>可以選的範圍：最晚今天；最早是「前一關實際結束那天」和「半年前」比較晚的那一個。視窗底下會寫出來。</li>
       <li>選了不是今天的日期，紀錄會標「於 X 補登」。</li>
       <li>完成日比開始日早也可以，開始日會一起調整（視窗上會寫）。</li>
+      <li>視窗最底下如果有一行 <span class="ui">✉ 完成後會自動寄信請 ○○ 壓日期</span>：按下去之後系統會自動寄信給下一關的負責人（<a href="#h-auto-mail">自動寄信</a>）。沒有這一行就是不會寄。</li>
     </ul>
     <p>視窗會即時顯示會記成什麼：</p>
     <div class="tw"><table>
@@ -1207,7 +1208,7 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
       <li>已結案的會變回進行中。</li>
       <li>清掉之前，舊的日期都會記在紀錄裡。</li>
     </ul>
-    <p>退回後重新壓的日期記成「重新排程」，<b>不用寫理由</b>，也不算日期異動。退回 ②③ 時記得通知 MSD 重壓。</p>
+    <p>退回後重新壓的日期記成「重新排程」，<b>不用寫理由</b>，也不算日期異動。退回 ②③ 時記得通知 MSD 重壓；視窗底下有 <span class="ui">✉ 退回後會自動寄信請 ○○ 重新壓日期</span> 那一行時，系統會自動寄，信裡附上你寫的說明（<a href="#h-auto-mail">自動寄信</a>）。</p>
   </section>
 
   <!-- ═══ 07 ═══ -->
@@ -1328,7 +1329,8 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
       <li><b>寄給誰</b>：收件者是那一關的負責人，副本給另一邊的負責人。信箱來自指派人員主檔。</li>
       <li><b>寄件者</b>：一律是系統信箱（需求管控表），不是按按鈕的人。對方不能直接回信，有問題會找副本裡的人。</li>
       <li><b>先確認再寄</b>：視窗只列「寄給」與「副本」（滑鼠移到名字上看信箱），按 <span class="ui">寄出提醒</span> 才寄。已經寄過的會多一行黃字「已寄過一次」，按鈕變成 <span class="ui">再寄一次</span>。</li>
-      <li><b>系統不會自動寄</b>，存檔後也不會問，一定要自己按。次數不限，每次都會留「通知寄送」紀錄（明細裡「✉ 已通知 N 次」）。</li>
+      <li><b>信裡的連結</b>直接開到收件者自己的「我的待辦」，那一筆就在「要你處理」裡。</li>
+      <li>存檔後不會問要不要寄，這顆要自己按。管理者開了<a href="#h-auto-mail">自動寄信</a>的話，標記完成、退回重做時會自動寄，這裡會顯示「已寄過一次」。次數不限，每次都會留「通知寄送」紀錄（明細裡「✉ 已通知 N 次」）。</li>
     </ul>
     <div class="note warn">
       <span class="lb">寄送結果</span>
@@ -1345,10 +1347,32 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
     <p>需求列表「<span class="ui">需關注 N</span>」左邊的 <span class="ui">✉</span>：寄<strong>一封</strong> Dear all 的信給固定名單，依負責人分組列出全部需關注的需求，請大家回控表確認。</p>
     <ol class="steps">
       <li><b>按下去先看視窗，不會馬上寄</b>視窗列出這封信會寄給誰（收件者、副本），這裡只能看、不能改。</li>
-      <li><b>按 <span class="ui">寄出提醒</span></b>寄完視窗會寫結果；每一筆需求的變更軌跡各留一筆「通知寄送」。</li>
+      <li><b>按 <span class="ui">寄出提醒</span></b>寄完視窗會寫結果；每一筆需求的變更軌跡各留一筆「通知寄送」。信裡的連結打開是需求列表，已經篩好「需關注」。</li>
     </ol>
     <p><b>名單在哪裡改</b>：頁首 <span class="ui">🔐</span> →「管理設定」→「信件通知」分頁（只有管理者，見 <a href="#c14">第 14 章</a>）。按 <span class="ui">＋ 新增信箱</span>，選「收件者」或「副本」、打信箱、按 Enter；不要的按信箱旁的 ✕。改了直接存。群組信箱與個人信箱可以混著放，例如 MSD 的群組信箱＋某位主管的個人信箱。</p>
     <p>⚠ 系統不會檢查名單有沒有涵蓋所有負責人（看不到群組信箱裡有誰），設定名單時請自己確認。</p>
+
+    <h3 id="h-auto-mail">⚡ 自動寄信（管理者設定）</h3>
+    <p>開了之後，下面兩種情況系統會自動寄信，不用再按 ✉：</p>
+    <div class="tw"><table>
+      <thead><tr><th style="width:120px">什麼時候</th><th>寄給誰</th></tr></thead>
+      <tbody>
+        <tr><td>交棒</td><td>標記完成、下一關還沒壓日期 → 下一關的負責人，副本另一位負責人</td></tr>
+        <tr><td>退回重做</td><td>被退回那一關的負責人，副本另一位；信裡附退回說明</td></tr>
+      </tbody>
+    </table></div>
+    <p>不會寄的情況：收件者就是按的人自己、負責人已停用、補記完成、撤銷完成、模擬帳號。寄件者一律是系統信箱。按的人不用等信寄完，視窗會直接關掉。</p>
+    <ol class="steps">
+      <li><b>頁首 <span class="ui">🔐</span> →「管理設定」→「信件通知」分頁</b>下半部是「⚡ 自動寄信」。</li>
+      <li><b>填「試寄收件人」，按 Enter</b>通常填自己的信箱。同一排的 <span class="ui">寄一封樣本</span> 可以先寄一封看信長什麼樣子。</li>
+      <li><b>切到 <span class="ui">試寄</span></b>之後所有自動信只寄到試寄收件人，負責人收不到。</li>
+      <li><b>確認沒問題，切到 <span class="ui">開啟</span></b>會再問一次「確定開啟？」。開了就會真的寄給負責人。</li>
+    </ol>
+    <p>「交棒」「退回重做」兩個開關可以各自關掉；模式是 <span class="ui">關閉</span> 時，兩個開關都不生效。「最近 5 封」列出寄出、未寄出與原因（例如負責人沒有信箱）；正式寄出的那幾封也會記在那筆需求的變更軌跡，寫「自動」。信裡的連結直接開到收件者的「我的待辦」。</p>
+    <p><b>有信沒寄出時</b>：頁首 <span class="ui">🔐</span> 會多一個紅點，面板頂端那格變紅寫「N 封沒寄出」（點它切到「信件通知」）。自動寄信區最上面列出原因，照原因補資料後按 <span class="ui">知道了</span>，紅點就消失；之後再有沒寄出的才會再亮。需要的話用單筆 ✉ 補寄。</p>
+    <details class="adv"><summary>為什麼要先試寄</summary>
+      <p>自動信沒有人按按鈕，寄錯了不會有人馬上發現。試寄期間信只寄到你自己，確認收件者、內容都對了再開。試寄收件人沒填時，試寄一封都不會寄（寧可不寄，也不寄錯人）。</p>
+    </details>
   </section>
 
   <!-- ═══ 11 ═══ -->
@@ -1395,7 +1419,7 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
     <p>頁首 <span class="ui">Ａ 100%</span>：100% → 115% → 130%。放大後右邊放不下時，用橫向捲動看。不想橫捲就降回 100%、按 <kbd>Ctrl</kbd>+<kbd>0</kbd>，或開精簡模式。</p>
 
     <h3>投影模式</h3>
-    <p>頁首 <span class="ui">📽 投影</span>：放大、提高對比、自動切淺色底。</p>
+    <p>頁首 <span class="ui">📽 投影</span>：放大、自動切淺色底；顏色與平常的淺色畫面同一版。</p>
     <ul>
       <li>要先在需求列表開精簡模式才能按。</li>
       <li>倍率可調（125%～200%）。出現 <span class="badge a">⚠ 右邊被切掉</span> 時點它降一級。</li>
@@ -1432,7 +1456,7 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
     <p class="sub">限制誰能打開這個網頁。用登入者的 Windows 工號查公司人員名冊拿部門，再比對允許規則。</p>
 
     <h3>面板</h3>
-    <p>只有管理者看得到頁首 <span class="ui">🔐</span>。卡控開著時它會變成 <span class="ui">🔐 卡控中</span>。按下去是「管理設定」面板，分兩個分頁：<strong>瀏覽權限</strong>（下表）與<strong>信件通知</strong>（需關注批次提醒的固定名單，見 <a href="#h-attn-mail">第 10 章</a>）。頂端那條狀態列兩邊的狀態都看得到。兩個分頁是分開的資料，改信件通知不會影響卡控。</p>
+    <p>只有管理者看得到頁首 <span class="ui">🔐</span>。卡控開著時它會變成 <span class="ui">🔐 卡控中</span>。按下去是「管理設定」面板，分兩個分頁：<strong>瀏覽權限</strong>（下表）與<strong>信件通知</strong>（需關注批次提醒的固定名單見 <a href="#h-attn-mail">第 10 章</a>；自動寄信見 <a href="#h-auto-mail">第 10 章</a>）。頂端那條狀態列兩邊的狀態都看得到，點其中一項會切到那個分頁、捲到那一塊。寄件的系統信箱或郵件主機沒設好時，「信件通知」分頁最上面會有一行紅字。兩個分頁是分開的資料，改信件通知不會影響卡控。</p>
     <div class="tw"><table>
       <thead><tr><th style="width:150px">區塊</th><th>作用</th></tr></thead>
       <tbody>
@@ -1661,6 +1685,9 @@ footer{grid-column:1/-1; margin-top:64px; padding-top:22px; border-top:1px solid
         <tr><td>只有 MSD 負責人或管理者可以寄批次提醒</td><td>批次 ✉ 一次寄給一群人，用你的 Windows 帳號確認身分</td><td>請 MSD 或管理者按；單筆 ✉ 不受限</td></tr>
         <tr><td><b>無法寄出提醒</b></td><td>郵件主機或寄件的系統信箱沒設定好、收件名單是空的、或名單裡有信箱格式不正確，信沒有寄出</td><td>請管理者到管理設定 → 信件通知修正名單，或設定郵件主機</td></tr>
         <tr><td>新增信箱失敗／已經在名單裡了</td><td>管理設定 → 信件通知：同一個信箱只能放一次（收件者與副本也不能重複）、一次只能加一個信箱</td><td>放錯邊就按 ✕ 刪掉再加到另一邊，或修正信箱</td></tr>
+        <tr><td>請先填好試寄收件人</td><td>管理設定 → 自動寄信：切到試寄、寄樣本都要有試寄收件人</td><td>先填試寄收件人、按 Enter</td></tr>
+        <tr><td>試寄中不能清空試寄收件人</td><td>試寄期間信只寄到這裡，清空就沒地方寄</td><td>先切到關閉或開啟，再清空</td></tr>
+        <tr><td>自動寄信「最近 5 封」寫未寄出</td><td>後面會寫原因：負責人沒有信箱、名字在指派名單裡對不上、郵件主機沒設定等。完成／退回本身已經存好了</td><td>照原因補資料；需要的話按單筆 ✉ 補寄</td></tr>
         <tr><td>沒有要提醒的需求（批次提醒）</td><td>需關注的那幾筆已經被處理掉了</td><td>按 ⟳ 再看一次</td></tr>
         <tr><td><b>無法確認提醒寄出了沒</b></td><td>沒收到伺服器回應，可能有幾封已寄出</td><td>先看明細有沒有「通知寄送」，不要立刻再按</td></tr>
       </tbody>

@@ -613,14 +613,14 @@ body {
        整排選項看起來像被 disabled（2026-08-21 使用者實際回報「不能指定人員」的原因）。
        它也連帶決定捲軸與日期選擇器的配色。 */
   color-scheme: light;
-  --bg-body:#f1f5f9;
+  --bg-body:#eef2f6;
   --bg-header:#ffffff;
   --bg-header-border:#e2e8f0;
   --bg-card:#ffffff;
   --bg-card-hover-border:rgba(99,102,241,0.25);
   --bg-card-shadow:rgba(0,0,0,0.04);
   --bg-input:#f8fafc;
-  --bg-input-border:#e2e8f0;
+  --bg-input-border:#d5dde7;
   /* ⚠️ --bg-main 是編輯視窗裡 26 個 <input> / <select> 的底色（app.jsx 全部寫
        style={{background:'var(--bg-main)'}}），但它**從來沒有被定義過** ——
        未定義的 var() 不會報錯，只會靜靜地讓底色變透明，看起來剛好「像是」
@@ -689,6 +689,38 @@ body {
        數值與第 59 批那顆「✓ 提早完成」結果標籤的底色同一個 */
   --tone-good:  #0f766e;
   --tone-good-bg: rgba(15,118,110,0.1);
+  /* ── 第 191 批：淺色「一般與投影共用同一版」的層次調整（使用者看過示意圖，只改顏色、不改結構）──
+       原則：灰色只留給最不重要的資訊；層次靠「底色前後」與「線條輕重」分，不靠把字調淡。
+       深色模式一律維持原值（見 .dark 同名變數），所以全部走新變數、不改舊變數的語意。
+       ⚠️ 階段色改成變數後，任何要做半透明的地方一律 color-mix()，不可再寫 `${color}1a`。 */
+  --c-violet:#7c3aed;
+  --c-blue:#2563eb;
+  --c-pink:#db2777;
+  /* ②／退回重做、③、④：投影機最先褪掉的三個淺色，各深一階 */
+  --pill-active-bg:#eef2ff;
+  --pill-active-border:#a5b4fc;
+  --pill-active-text:#3730a3;
+  /* 選中態改淡底：整頁實心只留「＋ 新增需求」 */
+  --border-row:#b6c2d1;
+  --border-col:#e2e8f0;
+  /* 資料列：橫線稍深、直線放輕 → 視線沿著列讀 */
+  --thead-group-text:#1e293b;
+  /* 群組表頭比欄名深一階，兩層表頭分得開 */
+  --text-owner:#0f172a;
+  --text-subcat:#334155;
+  /* 負責人＝最常被找的資訊；Sub Cat 是內容不是說明 */
+  /* 展開中的那一列／底下的明細面板（第 194 批，使用者看過示意圖）：列維持白色，靠淺灰明細看出展開了哪一列（明細左邊不畫色條：試過延伸，使用者「紅色線會很奇怪」）。
+       ⚠️ 否決過：列與明細同一個灰（「感覺很奇怪」）、列淡紫藍 #eef2ff（「點選後變成這個顏色也很奇怪」——像被反灰，
+       又跟 EMS／MSD 欄的淡底疊成三種淡色）。淡天藍、淡黃也給看過，選了白色。
+       --border-exp-row＝展開列與明細之間那條線，比一般列線淡，兩塊才讀成同一筆 */
+  --bg-exp-row:#ffffff;
+  --bg-exp-panel:#f1f5f9;
+  --border-exp-row:#e2e8f0;
+  --bg-exp-card:#ffffff;
+  --bg-exp-card-border:#d5dde7;
+  /* 明細三張卡改白底，浮在面板上 */
+  --text-chain-date:#0f172a;
+  /* 變更軌跡「原訂」後面的日期：標籤灰、內容黑 */
 }
 
 .\!dark {
@@ -747,6 +779,24 @@ body {
   --tone-warn-border:  rgba(251,191,36,0.3) !important;
   --tone-good:  #2dd4bf !important;
   --tone-good-bg: rgba(45,212,191,0.12) !important;
+  /* 第 191 批的新變數：深色一律等於改版前的值（深色模式不動） */
+  --c-violet:#8b5cf6 !important;
+  --c-blue:#3b82f6 !important;
+  --c-pink:#ec4899 !important;
+  --pill-active-bg:#4f46e5 !important;
+  --pill-active-border:transparent !important;
+  --pill-active-text:#ffffff !important;
+  --border-row:rgba(148,163,184,0.25) !important;
+  --border-col:rgba(148,163,184,0.25) !important;
+  --thead-group-text:#b6c2d2 !important;
+  --text-owner:#cbd5e1 !important;
+  --text-subcat:#b6c2d2 !important;
+  --bg-exp-row:rgba(30,41,59,0.5) !important;
+  --bg-exp-panel:rgba(30,41,59,0.5) !important;
+  --border-exp-row:rgba(148,163,184,0.25) !important;
+  --bg-exp-card:rgba(15,23,42,0.5) !important;
+  --bg-exp-card-border:rgba(51,65,85,0.3) !important;
+  --text-chain-date:#94a3b8 !important;
 }
 
 .dark {
@@ -805,6 +855,24 @@ body {
   --tone-warn-border:  rgba(251,191,36,0.3);
   --tone-good:  #2dd4bf;
   --tone-good-bg: rgba(45,212,191,0.12);
+  /* 第 191 批的新變數：深色一律等於改版前的值（深色模式不動） */
+  --c-violet:#8b5cf6;
+  --c-blue:#3b82f6;
+  --c-pink:#ec4899;
+  --pill-active-bg:#4f46e5;
+  --pill-active-border:transparent;
+  --pill-active-text:#ffffff;
+  --border-row:rgba(148,163,184,0.25);
+  --border-col:rgba(148,163,184,0.25);
+  --thead-group-text:#b6c2d2;
+  --text-owner:#cbd5e1;
+  --text-subcat:#b6c2d2;
+  --bg-exp-row:rgba(30,41,59,0.5);
+  --bg-exp-panel:rgba(30,41,59,0.5);
+  --border-exp-row:rgba(148,163,184,0.25);
+  --bg-exp-card:rgba(15,23,42,0.5);
+  --bg-exp-card-border:rgba(51,65,85,0.3);
+  --text-chain-date:#94a3b8;
 }
 
 /* 原生 <select> 展開後的選項清單。上面的 color-scheme 已經讓 Chrome 用對配色，
@@ -835,6 +903,21 @@ select option {
 
 .t-table-card {
   border-radius: 10px;
+}
+
+/* 表格四角跟著卡片裁成圓角（第 193 批，使用者：「四角是不是應該要圓弧形填滿，而不是直角」）。
+     卡片不能 overflow:hidden（表頭 sticky 會失效），表頭底色、展開面板、凍結欄的不透明底色
+     又都是直角 → 會蓋出卡片的圓角框外。改在表格自己身上 clip-path：只裁表格盒子的四個角，
+     表頭吸附在中段時不在角上、不受影響。9px＝卡片 10px 減 1px 框線。
+     圖例列展開時頂端是圖例（它自己有 rounded-t），表格只裁下面兩角（.ct-legend-above）。
+     ⚠️ clip-path 會讓表格變成獨立的疊層：表格外面要蓋過表頭的東西 z-index 要 > 0（目前浮動選單 z-46） */
+
+.sticky-table {
+  clip-path: inset(0 round 9px);
+}
+
+.sticky-table.ct-legend-above {
+  clip-path: inset(0 round 0 0 9px 9px);
 }
 
 /* ── 統一控制項尺寸（2026-08-20 版面優化）──
@@ -874,10 +957,13 @@ select option {
   color: var(--text-primary);
 }
 
+/* 第 191 批：選中態改吃 --pill-active-*（淺色＝淡靛藍底＋靛藍字＋框；深色＝原本的實心）。
+     ⚠️ 底色一定是不透明實色 —— 「進度」那顆是原生 <select>，透明底會把下拉清單畫壞（第 56 批） */
+
 .ctl-on, .ctl-on:hover {
-  background: var(--bg-pill-active);
-  border-color: transparent;
-  color: var(--text-on-pill);
+  background: var(--pill-active-bg);
+  border-color: var(--pill-active-border);
+  color: var(--pill-active-text);
 }
 
 /* 純圖示的方形版本，維持與同排控制項一樣的高度 */
@@ -1058,33 +1144,19 @@ select.ctl {
      ⚠️ 這裡只覆寫變數不覆寫任何元件樣式 —— 版面與桌機完全一致，
      關掉投影模式就原封不動回到原本的畫面。 */
 
-.\!present {
-  --text-tertiary: #334155 !important;
-  --text-muted: #475569 !important;
-  /* ⚠️ 基準框線 2026-08-19 加深後，這裡要跟著往下再走一階 ——
-       原本的 #dbe2ea / #cbd5e1 已經比新基準還淡，投影模式反而會變糊 */
-  --border-table: #94a3b8 !important;
-  --border-card: #64748b !important;
-  /* 斑馬紋用半透明：它會疊在卡片白底上，寫死 hex 的話跟 --bg-row-done 撞色 */
-  --bg-row-zebra: rgba(15, 23, 42, 0.045) !important;
-}
-
-.present {
-  --text-tertiary: #334155;
-  --text-muted: #475569;
-  /* ⚠️ 基準框線 2026-08-19 加深後，這裡要跟著往下再走一階 ——
-       原本的 #dbe2ea / #cbd5e1 已經比新基準還淡，投影模式反而會變糊 */
-  --border-table: #94a3b8;
-  --border-card: #64748b;
-  /* 斑馬紋用半透明：它會疊在卡片白底上，寫死 hex 的話跟 --bg-row-done 撞色 */
-  --bg-row-zebra: rgba(15, 23, 42, 0.045);
-}
+/* ⚠️ 第 191 批（使用者：「我要投影跟一般模式都共用同一版」）：**淺色**的投影模式不再另外加深
+     （原本 tertiary #334155／muted #475569／格線 #94a3b8／外框 #64748b／斑馬紋），
+     改由基準色盤一次調好層次（見 :root 第 191 批那段），投影模式只剩放大。不要把那一組加回來 ——
+     兩版顏色不同，開會投影時看到的就不是平常看習慣的畫面。深色那組維持不動。 */
 
 .\!dark .present {
   --text-tertiary: #e2e8f0 !important;
   --text-muted: #cbd5e1 !important;
   --border-table: rgba(148, 163, 184, 0.45) !important;
   --border-card: rgba(148, 163, 184, 0.65) !important;
+  --border-row: rgba(148, 163, 184, 0.45) !important;
+  --border-exp-row: rgba(148, 163, 184, 0.45) !important;
+  --border-col: rgba(148, 163, 184, 0.45) !important;
   --bg-row-zebra: rgba(255, 255, 255, 0.05) !important;
 }
 
@@ -1093,6 +1165,9 @@ select.ctl {
   --text-muted: #cbd5e1;
   --border-table: rgba(148, 163, 184, 0.45);
   --border-card: rgba(148, 163, 184, 0.65);
+  --border-row: rgba(148, 163, 184, 0.45);
+  --border-exp-row: rgba(148, 163, 184, 0.45);
+  --border-col: rgba(148, 163, 184, 0.45);
   --bg-row-zebra: rgba(255, 255, 255, 0.05);
 }
 
@@ -1101,6 +1176,9 @@ select.ctl {
   --text-muted: #cbd5e1 !important;
   --border-table: rgba(148, 163, 184, 0.45) !important;
   --border-card: rgba(148, 163, 184, 0.65) !important;
+  --border-row: rgba(148, 163, 184, 0.45) !important;
+  --border-exp-row: rgba(148, 163, 184, 0.45) !important;
+  --border-col: rgba(148, 163, 184, 0.45) !important;
   --bg-row-zebra: rgba(255, 255, 255, 0.05) !important;
 }
 
@@ -1649,6 +1727,10 @@ select.ctl {
   width: 3.5rem;
 }
 
+.w-16 {
+  width: 4rem;
+}
+
 .w-2 {
   width: 0.5rem;
 }
@@ -1830,6 +1912,10 @@ select.ctl {
 
 .resize {
   resize: both;
+}
+
+.scroll-mt-2 {
+  scroll-margin-top: 0.5rem;
 }
 
 .list-disc {
@@ -2090,6 +2176,10 @@ select.ctl {
 
 .rounded-lg {
   border-radius: 0.5rem;
+}
+
+.rounded-md {
+  border-radius: 0.375rem;
 }
 
 .rounded-sm {
@@ -2397,6 +2487,10 @@ select.ctl {
 
 .pt-2 {
   padding-top: 0.5rem;
+}
+
+.pt-2\.5 {
+  padding-top: 0.625rem;
 }
 
 .pt-3 {
@@ -2944,6 +3038,23 @@ html.ct-dark {
     --tone-warn-border:#8a4b00;
     --tone-good:#0f766e;
     --tone-good-bg:transparent;
+    --c-violet:#7c3aed;
+    --c-blue:#2563eb;
+    --c-pink:#db2777;
+    --pill-active-bg:#ffffff;
+    --pill-active-border:#4d4d4d;
+    --pill-active-text:#000000;
+    --border-row:#9a9a9a;
+    --border-exp-row:#9a9a9a;
+    --border-col:#9a9a9a;
+    --thead-group-text:#333333;
+    --text-owner:#000000;
+    --text-subcat:#1a1a1a;
+    --bg-exp-row:#ffffff;
+    --bg-exp-panel:#ffffff;
+    --bg-exp-card:#ffffff;
+    --bg-exp-card-border:#999999;
+    --text-chain-date:#000000;
   }
 
   /* 15 欄橫式才放得下；直式印會被切掉右邊三四欄 */
@@ -2995,6 +3106,10 @@ html.ct-dark {
     border-radius: 0 !important;
   }
 
+  .sticky-table {
+    clip-path: none !important;
+  }
+
   /* 投影模式與字級的放大在紙上都要拿掉，否則右邊直接被裁掉 */
 
   .present-zoom, .ui-zoom {
@@ -3037,6 +3152,13 @@ html.ct-dark {
     background: transparent !important;
   }
 
+  /* 風險色條是 inset box-shadow（第 192 批），Chrome 沒勾「背景圖形」時陰影不印 → 這一格強制照印 */
+
+  .sticky-table td.frz-1 {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
   /* 展開的明細在紙上改成單欄（三張卡並排會被頁面邊界切斷） */
 
   .lg\:grid-cols-3 {
@@ -3049,6 +3171,10 @@ html.ct-dark {
     overflow: visible !important;
     max-height: none !important;
   }
+}
+
+.last\:border-b-0:last-child {
+  border-bottom-width: 0px;
 }
 
 .hover\:bg-black\/10:hover {

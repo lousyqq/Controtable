@@ -90,9 +90,9 @@ const { useState, useMemo, Fragment, useEffect } = React;
         //    只改畫面的字：DB 存的仍是 1~5、Excel 表頭不動。
         const STAGE_CODES = {
             '1': { label:'① EMS規格確認', short:'EMS規格確認', circ:'①', color:'#f59e0b' },
-            '2': { label:'② MSD確認',     short:'MSD確認',     circ:'②', color:'#8b5cf6' },
-            '3': { label:'③ MSD開發',     short:'MSD開發',     circ:'③', color:'#3b82f6' },
-            '4': { label:'④ EMS驗收',     short:'EMS驗收',     circ:'④', color:'#ec4899' },
+            '2': { label:'② MSD確認',     short:'MSD確認',     circ:'②', color:'var(--c-violet)' },
+            '3': { label:'③ MSD開發',     short:'MSD開發',     circ:'③', color:'var(--c-blue)' },
+            '4': { label:'④ EMS驗收',     short:'EMS驗收',     circ:'④', color:'var(--c-pink)' },
             '5': { label:'⑤ 結案',        short:'結案',        circ:'⑤', color:'#10b981' }
         };
         // ─── 舊稽核說明裡的階段名（第 170 批，使用者：「舊紀錄的階段字也一起改」）───
@@ -661,9 +661,9 @@ const { useState, useMemo, Fragment, useEffect } = React;
             //    「驗收已逾期 29 天」「確認日期還沒填」。**這是它唯一的定義**，
             //    不要在那一頁另寫一份對照表（第 50 批 renderChip 同一條）
             { code:'1', key:'spec',    label:'① EMS規格確認', verb:'規格確認', color:'#f59e0b', getDate:i=>i.spec?.end,    getActual:i=>i.spec?.actualEnd,        owner:i=>i.emsOwner, side:'EMS' },
-            { code:'2', key:'confirm', label:'② MSD確認',     verb:'確認',     color:'#8b5cf6', getDate:i=>i.msd?.confirm, getActual:i=>i.msd?.confirmActualEnd,  owner:i=>i.msdOwner, side:'MSD' },
-            { code:'3', key:'msd',     label:'③ MSD開發',     verb:'開發',     color:'#3b82f6', getDate:i=>i.msd?.end,     getActual:i=>i.msd?.actualEnd,         owner:i=>i.msdOwner, side:'MSD' },
-            { code:'4', key:'uat',     label:'④ EMS驗收',     verb:'驗收',     color:'#ec4899', getDate:i=>i.uat?.end,     getActual:i=>i.uat?.actualEnd,         owner:i=>i.emsOwner, side:'EMS' }
+            { code:'2', key:'confirm', label:'② MSD確認',     verb:'確認',     color:'var(--c-violet)', getDate:i=>i.msd?.confirm, getActual:i=>i.msd?.confirmActualEnd,  owner:i=>i.msdOwner, side:'MSD' },
+            { code:'3', key:'msd',     label:'③ MSD開發',     verb:'開發',     color:'var(--c-blue)', getDate:i=>i.msd?.end,     getActual:i=>i.msd?.actualEnd,         owner:i=>i.msdOwner, side:'MSD' },
+            { code:'4', key:'uat',     label:'④ EMS驗收',     verb:'驗收',     color:'var(--c-pink)', getDate:i=>i.uat?.end,     getActual:i=>i.uat?.actualEnd,         owner:i=>i.emsOwner, side:'EMS' }
         ];
         // 最後一個已經壓了日期的階段。後面的階段既然還沒排程，現在該盯的就是這一個
         const lastFilledPhase = (item) => {
@@ -906,9 +906,9 @@ const { useState, useMemo, Fragment, useEffect } = React;
         //   ② 只有單一日期，它的「End」就是 confirm，實際完成日則是另一個欄位 confirmActualEnd
         const PHASES = {
             spec:    { label:'① EMS規格確認', obj:'spec', fields:['start','end'], hist:'history',        color:'#f59e0b', timelineLabel:'① EMS規格確認', gate:null,      endKey:'end',     actualKey:'actualEnd',        doneStage:2 },
-            confirm: { label:'② MSD確認',     obj:'msd',  fields:['confirm'],     hist:'confirmHistory', color:'#8b5cf6', timelineLabel:'② MSD確認',     gate:'spec',    endKey:'confirm', actualKey:'confirmActualEnd', doneStage:3 },
-            msd:     { label:'③ MSD開發',     obj:'msd',  fields:['start','end'], hist:'history',        color:'#3b82f6', timelineLabel:'③ MSD開發',     gate:'confirm', endKey:'end',     actualKey:'actualEnd',        doneStage:4 },
-            uat:     { label:'④ EMS驗收',     obj:'uat',  fields:['start','end'], hist:'history',        color:'#ec4899', timelineLabel:'④ EMS驗收',     gate:'msd',     endKey:'end',     actualKey:'actualEnd',        doneStage:5 }
+            confirm: { label:'② MSD確認',     obj:'msd',  fields:['confirm'],     hist:'confirmHistory', color:'var(--c-violet)', timelineLabel:'② MSD確認',     gate:'spec',    endKey:'confirm', actualKey:'confirmActualEnd', doneStage:3 },
+            msd:     { label:'③ MSD開發',     obj:'msd',  fields:['start','end'], hist:'history',        color:'var(--c-blue)', timelineLabel:'③ MSD開發',     gate:'confirm', endKey:'end',     actualKey:'actualEnd',        doneStage:4 },
+            uat:     { label:'④ EMS驗收',     obj:'uat',  fields:['start','end'], hist:'history',        color:'var(--c-pink)', timelineLabel:'④ EMS驗收',     gate:'msd',     endKey:'end',     actualKey:'actualEnd',        doneStage:5 }
         };
         const PHASE_KEYS = Object.keys(PHASES);
 
@@ -1018,13 +1018,13 @@ const { useState, useMemo, Fragment, useEffect } = React;
             '日期異動': { label:'日期異動', color:'var(--tone-warn)',   bg:'var(--tone-warn-bg)' },
             '提早完成': { label:'提早完成', color:'var(--tone-good)',   bg:'rgba(15,118,110,0.1)' },
             '延期完成': { label:'延期完成', color:'var(--tone-alert)',  bg:'var(--tone-alert-bg)' },
-            '規格回退': { label:'退回重做', color:'#8b5cf6',            bg:'rgba(139,92,246,0.12)' },
+            '規格回退': { label:'退回重做', color:'var(--c-violet)',            bg:'rgba(139,92,246,0.12)' },
             // 回退把日期清空之後重新壓的日期（2026-08-27 / 第 35 批）。
             // 在此之前它被判成 init，沉到面板最下面的「初始時程」區 ——
             // 使用者回報「回退之後壓的日期沒有寫進軌跡」講的就是這個。
             // 用回退的同一個紫色系（它是回退的下半場），但**不進 isDateChange**：
             // 沒有人改動任何既有日期，計進 ⚠N 會讓同一件事被數兩次
-            '重新排程': { label:'重新排程', color:'#8b5cf6',            bg:'rgba(139,92,246,0.12)' },
+            '重新排程': { label:'重新排程', color:'var(--c-violet)',            bg:'rgba(139,92,246,0.12)' },
             // 手動改目前階段 / Status（2026-08-22）。它繞過了「標記完成…」與「🔄 規格回退」，
             // 所以一定要在軌跡上看得出來 —— 但**不算時程異動**（見 isDateChange），
             // 也不會動三個計數欄
@@ -1295,7 +1295,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     {/* 日期鏈：原訂 → 每一跳。⚠️ 每一跳都對應一筆稽核列，完整內容在 tooltip；
                         值沒變的一跳（撤銷延期／只動開始日）只印記號 */}
                     <span className="inline-flex items-baseline gap-x-1 flex-wrap tabular-nums" style={{color:'var(--text-muted)'}}>
-                        <span title={chain.first ? `最早的原訂 ${chain.first}` : '最早的紀錄裡這個日期是空的'}>原訂 {chain.first ? shortMd(chain.first) : '未填'}</span>
+                        <span title={chain.first ? `最早的原訂 ${chain.first}` : '最早的紀錄裡這個日期是空的'}>原訂 <span style={{color:'var(--text-chain-date)'}}>{chain.first ? shortMd(chain.first) : '未填'}</span></span>
                         {shownHops.map(hop => {
                             const hi = lastIdx;
                             const t = hop.h.changeType;
@@ -1555,7 +1555,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 <div className="flex items-center gap-2 mt-1 whitespace-nowrap">
                     {rollback > 0 && (
                         <span className="inline-flex items-center gap-0.5 text-[10px] font-bold whitespace-nowrap cursor-help"
-                              style={{color:'#8b5cf6'}}
+                              style={{color:'var(--c-violet)'}}
                               title={`退回重做 ${rollback} 次（展開該列可看每次退回清掉了哪些日期與說明）`}>
                             <RollbackIcon />{rollback}
                         </span>
@@ -2230,7 +2230,9 @@ const { useState, useMemo, Fragment, useEffect } = React;
         // ⚠️ 每一筆新增／刪除直接存（與瀏覽權限的規則同一種手感），沒有「儲存」鈕、沒有未儲存狀態。
         // ⚠️ 資料與瀏覽權限完全分開（另一張表、另一組端點）；權限沿用「誰是管理者」。
         // ⚠️ 這個元件在 AccessPanel 裡**一直掛著**（切到瀏覽權限分頁只是 hidden）：頂端狀態列的件數靠它回報。
-        const MailSettingsPanel = ({ showToast, onError, onSummary }) => {
+        // 第 190 批：信件通知分頁裡「收件者／副本／試寄收件人」共用的欄位名稱寬度 —— 上下兩張卡片的內容從同一條線開始
+        const MAIL_LABEL_W = '84px';
+        const MailSettingsPanel = ({ showToast, onError, onSummary, onAutoSummary }) => {
             const [loaded, setLoaded] = useState(false);
             const [loadError, setLoadError] = useState('');
             const [items, setItems] = useState([]);
@@ -2321,15 +2323,26 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     <button onClick={load} className="ml-2 underline">重試</button>
                 </div>
             );
+            // 第 190 批：寄件信箱／郵件主機沒設好會讓兩種寄信都寄不出去 → 放在分頁最上面講一次，
+            // 不再分別擠在兩張卡片的底部（原本像是只影響批次提醒）
+            const mailBlock = !meta.fromOk ? `寄件的系統信箱（appsettings.json 的 Mail:From）${meta.from ? `格式不正確（${meta.from}）` : '還沒有設定'}，批次提醒與自動寄信都寄不出去`
+                            : !meta.mailReady ? '郵件伺服器（Mail:Host）還沒有設定，批次提醒與自動寄信都寄不出去'
+                            : '';
             return (
                 <div className="space-y-3">
-                    <div className="rounded-xl border overflow-hidden" style={{borderColor:'var(--border-table)'}}>
+                    {mailBlock && (
+                        <div className="rounded-lg border px-3 py-2 text-[12px] font-bold" role="alert"
+                             style={{background:'var(--tone-alert-bg)', borderColor:'var(--tone-alert-border)', color:'var(--tone-alert)'}}>
+                            ⚠ {mailBlock}
+                        </div>
+                    )}
+                    <div id="ct-mail-batch" className="rounded-xl border overflow-hidden scroll-mt-2" style={{borderColor:'var(--border-table)'}}>
                         <div className="px-3.5 py-2.5 flex items-baseline gap-2 flex-wrap border-b" style={{borderColor:'var(--border-table)'}}>
                             <span className="text-[13px] font-bold">👥 需關注批次提醒</span>
                             <span className="text-[12px]" style={{color:'var(--text-muted)'}}>按「需關注」旁的 ✉ 時寄給這份名單</span>
                         </div>
                         {[{k:'to', t:'收件者', n:nTo}, {k:'cc', t:'副本', n:nCc}].map(r => (
-                            <div key={r.k} className="px-3.5 py-2.5 grid gap-3 items-center border-b" style={{gridTemplateColumns:'64px minmax(0,1fr)', borderColor:'var(--border-table)'}}>
+                            <div key={r.k} className="px-3.5 py-2.5 grid gap-3 items-center border-b" style={{gridTemplateColumns:`${MAIL_LABEL_W} minmax(0,1fr)`, borderColor:'var(--border-table)'}}>
                                 <span className="text-[13px] flex items-center gap-1.5" style={{color:'var(--text-secondary)'}}>{r.t} {countPill(r.n)}</span>
                                 {chips(r.k)}
                             </div>
@@ -2338,11 +2351,11 @@ const { useState, useMemo, Fragment, useEffect } = React;
                             <div className="px-3.5 py-2.5 flex items-center gap-2 flex-wrap">
                                 <button type="button" onClick={() => setAdding({ kind:'to', email:'' })}
                                         className="text-[13px] font-bold" style={{color:'var(--brand)'}}>＋ 新增信箱</button>
-                                <span className="ml-auto text-[11px]" style={{color: meta.fromOk && meta.mailReady ? 'var(--text-muted)' : 'var(--tone-alert)'}}>
-                                    {!meta.fromOk ? `⚠ 寄件的系統信箱（appsettings.json 的 Mail:From）${meta.from ? `格式不正確（${meta.from}）` : '還沒有設定'}，設好之前寄不出去`
-                                     : !meta.mailReady ? '⚠ 郵件伺服器（Mail:Host）還沒有設定，寄不出去'
-                                     : <>寄件者：系統信箱 <span className="font-mono">{meta.from}</span></>}
-                                </span>
+                                {!mailBlock && (
+                                    <span className="ml-auto text-[11px]" style={{color:'var(--text-muted)'}}>
+                                        寄件者：系統信箱 <span className="font-mono">{meta.from}</span>
+                                    </span>
+                                )}
                             </div>
                         ) : (
                             <div className="px-3.5 py-2.5" style={{background:'var(--bg-detail-card)'}}>
@@ -2385,9 +2398,237 @@ const { useState, useMemo, Fragment, useEffect } = React;
                             </div>
                         )}
                     </div>
-                    <div className="rounded-xl border border-dashed px-3.5 py-2.5 text-[12px]" style={{borderColor:'var(--border-table)', color:'var(--text-muted)'}}>
-                        ⚡ 自動寄信（交棒、退回、結案）：之後做，目前不會自動寄任何信
+                    <AutoNotifyPanel showToast={showToast} onError={onError} onSummary={onAutoSummary} />
+                </div>
+            );
+        };
+
+        // ─── 自動寄信（第 188 批，2026-10-13 使用者看過示意圖 A 選的：只留交棒＋退回重做）───
+        // 🔐 管理設定 →「信件通知」分頁的第二塊。模式 關閉／試寄／開啟（預設關閉）、試寄收件人、兩個開關、
+        // 最近 5 封、寄一封樣本。資料在 dbo.NotifySettings／dbo.NotifyLog（不碰卡控的表）。
+        // ⚠️ 每一項直接存，沒有儲存鈕（與上面的批次提醒名單同一種手感）；只有第一次載入才顯示「載入中」
+        //    （第 185 批踩過：每存一次就整塊換掉，輸入框會被卸載）。
+        // ⚠️ 切到「開啟」要多按一次確認（就地一行，不另開視窗）：開了就會真的寄給負責人。
+        const AutoNotifyPanel = ({ showToast, onError, onSummary }) => {
+            const [loaded, setLoaded] = useState(false);
+            const [loadError, setLoadError] = useState('');
+            const [cfg, setCfg] = useState(null);
+            const [testDraft, setTestDraft] = useState('');
+            const [saving, setSaving] = useState(false);
+            const [askOn, setAskOn] = useState(false);
+            const load = async () => {
+                setLoadError('');
+                try {
+                    const res = await fetch(api('/api/auto-notify'));
+                    const j = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(j.message || `伺服器回應 ${res.status}`);
+                    setCfg(j);
+                    setTestDraft(t => (t === '' || !loaded) ? (j.testTo || '') : t);
+                    onSummary && onSummary({ mode: j.mode, failCount: j.failCount || 0 });
+                } catch (e) {
+                    setLoadError(e.message || '載入失敗');
+                    onSummary && onSummary({ error: true });
+                } finally { setLoaded(true); }
+            };
+            useEffect(() => { load(); }, []);
+            const send = async (url, method, body) => {
+                const res = await fetch(api(url), { method, headers: body ? {'Content-Type':'application/json'} : undefined, body: body ? JSON.stringify(body) : undefined });
+                const j = await res.json().catch(() => ({}));
+                if (!res.ok) { const e = new Error(j.message || `伺服器回應 HTTP ${res.status}`); e.status = res.status; throw e; }
+                return j;
+            };
+            const save = async (patch, okMsg) => {
+                if (saving) return false;
+                setSaving(true);
+                try {
+                    await send('/api/auto-notify', 'PUT', patch);
+                    if (okMsg) showToast(okMsg);
+                    await load();
+                    return true;
+                } catch (e) { onError('儲存自動寄信設定失敗', e); return false; }
+                finally { setSaving(false); }
+            };
+            const sample = async () => {
+                if (saving) return;
+                setSaving(true);
+                try {
+                    const j = await send('/api/auto-notify/sample', 'POST');
+                    showToast(j.message || '樣本已寄出', j.uncertain ? 'warn' : 'success');
+                } catch (e) { onError('寄出樣本失敗', e); }
+                finally { setSaving(false); await load(); }
+            };
+
+            if (!loaded) return <div className="text-center text-sm py-6" style={{color:'var(--text-muted)'}}>載入中…</div>;
+            if (loadError || !cfg) return (
+                <div className="rounded-lg border p-3 text-sm font-bold" style={{background:'var(--tone-alert-bg)', borderColor:'var(--tone-alert-border)', color:'var(--tone-alert)'}}>
+                    自動寄信設定載入失敗：{loadError}
+                    <button onClick={load} className="ml-2 underline">重試</button>
+                </div>
+            );
+            const tDraft = testDraft.trim();
+            const tBad = tDraft !== '' && !isMailAddr(tDraft);
+            const tLong = isOverLimit(tDraft, 200);
+            const tDirty = tDraft !== (cfg.testTo || '');
+            const testReady = (cfg.testTo || '') !== '' && isMailAddr(cfg.testTo);
+            const MODES = [{k:'off', t:'關閉'}, {k:'test', t:'試寄'}, {k:'on', t:'開啟'}];
+            const pickMode = (k) => {
+                if (k === cfg.mode || saving) return;
+                if (k === 'on') { setAskOn(true); return; }
+                setAskOn(false);
+                save({ mode: k }, k === 'off' ? '自動寄信已關閉' : `已切到試寄：自動信只會寄到 ${cfg.testTo}`);
+            };
+            // 函式不是元件：寫成元件每次 render 都會重建，按完開關焦點會掉
+            const toggleRow = ({ on, label, desc, field }) => (
+                <div className="px-3.5 py-2 flex items-center gap-2.5 border-b" style={{borderColor:'var(--border-table)'}}>
+                    <button type="button" role="switch" aria-checked={on} aria-label={`${label}：${on ? '開' : '關'}`} disabled={saving}
+                            onClick={() => save({ [field]: !on }, `${label}：${!on ? '會' : '不會'}自動寄信`)}
+                            className="relative shrink-0 rounded-full transition-colors disabled:opacity-50"
+                            style={{width:'32px', height:'18px', background: on ? 'var(--brand)' : 'var(--border-table)'}}>
+                        <span className="absolute rounded-full" style={{top:'2px', left: on ? '16px' : '2px', width:'14px', height:'14px', background:'#fff', transition:'left .15s'}} />
+                    </button>
+                    <span className="text-[13px] font-bold shrink-0 w-16">{label}</span>
+                    <span className="text-[12px] min-w-0" style={{color:'var(--text-muted)'}}>{desc}</span>
+                </div>
+            );
+            const resultTag = (x) => {
+                const st = x.result === 'sent' ? { t: x.mode === 'test' ? '已寄出（試寄）' : '已寄出', c:'var(--tone-good)' }
+                         : x.result === 'uncertain' ? { t:'未確認送出', c:'var(--tone-warn)' }
+                         : { t:'未寄出', c:'var(--tone-alert)' };
+                return <span className="shrink-0 text-[11px] font-bold" style={{color: st.c}}>{st.t}</span>;
+            };
+            return (
+                <div id="ct-mail-auto" className="rounded-xl border overflow-hidden scroll-mt-2" style={{borderColor:'var(--border-table)'}}>
+                    <div className="px-3.5 py-2.5 flex items-center gap-2 flex-wrap border-b" style={{borderColor:'var(--border-table)'}}>
+                        <span className="text-[13px] font-bold">⚡ 自動寄信</span>
+                        <span className="text-[12px]" style={{color:'var(--text-muted)'}}>標記完成、退回重做之後自動寄信請負責人壓日期</span>
+                        <div className="ml-auto inline-flex rounded-lg border overflow-hidden text-[12px]" role="radiogroup" aria-label="自動寄信模式"
+                             style={{borderColor:'var(--border-table)'}}>
+                            {MODES.map(o => {
+                                const dis = saving || (o.k === 'test' && !testReady && cfg.mode !== 'test');
+                                return (
+                                    <button key={o.k} type="button" role="radio" aria-checked={cfg.mode === o.k} disabled={dis}
+                                            onClick={() => pickMode(o.k)}
+                                            title={o.k === 'test' && !testReady ? '先在下面填好試寄收件人，才能切到試寄' : undefined}
+                                            className="px-3 py-1 font-bold disabled:opacity-40"
+                                            style={cfg.mode === o.k
+                                                ? {background: o.k === 'on' ? 'var(--brand)' : o.k === 'test' ? 'var(--tone-warn-bg)' : 'var(--bg-detail-card)',
+                                                   color: o.k === 'on' ? '#fff' : o.k === 'test' ? 'var(--tone-warn)' : 'var(--text-primary)'}
+                                                : {background:'var(--bg-card)', color:'var(--text-secondary)'}}>{o.t}</button>
+                                );
+                            })}
+                        </div>
                     </div>
+                    {/* ─── 沒寄出的（第 189 批，使用者看過示意圖）───
+                        上次按「知道了」之後的未寄出（樣本不算）。紅點與狀態列的件數都看這一份；
+                        按「知道了」之後再有沒寄出的才會再亮。最多列 10 封，更多的寫「還有 N 封」 */}
+                    {cfg.failCount > 0 && (
+                        <div className="border-b" style={{borderColor:'var(--border-table)', background:'var(--tone-alert-bg)'}}>
+                            <div className="px-3.5 py-2 flex items-center gap-2 text-[12px] font-bold" style={{color:'var(--tone-alert)'}}>
+                                <span>⚠ 上次按「知道了」之後，有 {cfg.failCount} 封自動信沒寄出（完成／退回本身都已經存好了）</span>
+                                <button type="button" disabled={saving} onClick={() => save({ ackFailures: true }, '已標記為知道了')}
+                                        className="ml-auto shrink-0 px-3 py-1 rounded-lg font-bold border disabled:opacity-40"
+                                        style={{background:'var(--bg-card)', color:'var(--text-secondary)', borderColor:'var(--border-table)'}}>知道了</button>
+                            </div>
+                            {(cfg.failures || []).map((x, i) => (
+                                <div key={i} className="px-3.5 py-1 flex items-center gap-2 text-[12px]" title={x.detail}>
+                                    <span className="shrink-0 tabular-nums" style={{color:'var(--text-muted)'}}>{x.at.slice(5)}</span>
+                                    <span className="min-w-0" style={{color:'var(--text-primary)'}}>
+                                        {x.triggerText}{x.nid ? ` · NID ${x.nid}` : ''}{x.toName ? ` → ${x.toName}` : ''}
+                                        <span style={{color:'var(--tone-alert)'}}>：{x.detail}</span>
+                                    </span>
+                                </div>
+                            ))}
+                            {cfg.failCount > (cfg.failures || []).length && (
+                                <div className="px-3.5 py-1 text-[12px]" style={{color:'var(--text-muted)'}}>還有 {cfg.failCount - cfg.failures.length} 封較早的</div>
+                            )}
+                            <div className="h-1.5" />
+                        </div>
+                    )}
+                    {askOn ? (
+                        <div className="px-3.5 py-2.5 flex items-center gap-2 flex-wrap border-b text-[12px]"
+                             style={{borderColor:'var(--border-table)', background:'var(--tone-alert-bg)', color:'var(--tone-alert)'}}>
+                            <span className="font-bold">開啟之後，標記完成與退回重做會真的寄信給負責人。確定開啟？</span>
+                            <span className="ml-auto flex gap-2">
+                                <button type="button" disabled={saving}
+                                        onClick={async () => { if (await save({ mode:'on' }, '自動寄信已開啟')) setAskOn(false); }}
+                                        className="px-3 py-1 rounded-lg font-bold text-white disabled:opacity-40" style={{background:'var(--brand)'}}>確定開啟</button>
+                                <button type="button" onClick={() => setAskOn(false)}
+                                        className="px-3 py-1 rounded-lg font-bold border"
+                                        style={{background:'var(--bg-input)', color:'var(--text-secondary)', borderColor:'var(--bg-input-border)'}}>取消</button>
+                            </span>
+                        </div>
+                    ) : (
+                        <div className="px-3.5 py-2 border-b text-[12px]"
+                             style={{borderColor:'var(--border-table)',
+                                     ...(cfg.mode === 'test' ? {background:'var(--tone-warn-bg)', color:'var(--tone-warn)'}
+                                       : cfg.mode === 'on' ? {background:'var(--brand-soft)', color:'var(--brand)'}
+                                       : {color:'var(--text-muted)'})}}>
+                            {cfg.mode === 'test' ? <>試寄中：所有自動信只寄給 <span className="font-mono font-bold break-all">{cfg.testTo}</span>，負責人收不到</>
+                             : cfg.mode === 'on' ? <>開啟中：會寄給負責人，副本另一位負責人</>
+                             : <>關閉中：不會自動寄任何信。建議先切到「試寄」確認信件沒問題，再開啟</>}
+                        </div>
+                    )}
+                    {/* 第 190 批：「寄一封樣本」從卡片最底下搬到這一排 —— 填完就能直接試；
+                        欄位名稱寬度與上面批次提醒的「收件者／副本」同一個（MAIL_LABEL_W） */}
+                    <div className="px-3.5 py-2 grid gap-3 items-center border-b" style={{gridTemplateColumns:`${MAIL_LABEL_W} minmax(0,1fr)`, borderColor:'var(--border-table)'}}>
+                        <span className="text-[13px]" style={{color:'var(--text-secondary)'}}>試寄收件人</span>
+                        <div className="flex items-center gap-2 min-w-0">
+                        <input type="text" value={testDraft} disabled={saving}
+                               placeholder="試寄期間的信都寄到這裡，例如自己的信箱" aria-label="試寄收件人信箱"
+                               className="flex-1 min-w-0 px-2.5 py-1 rounded-lg text-[13px] border outline-none focus:ring-2 ring-indigo-500/50"
+                               style={{background:'var(--bg-main)', borderColor: tBad || tLong ? 'var(--tone-alert)' : 'var(--border-table)', color:'var(--text-primary)'}}
+                               onChange={e => setTestDraft(e.target.value)}
+                               onKeyDown={e => {
+                                   if (e.key === 'Enter' && !e.nativeEvent.isComposing && tDirty && !tBad && !tLong) save({ testTo: tDraft }, '試寄收件人已儲存');
+                                   if (e.key === 'Escape' && tDirty) { e.stopPropagation(); setTestDraft(cfg.testTo || ''); }
+                               }} />
+                        {tDirty && (
+                            <button type="button" disabled={saving || tBad || tLong} onClick={() => save({ testTo: tDraft }, '試寄收件人已儲存')}
+                                    className="shrink-0 px-3 py-1 rounded-lg text-[12px] font-bold text-white disabled:opacity-40" style={{background:'var(--brand)'}}>儲存</button>
+                        )}
+                        {/* 樣本寄到「已儲存」的試寄收件人：輸入框改了還沒存時不給按，免得寄到舊信箱 */}
+                        <button type="button" onClick={() => sample()} disabled={saving || !testReady || tDirty}
+                                title={tDirty ? '先按「儲存」，樣本會寄到存好的試寄收件人'
+                                     : !testReady ? '先填好試寄收件人'
+                                     : `寄一封假資料的樣本到 ${cfg.testTo}`}
+                                className="shrink-0 px-3 py-1 rounded-lg text-[12px] font-bold border disabled:opacity-40"
+                                style={{background:'var(--bg-card)', color:'var(--brand)', borderColor:'var(--border-table)'}}>
+                            {saving ? '處理中…' : '寄一封樣本'}
+                        </button>
+                        </div>
+                    </div>
+                    {(tBad || tLong) && (
+                        <div className="px-3.5 py-1.5 border-b text-[12px] font-bold" style={{borderColor:'var(--border-table)', color:'var(--tone-alert)'}}>
+                            {tLong ? `信箱太長（上限 200 字，目前 ${tDraft.length} 字）` : '信箱格式不正確（只能填一個信箱）'}
+                        </div>
+                    )}
+                    {/* 第 190 批：兩行說明統一成「什麼時候 → 寄給誰」，共同的「副本」提到標題講一次；
+                        模式關閉時開關看起來仍是開的，容易以為正在寄 → 標題後面講明暫不生效 */}
+                    <div className="px-3.5 pt-2 pb-1 text-[12px]" style={{color:'var(--text-muted)'}}>
+                        什麼時候寄（副本給另一位負責人）
+                        {cfg.mode === 'off' && <span className="ml-2" style={{color:'var(--text-secondary)'}}>目前關閉，這兩個開關暫不生效</span>}
+                    </div>
+                    {toggleRow({ on: cfg.handoff, field: 'handoff', label: '交棒', desc: '標記完成、下一階段還沒壓日期 → 下一階段的負責人' })}
+                    {toggleRow({ on: cfg.rollback, field: 'rollback', label: '退回重做', desc: '退回重做之後 → 被退回那一階段的負責人（附退回原因）' })}
+                    <div className="px-3.5 pt-2 pb-1 flex items-center text-[12px]" style={{color:'var(--text-muted)'}}>
+                        最近 5 封
+                        <button type="button" onClick={load} disabled={saving} className="ml-2 underline disabled:opacity-40">重新整理</button>
+                    </div>
+                    {(cfg.recent || []).length === 0 ? (
+                        <div className="px-3.5 py-2 text-[12px]" style={{borderColor:'var(--border-table)', color:'var(--text-muted)'}}>還沒有寄過</div>
+                    ) : (cfg.recent || []).map((x, i) => (
+                        <div key={i} className="px-3.5 py-1.5 flex items-center gap-2 border-b last:border-b-0 text-[12px]" style={{borderColor:'var(--border-table)'}}
+                             title={[x.toEmail && `寄到 ${x.toEmail}`, x.detail].filter(Boolean).join('\n')}>
+                            <span className="shrink-0 tabular-nums" style={{color:'var(--text-muted)'}}>{x.at.slice(5)}</span>
+                            <span className="min-w-0 truncate">
+                                {x.triggerText}{x.nid ? ` · NID ${x.nid}` : ''}{x.toName ? ` → ${x.toName}` : ''}
+                                {x.result === 'failed' && x.detail && <span style={{color:'var(--tone-alert)'}}>：{x.detail}</span>}
+                            </span>
+                            <span className="ml-auto" />
+                            {resultTag(x)}
+                        </div>
+                    ))}
+                    {/* 第 190 批：原本這裡的「寄一封樣本」搬到試寄收件人那一排；寄件信箱的狀態改由分頁最上面那行講 */}
                 </div>
             );
         };
@@ -2413,7 +2654,13 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // 第 185 批：面板改名「管理設定」、分「瀏覽權限」「信件通知」兩個分頁。瀏覽權限分頁的內容一行沒改，
             // 只是包進 tab === 'access' 的條件裡。每次打開都停在瀏覽權限（不記住上次的分頁）。
             const [tab, setTab] = useState('access');
-            const [mailSummary, setMailSummary] = useState(null);   // { to, cc } | { error:true }，由 MailSettingsPanel 回報
+            const [mailSummary, setMailSummary] = useState(null);
+            const [autoSummary, setAutoSummary] = useState(null);   // { mode } | { error:true }，由 AutoNotifyPanel 回報（第 188 批）   // { to, cc } | { error:true }，由 MailSettingsPanel 回報
+            // 狀態列的藥丸：切分頁並捲到那一塊（第 190 批）。setTimeout 0 ＝ 等 hidden 拿掉、畫出來再捲
+            const goSection = (k, id) => {
+                setTab(k);
+                if (id) setTimeout(() => { const el = document.getElementById(id); if (el) el.scrollIntoView({ block:'start', behavior:'smooth' }); }, 0);
+            };
 
             const load = async () => {
                 setLoading(true); setLoadError('');
@@ -2533,21 +2780,41 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                     {tab === 'access'
                                         ? <>依人員名冊的部門（DEPT_1 / 2 / 3）或工號白名單卡控，任一規則符合即可瀏覽。
                                             名冊來源：<span className="font-mono">{personView || '—'}</span></>
-                                        : '寄信的收件名單。與瀏覽權限是分開的資料，改這裡不會影響卡控。'}
+                                        : '批次提醒的名單與自動寄信設定。與瀏覽權限是分開的資料，改這裡不會影響卡控。'}
                                 </p>
                             </div>
                             <button onClick={onClose} className="shrink-0 w-7 h-7 rounded-lg flex items-center justify-center text-sm hover:bg-black/10" aria-label="關閉" title="關閉（Esc）" style={{color:'var(--text-tertiary)'}}>✕</button>
                         </div>
-                        {/* 兩個分頁共用的狀態列：不必切過去就看得到另一邊的狀態 */}
-                        <div className="px-4 pt-3 grid gap-2 text-[12px]" style={{gridTemplateColumns:'repeat(auto-fit, minmax(200px, 1fr))'}}>
-                            <div className="rounded-lg px-3 py-2 font-bold"
-                                 style={enabled ? {background:'var(--tone-alert-bg)', color:'var(--tone-alert)'} : {background:'var(--bg-detail-card)', color:'var(--text-secondary)'}}>
+                        {/* 兩個分頁共用的狀態列：不必切過去就看得到另一邊的狀態。
+                            第 190 批（使用者看過示意圖）：三張卡改成一排細藥丸（約省 40px 高），顏色照舊；
+                            每一顆都能點，切到那個分頁並捲到那一塊（信件通知分頁一直掛著，切過去就量得到） */}
+                        <div className="px-4 pt-3 flex flex-wrap gap-1.5 text-[12px]">
+                            <button type="button" onClick={() => goSection('access', null)}
+                                    className="rounded-md px-2.5 py-1 font-bold text-left"
+                                    title="切到「瀏覽權限」分頁"
+                                    style={enabled ? {background:'var(--tone-alert-bg)', color:'var(--tone-alert)'} : {background:'var(--bg-detail-card)', color:'var(--text-secondary)'}}>
                                 {loading ? '瀏覽權限：讀取中…' : loadError ? '瀏覽權限：讀取失敗' : enabled ? `🔒 瀏覽權限：卡控中（${rules.length} 條規則）` : '🔓 瀏覽權限：未卡控'}
-                            </div>
-                            <div className="rounded-lg px-3 py-2" style={{background:'var(--bg-detail-card)', color:'var(--text-secondary)'}}>
+                            </button>
+                            <button type="button" onClick={() => goSection('mail', 'ct-mail-batch')}
+                                    className="rounded-md px-2.5 py-1 text-left"
+                                    title="切到「信件通知」看批次提醒的名單"
+                                    style={{background:'var(--bg-detail-card)', color:'var(--text-secondary)'}}>
                                 ✉ 批次提醒：{!mailSummary ? '讀取中…' : mailSummary.error ? '讀取失敗'
                                     : `收件者 ${mailSummary.to}、副本 ${mailSummary.cc}`}
-                            </div>
+                            </button>
+                            {/* 第 188 批：自動寄信的模式。試寄／開啟要醒目 —— 不切到這個分頁也知道現在會不會寄信 */}
+                            {/* 第 189 批：有沒寄出的就整格轉紅、寫件數，點了切到「信件通知」看原因（打開面板仍停在瀏覽權限） */}
+                            <button type="button" onClick={() => goSection('mail', 'ct-mail-auto')}
+                                    className="rounded-md px-2.5 py-1 font-bold text-left"
+                                    title={autoSummary?.failCount > 0 ? '點這裡切到「信件通知」看沒寄出的原因' : '切到「信件通知」看自動寄信設定'}
+                                    style={autoSummary?.failCount > 0 ? {background:'var(--tone-alert-bg)', color:'var(--tone-alert)'}
+                                         : autoSummary?.mode === 'test' ? {background:'var(--tone-warn-bg)', color:'var(--tone-warn)'}
+                                         : autoSummary?.mode === 'on' ? {background:'var(--brand-soft)', color:'var(--brand)'}
+                                         : {background:'var(--bg-detail-card)', color:'var(--text-secondary)'}}>
+                                ⚡ 自動寄信：{!autoSummary ? '讀取中…' : autoSummary.error ? '讀取失敗'
+                                    : autoSummary.mode === 'test' ? '試寄中' : autoSummary.mode === 'on' ? '開啟' : '關閉'}
+                                {autoSummary?.failCount > 0 ? ` · ${autoSummary.failCount} 封沒寄出` : ''}
+                            </button>
                         </div>
                         <div className="px-4 mt-2 flex gap-5 border-b" role="tablist" style={{borderColor:'var(--border-table)'}}>
                             {[{k:'access', t:'瀏覽權限'}, {k:'mail', t:'信件通知'}].map(x => (
@@ -2564,7 +2831,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                         <div className="p-4 space-y-5 overflow-y-auto">
                             {/* 信件通知分頁一直掛著（狀態列的件數靠它），切走只是 hidden */}
                             <div hidden={tab !== 'mail'}>
-                                <MailSettingsPanel showToast={showToast} onError={onError} onSummary={setMailSummary} />
+                                <MailSettingsPanel showToast={showToast} onError={onError} onSummary={setMailSummary} onAutoSummary={setAutoSummary} />
                             </div>
                             {tab !== 'access' ? null : loading ? (
                                 <div className="text-center text-sm py-10" style={{color:'var(--text-muted)'}}>載入中…</div>
@@ -2727,8 +2994,10 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                     ))}
                                                 </div>
                                             )}
+                                            {/* ⚠️ 工號框不可用 inputCls：它帶 w-full，與 w-40 同時存在時 CSS 裡 w-full 排在後面會贏 →
+                                                工號框撐滿整列、備註框擠成 22px、「新增管理者」被推出去出現左右捲軸（第 190 批，09-21 起就這樣） */}
                                             <div className="flex gap-2">
-                                                <input type="text" value={adminForm.empno} className={`${inputCls} font-mono w-40 shrink-0`} style={inputStyle} placeholder="工號，如 00058897"
+                                                <input type="text" value={adminForm.empno} className="w-40 shrink-0 px-2.5 py-1.5 rounded-lg text-sm border outline-none focus:ring-2 ring-indigo-500/50 font-mono" style={inputStyle} placeholder="工號，如 00058897"
                                                        onChange={e => setAdminForm(p => ({ ...p, empno: e.target.value }))}
                                                        onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) addAdmin(); }} />
                                                 <input type="text" value={adminForm.note} className={`${inputCls} flex-1 min-w-0`} style={inputStyle} placeholder="備註（選填），如：MSD 主管"
@@ -2976,6 +3245,17 @@ const { useState, useMemo, Fragment, useEffect } = React;
             const [accessError, setAccessError] = useState('');
             const [accessRetry, setAccessRetry] = useState(0);
             const [isAccessPanelOpen, setIsAccessPanelOpen] = useState(false);
+            // ─── 頁首 🔐 的紅點：自動寄信有沒寄出的（第 189 批，使用者看過示意圖）───
+            // 只問真實帳號是管理者的（/api/auto-notify 掛 Negotiate、看真實 Windows 帳號）。
+            // 載入時問一次、面板關掉時再問一次（裡面可能剛按了「知道了」）。讀不到＝0，不亮（不猜）
+            const [autoFailCount, setAutoFailCount] = useState(0);
+            useEffect(() => {
+                if (!accessCheck?.isAdmin || isAccessPanelOpen) return;
+                let alive = true;
+                fetch(api('/api/auto-notify')).then(r => r.ok ? r.json() : null).catch(() => null)
+                    .then(j => { if (alive) setAutoFailCount(j ? (j.failCount || 0) : 0); });
+                return () => { alive = false; };
+            }, [accessCheck?.isAdmin, isAccessPanelOpen]);
             const accessPassed = !!accessCheck && (!accessCheck.enabled || accessCheck.allowed);
             // 阻擋型提示視窗（NID 重複、必填未完成）——比 toast 更難被忽略
             const [alertModal, setAlertModal] = useState(null);
@@ -2992,6 +3272,16 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // { phaseKey, label, planned, dateLabel, max, date, plannedStart, prevKey, prevLabel, prevEnd, prevActual, extras }
             // （min 不存，由 doneMainMin() 每次 render 重算 —— 第 61 批）
             const [doneModal, setDoneModal] = useState(null);
+            // 自動寄信的模式與開關（第 188 批）：完成／退回視窗底部那一行「會自動寄信請 ○○ 壓日期」要用。
+            // 視窗一打開就重抓一次（管理者可能剛改過）；讀不到＝當關閉、那一行不出現 —— 不可以講「會寄」而其實不會
+            const [autoNotify, setAutoNotify] = useState(null);
+            useEffect(() => {
+                if (!doneModal && !rollbackModal) return;
+                let alive = true;
+                fetch(api('/api/auto-notify/status')).then(r => r.ok ? r.json() : null).catch(() => null)
+                    .then(j => { if (alive) setAutoNotify(j && !j.error ? j : null); });
+                return () => { alive = false; };
+            }, [!!doneModal, !!rollbackModal]);
             // 「完整軌跡」視窗（第 72 批，2026-09-13）：{ id, nid, phase:'all'|phaseKey, expanded:{ [histId]: true } }
             // ⚠️ 只存需求 id，稽核列每次 render 從 historyMap 讀 —— 視窗開著時按頁首重新整理，內容要跟著更新。
             // expanded 是「這一行的理由展開看全文」，一次性的查看動作，不寫 localStorage
@@ -4255,6 +4545,8 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     });
                     return;
                 }
+                // 第 188 批：存檔前先算好（存完 requirementsData 會換成新的那一份，下一棒的判斷就不準了）
+                const autoP = doneAutoPreview(m);
                 runExclusive(async () => {
                     try {
                         const res = await fetch(api(`/api/requirements/${m.id}/done`), {
@@ -4301,7 +4593,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                 movedNote = `。這筆已移到下面的「追蹤中」，現在輪到 ${nph.side}`;
                             else if (nph) movedNote = `。下一關「${nph.label}」也是你負責，卡片還在上面`;
                         }
-                        showToast((bodyJson.message || '已標記完成') + movedNote, 'success',
+                        showToast((bodyJson.message || '已標記完成') + autoNotifyToast(autoP, 'handoff') + movedNote, 'success',
                                   undoEntry ? { label: '復原',
                                                 onClick: () => handleUndoDoneRef.current(undoEntry.phase, undoEntry, m.id) } : null);
                     } catch (err) {
@@ -4585,6 +4877,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     setAlertModal({ title:'缺少退回說明', message:'退回重做必須填寫文字說明才能執行。' });
                     return;
                 }
+                const autoP = autoNotifyPreview('rollback', requirementsData.find(r => r.id === m.id), m.target);   // 第 188 批
                 await runExclusive(async () => {
                 try {
                     const res = await fetch(api(`/api/requirements/${m.id}/rollback`), {
@@ -4604,7 +4897,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     setEditingData(null);
                     setIsModalOpen(false);
                     await Promise.all([fetchReqs(), fetchHistory()]);
-                    showToast(body.message || '已退回');
+                    showToast((body.message || '已退回') + autoNotifyToast(autoP, 'rollback'));
                 } catch (err) {
                     alertWriteFail('退回失敗', err);
                 }
@@ -5983,7 +6276,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                             <button key={o.v} onClick={()=>applyYmPreset(o.v)}
                                     className="px-2.5 py-1 rounded-lg text-[11px] font-bold transition-colors border"
                                     style={activeYmPreset === o.v
-                                        ? {background:'var(--bg-pill-active)', color:'var(--text-on-pill)', borderColor:'transparent'}
+                                        ? {background:'var(--pill-active-bg)', color:'var(--pill-active-text)', borderColor:'var(--pill-active-border)'}
                                         : {background:'var(--bg-input)', color:'var(--text-tertiary)', borderColor:'var(--bg-input-border)'}}
                                     title={o.v === 0 ? '涵蓋全部有資料的年月（超出寬度時可左右捲動）'
                                                      : `資料中最新的 ${o.v} 個有資料的年月`}>{o.l}</button>
@@ -6734,6 +7027,60 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     && (meAssignee.dept || '').trim() === dept;
             };
             const notifyToMe = (p) => !!p && isMeAssignee(p.side, p.toName);
+
+            // ─── 自動寄信那一行提示（第 188 批，使用者選的「B 提示」）───
+            // ⚠️ 後端 RunAutoNotifyAsync() 的**預告版**：真正寄不寄、寄給誰由後端在存好之後重讀 DB 再算，
+            //    這裡只照同一組規則先講一次 —— 模式／開關、模擬帳號不寄、交棒時下一棒已壓日期不寄、
+            //    收件者是本人不寄（**工號**比對，與後端同一條）、已停用不寄；副本＝另一位負責人。改規則兩邊一起改。
+            // 回傳 null＝不會寄（那一行不出現）；有 problem＝會試著寄但寄不出去（那一行講原因）
+            const autoNotifyPreview = (kind, item, stageAfter) => {
+                const s = autoNotify;
+                if (!s || s.mode === 'off' || !(kind === 'handoff' ? s.handoff : s.rollback)) return null;
+                if (actor.source === 'simulated' || !item) return null;
+                const ph = DUE_PHASES.find(p => p.code === String(stageAfter));
+                if (!ph) return null;                                       // 推到 ⑤ 結案：沒有下一棒
+                if (kind === 'handoff' && isDateVal(ph.getDate(item))) return null;
+                const toName = (ph.owner(item) || '').trim();
+                const ccSide = ph.side === 'MSD' ? 'EMS' : 'MSD';
+                const ccName = ((ccSide === 'EMS' ? item.emsOwner : item.msdOwner) || '').trim();
+                const base = { phLabel: ph.label, side: ph.side, toName, ccName: '', test: s.mode === 'test', testTo: s.testTo || '' };
+                if (!toName) return { ...base, problem: `「${ph.label}」還沒指派 ${ph.side} 負責人，自動信不知道要寄給誰` };
+                const hit = assigneeList.find(a => a.dept === ph.side && (a.name || '').trim() === toName);
+                if (hit && !hit.isActive) return null;
+                const me = String(actor.empId || '').trim().toLowerCase();
+                if (hit && me && stripDomain(hit.empNo || '').toLowerCase() === me) return null;
+                if (!hit) return { ...base, problem: `${toName} 不在指派名單裡（名字對不上），自動信寄不出去` };
+                const email = assigneeEmailOf(ph.side, toName);
+                if (!email || !isMailAddr(email))
+                    return { ...base, problem: `${toName} 在指派名單裡${email ? '的信箱格式不正確' : '沒有信箱'}，自動信寄不出去` };
+                const ccHit = ccName ? assigneeList.find(a => a.dept === ccSide && (a.name || '').trim() === ccName) : null;
+                const ccEmail = ccName ? assigneeEmailOf(ccSide, ccName) : '';
+                const ccOk = !!ccHit && ccHit.isActive && isMailAddr(ccEmail) && ccEmail.toLowerCase() !== email.toLowerCase();
+                return { ...base, ccName: ccOk ? ccName : '' };
+            };
+            // 標記完成那一種：只有目前階段真的往前推才會寄（補記不推、不寄）—— 與 /done 的 QueueAutoNotify 條件同一條
+            const doneAutoPreview = (m) => {
+                if (!m || m.backfill) return null;
+                const cur = Number(m.curStage) || 0;
+                const next = Math.max(cur, Number(m.doneStage) || 0);
+                if (next <= cur) return null;
+                return autoNotifyPreview('handoff', requirementsData.find(r => r.id === m.id), next);
+            };
+            const autoNotifyLine = (p, kind) => !p ? null : (
+                <div className="flex items-start gap-1.5 pt-2.5 border-t text-[12px] leading-snug"
+                     style={{borderColor:'var(--border-table)', color: p.problem ? 'var(--tone-warn)' : 'var(--text-secondary)'}}>
+                    <span aria-hidden="true">✉</span>
+                    <span>
+                        {p.problem ? <>{p.problem}（{kind === 'rollback' ? '退回' : '完成'}照樣會存）</>
+                         : p.test ? <>試寄中：自動信會寄到 <span className="font-mono break-all">{p.testTo}</span>，{p.toName} 收不到</>
+                         : <>{kind === 'rollback' ? '退回' : '完成'}後會自動寄信請 <span className="font-bold" style={{color:'var(--text-primary)'}}>{p.toName}</span>（{p.phLabel}）{kind === 'rollback' ? '重新' : ''}壓日期{p.ccName ? `，副本 ${p.ccName}` : ''}</>}
+                    </span>
+                </div>
+            );
+            // 成功 toast 接的那半句。⚠️ 信在背景寄（使用者選的「不等」），所以只能說「會寄」，不說「已寄出」
+            const autoNotifyToast = (p, kind) => !p || p.problem ? ''
+                : p.test ? `；試寄信會寄到 ${p.testTo}`
+                : `；系統會寄信請 ${p.toName} ${kind === 'rollback' ? '重新' : ''}壓日期`;
 
             // ─── 「需關注」批次提醒（第 125 批；第 185 批改成寄一封給固定名單）───
             // 需求列表工具列「需關注」左邊那顆 ✉。先打一次 send:false 拿預覽（哪幾筆、分組、固定名單、負責人信箱），
@@ -7574,20 +7921,27 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                 {/* ⚠️ 第 135 批：看 actingAdmin 不看 accessCheck.isAdmin —— 模擬 EMS 時不畫，畫面才會跟 EMS 真正看到的一樣 */}
                                 {!present && accessCheck && actingAdmin && (
                                 <button onClick={()=>setIsAccessPanelOpen(true)}
-                                        className={`ctl-sm flex-shrink-0${accessCheck.enabled ? ' ctl-on' : ''}`}
-                                        aria-label="管理設定（瀏覽權限、信件通知）"
+                                        className={`ctl-sm flex-shrink-0 relative${accessCheck.enabled ? ' ctl-on' : ''}`}
+                                        aria-label={autoFailCount > 0 ? `管理設定（瀏覽權限、信件通知）：自動寄信有 ${autoFailCount} 封沒寄出` : '管理設定（瀏覽權限、信件通知）'}
                                         title={(accessCheck.enabled
                                             ? '管理設定\n瀏覽權限：卡控啟用中（不符合規則的人看不到這個網頁）'
                                             : '管理設定\n瀏覽權限：目前未卡控（所有人皆可瀏覽）')
-                                            + '\n點擊設定瀏覽權限與信件通知的收件名單'}>
+                                            + '\n點擊設定瀏覽權限與信件通知'
+                                            + (autoFailCount > 0 ? `\n⚠ 自動寄信有 ${autoFailCount} 封沒寄出，點開看原因` : '')}>
                                     🔐{accessCheck.enabled ? ' 卡控中' : ''}
+                                    {/* 第 189 批：紅點用絕對定位，不改按鈕寬度（頁首那一排很擠）。底色實色 */}
+                                    {autoFailCount > 0 && (
+                                        <span aria-hidden="true" className="absolute rounded-full"
+                                              style={{top:'-3px', right:'-3px', width:'10px', height:'10px',
+                                                      background:'var(--tone-alert)', border:'2px solid var(--bg-card)'}} />
+                                    )}
                                 </button>
                                 )}
                                 {!present && (
                                 <button onClick={()=>actor.allowSimulation && setIsActorModalOpen(true)}
                                         className="ctl-sm"
                                         style={actor.source==='simulated'
-                                            ? {color:'#8b5cf6', background:'rgba(139,92,246,0.12)', borderColor:'#8b5cf6'}
+                                            ? {color:'var(--c-violet)', background:'rgba(139,92,246,0.12)', borderColor:'var(--c-violet)'}
                                             : actor.empId
                                                 ? undefined
                                                 : {color:'var(--tone-warn)', background:'var(--tone-warn-bg)', borderColor:'var(--tone-warn-border)'}}
@@ -9394,11 +9748,11 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         const active = isAll ? stageFilter.length === 0 : stageFilter.includes(o.k);
                                         const n = stageFacets[o.k] ?? 0;
                                         // ALL 沒有自己的階段色，選中時走通用的 pill-active。
-                                        // ⚠️ 不可以寫成 `${o.color}1a` —— 階段色是 hex 沒問題，
-                                        // 但 ALL 若給 CSS 變數會拼成 var(--x)1a 這種無效值，底色會靜靜變透明
+                                        // ⚠️ 不可以寫成 `${o.color}1a` —— 第 191 批起階段色是 var(--c-*)，拼出來是無效值、底色靜靜變透明；
+                                        // 半透明一律 color-mix（1a ≈ 10%）
                                         const activeStyle = o.color
-                                            ? { background:`${o.color}1a`, color:o.color, borderColor:o.color }
-                                            : { background:'var(--bg-pill-active)', color:'var(--text-on-pill)', borderColor:'transparent' };
+                                            ? { background:`color-mix(in srgb, ${o.color} 10%, transparent)`, color:o.color, borderColor:o.color }
+                                            : { background:'var(--pill-active-bg)', color:'var(--pill-active-text)', borderColor:'var(--pill-active-border)' };
                                         return (
                                             <Fragment key={o.k}>
                                             {/* ALL 與 1~5 是兩種語意（清空 vs 複選），中間隔一條細線 */}
@@ -9667,7 +10021,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         {/* tooltip 與「警示」下拉那句是同一件事：畫面上沒有叫「延期」的按鈕，
                                             所以這個詞一定要在出現的地方就解釋掉（2026-08-27 / 第 34 批） */}
                                         <span className="cursor-help" title="標記完成時填的實際完成日晚於原訂結束日就記一次（補登準時完成不算）。沒有獨立的「延期」功能 —— 那一刻原訂結束日會保留不動，只另外記下實際完成日"><span className="inline-flex items-center gap-1"><DelayIcon size={12} />延期完成次數（2 次以上轉紅）</span></span>
-                                        <span className="inline-flex items-center gap-1"><span className="inline-flex" style={{color:'#8b5cf6'}}><RollbackIcon size={12} /></span>退回重做次數</span>
+                                        <span className="inline-flex items-center gap-1"><span className="inline-flex" style={{color:'var(--c-violet)'}}><RollbackIcon size={12} /></span>退回重做次數</span>
                                         <span title="只計「日期異動」；提早／延期完成與退回重做不算，它們各有自己的次數圖示或列在軌跡裡">⚠ 該階段日期異動次數</span>
                                         <span>→ 日期＝延期後的實際完成日</span>
                                         {/* 精簡模式的時程欄只有一個日期，要講清楚那是哪一個，
@@ -9690,7 +10044,8 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         結果就是表頭完全不吸附。橫向溢位交給頁面本身（見 input.css 的 body）。 */}
                                     {/* 量到的吸附位置用 CSS 變數往下傳，不必在 19 個 th 上各寫一次 inline top。
                                         CSS 端 (.sticky-table thead ... th) 只讀這兩個變數 */}
-                                    <table className="w-full text-left border-collapse sticky-table"
+                                    {/* 四角圓角見 input.css 的 .sticky-table clip-path（第 193 批） */}
+                                    <table className={legendShown ? 'w-full text-left border-collapse sticky-table ct-legend-above' : 'w-full text-left border-collapse sticky-table'}
                                            style={{'--head-top-group': `${headOffsets.group}px`,
                                                    '--head-top-col':   `${headOffsets.col}px`,
                                                    // 左側凍結欄：第二欄的 left（見 input.css 的 .frz-2）
@@ -9708,14 +10063,14 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                       EMS/MSD/目前階段/目前階段時程 = 4（目前階段 2026-08-19 起移到 MSD 右邊，
                                                       「誰負責 → 卡在哪一階段 → 那一階段何時到期」連成一句話）
                                                       現況描述 = 1 */}
-                                                <th colSpan={compact ? 4 : 8 - ['notesLink', 'status'].filter(k => !showCol(k)).length} className="px-3 py-2 text-center text-[11px] font-black uppercase tracking-wider" style={{color:'var(--text-tertiary)', borderRight:'2px solid var(--border-card)'}}>需求基本資料</th>
-                                                <th colSpan={compact ? 4 : 6} className="px-3 py-2 text-center text-[11px] font-black uppercase tracking-wider" style={{color:'var(--text-tertiary)', borderRight:'2px solid var(--border-card)', background:'var(--thead-group-schedule)'}}>{compact ? '負責人與目前階段時程' : '負責人與各階段時程'}</th>
-                                                {compact && <th colSpan="1" className="px-3 py-2 text-center text-[11px] font-black uppercase tracking-wider" style={{color:'var(--text-tertiary)'}}>現況</th>}
-                                                {showCol('mpSaving') && <th colSpan="1" className="px-3 py-2 text-center text-[11px] font-black uppercase tracking-wider" style={{color:'var(--text-tertiary)', borderRight:'1px solid var(--border-card)'}}>效益評估</th>}
+                                                <th colSpan={compact ? 4 : 8 - ['notesLink', 'status'].filter(k => !showCol(k)).length} className="px-3 py-2 text-center text-[11px] font-black uppercase tracking-wider" style={{color:'var(--thead-group-text)', borderRight:'2px solid var(--border-card)'}}>需求基本資料</th>
+                                                <th colSpan={compact ? 4 : 6} className="px-3 py-2 text-center text-[11px] font-black uppercase tracking-wider" style={{color:'var(--thead-group-text)', borderRight:'2px solid var(--border-card)', background:'var(--thead-group-schedule)'}}>{compact ? '負責人與目前階段時程' : '負責人與各階段時程'}</th>
+                                                {compact && <th colSpan="1" className="px-3 py-2 text-center text-[11px] font-black uppercase tracking-wider" style={{color:'var(--thead-group-text)'}}>現況</th>}
+                                                {showCol('mpSaving') && <th colSpan="1" className="px-3 py-2 text-center text-[11px] font-black uppercase tracking-wider" style={{color:'var(--thead-group-text)', borderRight:'1px solid var(--border-card)'}}>效益評估</th>}
                                                 {/* ⚠️ 群組表頭的「操作」也要標 no-print：下面那一整欄（欄名 + 63 格）
                                                     在紙上是隱藏的，這裡不跟著藏的話群組的 colSpan 加總會比
                                                     資料列多一欄，右半邊整個對不齊 */}
-                                                {showCol('actions') && <th colSpan="1" className="px-3 py-2 text-center text-[11px] font-black uppercase tracking-wider no-print" style={{color:'var(--text-tertiary)'}}>操作</th>}
+                                                {showCol('actions') && <th colSpan="1" className="px-3 py-2 text-center text-[11px] font-black uppercase tracking-wider no-print" style={{color:'var(--thead-group-text)'}}>操作</th>}
                                             </tr>
                                         </thead>
                                         {/* 第二層表頭：欄位名稱 */}
@@ -9961,7 +10316,10 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 const rowAlert  = pickRowAlert(unsetAlert, specAlert, confirmAlert, msdAlert, uatAlert);
                                                 // 整列最左的風險色條。No 欄 2026-08-19 起永遠是第一欄，
                                                 // 色條就固定掛在它上面，不必再跟著模式換位置
-                                                const stripe = { borderLeft:`3px solid ${rowAlert ? rowAlert.color : 'transparent'}` };
+                                                // ⚠️ 第 192 批起用 inset box-shadow，不用 border-left：表格是 border-collapse，
+                                                //    第一欄有 3px 左框（連透明的也算）整張表的外框就變 1.5px，所有列往內縮 1.5px，
+                                                //    沒有色條的列（展開面板、表頭）左邊會露出一條卡片白底。陰影不佔框線寬度；列印見 input.css 的 .frz-1
+                                                const stripe = rowAlert ? { boxShadow:`inset 3px 0 0 ${rowAlert.color}` } : null;
 
                                                 // 稽核表已經明確存了異動前後的值，不必再像舊版那樣
                                                 // 用「下一筆的原日期」把新日期反推回來。
@@ -9992,6 +10350,9 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 //    舊資料或日後改格式都可能對不上，而這一行只是導覽用的摘要）
                                                 const notifyToOf = h => ((h.note || '').match(/收件者\s*([^<]*)</) || [])[1]?.trim() || '';
                                                 const notifyUnsure = h => (h.note || '').includes('未確認送出');
+                                                // 第 188 批：自動寄的那幾封 Note 尾巴是「；自動寄送（…）」（後端 RunAutoNotifyAsync，改字兩邊一起改）
+                                                const notifyAuto = h => (h.note || '').includes('自動寄送');
+                                                const notifyAutoN = notifyEntries.filter(notifyAuto).length;
                                                 const lastNotify = notifyEntries[notifyEntries.length - 1] || null;
                                                 // ─── 同一次動作寫出來的多筆稽核列收成一張卡（第 35 批，2026-08-27）───
                                                 // 規格回退一次會清掉「≥ 目標階段」的全部日期，每個階段各留一筆快照。
@@ -10012,8 +10373,10 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 // 一起變淡，對比度掉到不易閱讀
                                                 // 投影模式加斑馬紋：投出來的對比比螢幕低得多，
                                                 // 一列橫掃到最右邊很容易跳到別列去。只在投影模式加 ——
-                                                // 桌機上這條紋會跟「Done 淡底色」互相干擾
-                                                const rowBg = isExp ? 'var(--bg-table-expanded)'
+                                                // 桌機上這條紋會跟「Done 淡底色」互相干擾。
+                                                // ⚠️ 第 191 批起只剩深色有這條紋：淺色的 --bg-row-zebra 沒有定義（一般與投影共用同一版，
+                                                //    改由 --border-row 較深的橫線分列），var() 落空＝透明，這裡不必改
+                                                const rowBg = isExp ? 'var(--bg-exp-row)'
                                                             : isDone ? 'var(--bg-row-done)'
                                                             : (present && idx % 2 === 1) ? 'var(--bg-row-zebra)'
                                                             : 'transparent';
@@ -10021,7 +10384,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 // 目前階段欄。一般模式在 Status 右邊、精簡模式在 MSD 右邊，
                                                 // 內容完全一樣，所以只寫一份在下面插兩次（見資料列裡的兩個插入點）
                                                 const stageIdCell = (
-                                                    <td className="px-2 py-2.5" style={{borderRight: compact ? '2px solid var(--border-card)' : '1px solid var(--border-table)'}}>
+                                                    <td className="px-2 py-2.5" style={{borderRight: compact ? '2px solid var(--border-card)' : '1px solid var(--border-col)'}}>
                                                         {(() => {
                                                             // B4: Done 列若沒有 stageCode，補顯示 5（結案）
                                                             const displayCode = stageCode || (isDone ? '5' : '');
@@ -10068,7 +10431,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                             左側凍結欄也讀這個 --row-bg（它會自己疊在不透明的卡片色上，
                                                             因為 --bg-row-done 這些值本身是半透明的） */}
                                                         <tr className={`row-main cursor-pointer transition-colors${isExp ? ' row-exp' : ''}`}
-                                                            style={{borderBottom:'1px solid var(--border-table)',
+                                                            style={{borderBottom: isExp ? '1px solid var(--border-exp-row)' : '1px solid var(--border-row)',
                                                                     '--row-bg': rowBg}}
                                                             onClick={()=>toggleRow(item.id)}>
                                                             {/* No：畫面上的第幾列（跟著排序與篩選走），兼作整列的風險色條。
@@ -10076,7 +10439,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                                 但畫面上完全沒有提示，只有滑過去游標會變 —— 主管不會去試點
                                                                 每一列。▸／▾ 同時也讓「哪幾列已經展開」一眼看得出來 */}
                                                             <td className="px-2 py-2.5 text-xs font-bold tabular-nums frz frz-1"
-                                                                style={{color:'var(--text-muted)', borderRight:'1px solid var(--border-table)', ...stripe}}
+                                                                style={{color:'var(--text-muted)', borderRight:'1px solid var(--border-col)', ...stripe}}
                                                                 title={`${rowAlert ? rowAlert.label + '｜' : ''}點這一列可${isExp ? '收合' : '展開'}明細`}>
                                                                 <div className="flex items-center gap-1">
                                                                     {/* 展開鈕（2026-08-24 / 第 29 批）。原本三角形只是一個 <span>，
@@ -10113,7 +10476,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                             {/* NID。警示徽章掛在這欄下方 —— 資料列已經很擠，
                                                                 不能為了兩個徽章再加一欄 */}
                                                             <td className="px-2 py-2.5 text-sm font-black frz frz-2"
-                                                                style={{color:'var(--text-primary)', borderRight:'1px solid var(--border-table)'}}>
+                                                                style={{color:'var(--text-primary)', borderRight:'1px solid var(--border-col)'}}>
                                                                 {item.nid}
                                                             </td>
                                                             {/* Status（OverallStatus）。色點 + 文字，不是藥丸 ——
@@ -10121,7 +10484,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                                 文字吃 --text-secondary（10.4:1）比原本藍字疊淡藍底（約 3.6:1）好讀，
                                                                 顏色資訊留在色點上沒有消失 */}
                                                             {showCol('status') && (
-                                                            <td className="px-2 py-2.5" style={{borderRight:'1px solid var(--border-table)'}}>
+                                                            <td className="px-2 py-2.5" style={{borderRight:'1px solid var(--border-col)'}}>
                                                                 <span className="inline-flex items-center gap-1.5 text-[11px] font-bold whitespace-nowrap" style={{color:'var(--text-secondary)'}}>
                                                                     <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{background:st.color}}></span>
                                                                     {st.label}
@@ -10134,7 +10497,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                                 一份 JSX 在兩處各插一次 —— 複製兩份遲早會改到剩一邊 */}
                                                             {!compact && stageIdCell}
                                                             {/* 註冊日期 (RegDate)，YYYY/MM/DD */}
-                                                            {showCol('regDate') && <td className="px-2 py-2.5 text-xs font-bold whitespace-nowrap" style={{color:'var(--text-secondary)', borderRight:'1px solid var(--border-table)'}} title={item.createdAt ? `建立於 ${item.createdAt}` : ''}>{fmtYmd(item.regDate) || '-'}</td>}
+                                                            {showCol('regDate') && <td className="px-2 py-2.5 text-xs font-bold whitespace-nowrap" style={{color:'var(--text-secondary)', borderRight:'1px solid var(--border-col)'}} title={item.createdAt ? `建立於 ${item.createdAt}` : ''}>{fmtYmd(item.regDate) || '-'}</td>}
                                                             {/* Main Cat / Sub Cat 改為換行完整顯示（2026-08-19）。
                                                                 舊版是 truncate + title，長的分類名在畫面上變成「電源管理系...」，
                                                                 主管要逐筆 hover 才知道是哪一筆 —— 資訊不該藏在 tooltip 裡。
@@ -10142,12 +10505,12 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                                 等於整串文字寬度，長字串會把整張表撐出水平捲軸。
                                                                 換行版的 min-content 只有一個詞寬，配上表頭的固定 width 就穩定了。
                                                                 overflowWrap:anywhere 是給沒有空白的長英數字串（料號、系統代號）用的。 */}
-                                                            <td className="px-2 py-2.5 align-top" style={{borderRight:'1px solid var(--border-table)'}}>
+                                                            <td className="px-2 py-2.5 align-top" style={{borderRight:'1px solid var(--border-col)'}}>
                                                                 <div className="text-xs font-bold leading-snug break-words" style={{color:'var(--text-primary)', overflowWrap:'anywhere'}}>{item.mainCat}</div>
                                                             </td>
                                                             {/* Sub Cat */}
-                                                            <td className="px-2 py-2.5 align-top" style={{borderRight: showCol('notesLink') ? '1px solid var(--border-table)' : '2px solid var(--border-card)'}}>
-                                                                <div className="text-xs font-medium leading-snug break-words" style={{color:'var(--text-tertiary)', overflowWrap:'anywhere'}}>{item.subCat}</div>
+                                                            <td className="px-2 py-2.5 align-top" style={{borderRight: showCol('notesLink') ? '1px solid var(--border-col)' : '2px solid var(--border-card)'}}>
+                                                                <div className="text-xs font-medium leading-snug break-words" style={{color:'var(--text-subcat)', overflowWrap:'anywhere'}}>{item.subCat}</div>
                                                             </td>
                                                             {/* Notes Link (FIELD_SPEC #23)：DB 欄名 NotesLink，只存超連結。
                                                                 需求補充 (Remark) 是另一個欄位，不在這裡顯示（見 08 腳本）。
@@ -10182,9 +10545,9 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                                 兩個負責人欄相鄰，四個階段日期連成一片，橫向掃時程不會被人名打斷。
                                                                 每個時程欄顯示：日期 + 逾期標示 + 該階段自己的異動次數 */}
                                                             {/* EMS */}
-                                                            <td className="px-2 py-2.5 text-center text-xs font-bold" style={{color:'var(--text-secondary)', borderRight:'1px solid var(--border-table)', background:'var(--col-ems-bg)'}}>{item.emsOwner}</td>
+                                                            <td className="px-2 py-2.5 text-center text-xs font-bold" style={{color:'var(--text-owner)', borderRight:'1px solid var(--border-col)', background:'var(--col-ems-bg)'}}>{item.emsOwner}</td>
                                                             {/* MSD */}
-                                                            <td className="px-2 py-2.5 text-center text-xs font-bold" style={{color:'var(--text-secondary)', borderRight: compact ? '1px solid var(--border-table)' : '2px solid var(--border-card)', background:'var(--col-msd-bg)'}}>{item.msdOwner}</td>
+                                                            <td className="px-2 py-2.5 text-center text-xs font-bold" style={{color:'var(--text-owner)', borderRight: compact ? '1px solid var(--border-col)' : '2px solid var(--border-card)', background:'var(--col-msd-bg)'}}>{item.msdOwner}</td>
                                                             {/* 精簡模式的目前階段插在這裡：誰負責 → 卡在哪一階段 → 那一階段何時到期 */}
                                                             {compact && stageIdCell}
                                                             {/* 精簡模式：只出一欄「目前階段時程」。四個階段的完整排程
@@ -10193,9 +10556,9 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                             {/* onSetDate：「⚠ 未壓日期」那顆按下去直接跳到該階段的日期欄。
                                                                 這條路只有一般模式才有 —— currentStageCell（精簡模式）刻意不傳，
                                                                 它與「操作」欄整欄收起是同一條規則 */}
-                                                            {scheduleCell({ val:item.spec?.end, alert:specAlert, changes:changeOf('spec'),    label:'① EMS規格確認', br:'1px solid var(--border-table)', actual:item.spec?.actualEnd,        unset:unsetPhase?.key==='spec',    onNotify:notifyThis, onSetDate: canManageList ? ()=>openEdit(item,'spec') : null, lockedHint: READONLY_LIST_HINT })}
-                                                            {scheduleCell({ val:item.msd?.confirm, alert:confirmAlert, changes:changeOf('confirm'), label:'② MSD確認', br:'1px solid var(--border-table)', actual:item.msd?.confirmActualEnd, unset:unsetPhase?.key==='confirm', onNotify:notifyThis, onSetDate: canManageList ? ()=>openEdit(item,'confirm') : null, lockedHint: READONLY_LIST_HINT })}
-                                                            {scheduleCell({ val:item.msd?.end,     alert:msdAlert,  changes:changeOf('msd'),     label:'③ MSD開發', br:'1px solid var(--border-table)', actual:item.msd?.actualEnd,        unset:unsetPhase?.key==='msd',     onNotify:notifyThis, onSetDate: canManageList ? ()=>openEdit(item,'msd') : null, lockedHint: READONLY_LIST_HINT })}
+                                                            {scheduleCell({ val:item.spec?.end, alert:specAlert, changes:changeOf('spec'),    label:'① EMS規格確認', br:'1px solid var(--border-col)', actual:item.spec?.actualEnd,        unset:unsetPhase?.key==='spec',    onNotify:notifyThis, onSetDate: canManageList ? ()=>openEdit(item,'spec') : null, lockedHint: READONLY_LIST_HINT })}
+                                                            {scheduleCell({ val:item.msd?.confirm, alert:confirmAlert, changes:changeOf('confirm'), label:'② MSD確認', br:'1px solid var(--border-col)', actual:item.msd?.confirmActualEnd, unset:unsetPhase?.key==='confirm', onNotify:notifyThis, onSetDate: canManageList ? ()=>openEdit(item,'confirm') : null, lockedHint: READONLY_LIST_HINT })}
+                                                            {scheduleCell({ val:item.msd?.end,     alert:msdAlert,  changes:changeOf('msd'),     label:'③ MSD開發', br:'1px solid var(--border-col)', actual:item.msd?.actualEnd,        unset:unsetPhase?.key==='msd',     onNotify:notifyThis, onSetDate: canManageList ? ()=>openEdit(item,'msd') : null, lockedHint: READONLY_LIST_HINT })}
                                                             {scheduleCell({ val:item.uat?.end,     alert:uatAlert,  changes:changeOf('uat'),     label:'④ EMS驗收',   br:'2px solid var(--border-card)', actual:item.uat?.actualEnd,        unset:unsetPhase?.key==='uat',     onNotify:notifyThis, onSetDate: canManageList ? ()=>openEdit(item,'uat') : null, lockedHint: READONLY_LIST_HINT })}
                                                             </>)}
                                                             {/* 現況描述（CurrentStatus）。精簡模式的最後一欄。
@@ -10243,7 +10606,8 @@ const { useState, useMemo, Fragment, useEffect } = React;
 
                                                         {/* Expanded Detail */}
                                                         {isExp && (
-                                                            <tr style={{background:'var(--bg-table-expanded)'}}>
+                                                            <tr style={{background:'var(--bg-exp-panel)'}}>
+                                                                {/* ⚠️ 明細左邊不畫風險色條（第 194 批試過延伸色條，使用者：「出現紅色線會很奇怪」，深淺色都不要） */}
                                                                 <td colSpan={colCount} className="p-0">
                                                                     {(() => {
                                                                     // ─── 明細只放「這一列沒有的東西」（第 174 批，使用者：「此兩個版面是否重合性太高?」→ 選「都改」）───
@@ -10273,7 +10637,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                                             在此之前左邊「完整時程」寫 ① 2026-10-11 → 2026-10-11、中間又寫「原訂 10-13 → ✓ 完成 10-11」——
                                                                             同一件事講兩次；而且規格文件、需求補充、目前階段、建立者全塞在「時程」那張裡 */}
                                                                         {showTimelineCard && (
-                                                                        <div className="p-4 rounded-xl" style={{background:'var(--bg-detail-card)',border:'1px solid var(--bg-detail-border)'}}>
+                                                                        <div className="p-4 rounded-xl" style={{background:'var(--bg-exp-card)',border:'1px solid var(--bg-exp-card-border)'}}>
                                                                             <h4 className="text-xs font-bold mb-3 flex items-center gap-1.5" style={{color:'var(--text-primary)'}}>目前時程</h4>
                                                                             <div className="grid gap-x-3 gap-y-2.5 text-[12px] items-baseline" style={{gridTemplateColumns:'auto minmax(0,1fr)'}}>
                                                                                 {PHASE_KEYS.map(pk => {
@@ -10323,7 +10687,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                                             </div>
                                                                         </div>
                                                                         )}
-                                                                        <div className="p-4 rounded-xl" style={{background:'var(--bg-detail-card)',border:'1px solid var(--bg-detail-border)'}}>
+                                                                        <div className="p-4 rounded-xl" style={{background:'var(--bg-exp-card)',border:'1px solid var(--bg-exp-card-border)'}}>
                                                                             <h4 className="text-xs font-bold mb-3 flex items-center gap-1.5" style={{color:'var(--text-primary)'}}>
                                                                                 變更軌跡
                                                                                 {histCount > 0 && (
@@ -10373,6 +10737,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                                                         <span aria-hidden="true" style={{color:changeTypeStyle('通知寄送').color}}>✉</span>
                                                                                         <span className="font-bold" style={{color:'var(--text-secondary)'}}>
                                                                                             已通知 {notifyEntries.length} 次
+                                                                                            {notifyAutoN > 0 && <span className="font-normal">（自動 {notifyAutoN}、手動 ✉ {notifyEntries.length - notifyAutoN}）</span>}
                                                                                         </span>
                                                                                         {lastNotify && (
                                                                                             <span className="truncate">
@@ -10403,6 +10768,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                                                                         </span>
                                                                                                     )}
                                                                                                     <span>→ {notifyToOf(h) || '（收件者不明）'}</span>
+                                                                                                    {notifyAuto(h) && <span className="shrink-0" title="標記完成或退回重做之後系統自動寄的（不是按 ✉ 寄的）">自動</span>}
                                                                                                     <span className="shrink-0" style={{color:(PHASES[h.phase]||{}).color||'var(--text-muted)'}}>
                                                                                                         {timelineLabelOf(h.phase)}
                                                                                                     </span>
@@ -10468,7 +10834,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                                             }
                                                                         </div>
                                                                         {showContentCard && (
-                                                                        <div className="p-4 rounded-xl" style={{background:'var(--bg-detail-card)',border:'1px solid var(--bg-detail-border)'}}>
+                                                                        <div className="p-4 rounded-xl" style={{background:'var(--bg-exp-card)',border:'1px solid var(--bg-exp-card-border)'}}>
                                                                             <h4 className="text-xs font-bold mb-3 flex items-center gap-1.5" style={{color:'var(--text-primary)'}}>需求內容</h4>
                                                                             {/* 第 163 批：規格文件 → 需求補充 → 現況描述。短的在上、長的在下 ——
                                                                                 現況描述沒有字數上限，放最下面變長時只是卡片往下長，不會把另外兩項擠下去 */}
@@ -11246,7 +11612,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                                     setRollbackModal({ id:editingData.id, nid:editingData.nid, curStage:cur, target:cur-1, note:'' });
                                                                 }}
                                                                 className="mt-1.5 w-full px-2 py-1 rounded text-[11px] font-bold border transition-colors"
-                                                                style={{color:'#8b5cf6', background:'rgba(139,92,246,0.08)', borderColor:'rgba(139,92,246,0.3)'}}
+                                                                style={{color:'var(--c-violet)', background:'rgba(139,92,246,0.08)', borderColor:'rgba(139,92,246,0.3)'}}
                                                                 title="規格變了、驗收沒過等需要重做目前或前面的階段時使用（清掉目標階段（含）以後的日期、退回次數 +1）">
                                                             🔄 退回重做
                                                         </button>
@@ -11632,6 +11998,8 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                             {(m.extras || []).some(e => e.checked) &&
                                                 <>　一併記錄的階段<span className="font-bold">不會改變目前階段</span>，各多寫一筆稽核紀錄。</>}
                                         </p>
+                                        {/* 第 188 批（B 提示）：按下去之前就知道會不會自動寄信、寄給誰 */}
+                                        {autoNotifyLine(doneAutoPreview(m), 'handoff')}
                                     </div>
                                     <div className="p-3 flex justify-end gap-2 border-t" style={{borderColor:'var(--border-table)'}}>
                                         <button onClick={()=>setDoneModal(null)} disabled={isSubmitting}
@@ -12266,7 +12634,7 @@ ${cur}`
                                                                 className="px-2.5 py-1 rounded text-[11px] font-bold border transition-colors"
                                                                 title={isCur ? '這是目前的階段：只清掉它（含）以後的日期重新排程，目前階段不會動' : undefined}
                                                                 style={on
-                                                                    ? {background:'rgba(139,92,246,0.12)', color:'#8b5cf6', borderColor:'#8b5cf6'}
+                                                                    ? {background:'rgba(139,92,246,0.12)', color:'var(--c-violet)', borderColor:'var(--c-violet)'}
                                                                     : {background:'var(--bg-main)', color:'var(--text-tertiary)', borderColor:'var(--border-table)'}}>
                                                             {sc.label}{isCur && <span className="font-normal">（目前）</span>}
                                                         </button>
@@ -12307,6 +12675,8 @@ ${cur}`
                                                       onChange={e=>setRollbackModal({...rollbackModal, note:e.target.value})}
                                                       placeholder="例如: EMS 追加 Temp unhold 條件，Spec 需重新確認" />
                                         </div>
+                                        {/* 第 188 批（B 提示）：退回後會自動寄信請那一階段的負責人重新壓日期 */}
+                                        {rollbackModal.target && autoNotifyLine(autoNotifyPreview('rollback', requirementsData.find(r => r.id === rollbackModal.id), rollbackModal.target), 'rollback')}
                                     </div>
                                     <div className="p-3 flex justify-end gap-2 border-t" style={{borderColor:'var(--border-table)'}}>
                                         <button onClick={()=>setRollbackModal(null)} disabled={isSubmitting}
@@ -12315,7 +12685,7 @@ ${cur}`
                                         <button onClick={handleRollback} disabled={isSubmitting || isOverLimit(rollbackModal.note, NOTE_MAX)}
                                                 title={isOverLimit(rollbackModal.note, NOTE_MAX) ? overLimitMsg('退回說明', rollbackModal.note, NOTE_MAX) : undefined}
                                                 className="px-5 py-2 rounded-lg text-sm font-bold text-white shadow-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                                                style={{background:'#8b5cf6'}}>
+                                                style={{background:'var(--c-violet)'}}>
                                             {isSubmitting ? '退回中…' : '確認退回'}
                                         </button>
                                     </div>

@@ -477,6 +477,38 @@ Bootstrap("信件通知收件名單", @"
             CREATE UNIQUE INDEX UX_NotifyRecipients_Purpose_Email ON dbo.NotifyRecipients (Purpose, Email)
         END
         ");
+// 第 188 批：自動寄信（交棒、退回重做）的設定與寄送紀錄。正式的變更紀錄在 23_add_auto_notify.sql。
+// ⚠️ 自己一段（獨立 try）：失敗只影響自動寄信，不連累卡控與批次提醒。沒有設定列＝關閉。
+Bootstrap("自動寄信設定", @"
+        IF OBJECT_ID(N'dbo.NotifySettings', N'U') IS NULL
+        BEGIN
+            CREATE TABLE dbo.NotifySettings (
+                SettingKey NVARCHAR(50)  NOT NULL CONSTRAINT PK_NotifySettings PRIMARY KEY,
+                Value      NVARCHAR(400) NULL,
+                UpdatedBy  NVARCHAR(50)  NULL,
+                UpdatedAt  DATETIME2(0)  NOT NULL CONSTRAINT DF_NotifySettings_UpdatedAt DEFAULT (SYSDATETIME())
+            )
+        END
+        IF OBJECT_ID(N'dbo.NotifyLog', N'U') IS NULL
+        BEGIN
+            CREATE TABLE dbo.NotifyLog (
+                Id            INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_NotifyLog PRIMARY KEY,
+                SentAt        DATETIME2(0)   NOT NULL CONSTRAINT DF_NotifyLog_SentAt DEFAULT (SYSDATETIME()),
+                RequirementId INT            NULL,
+                NID           NVARCHAR(50)   NULL,
+                TriggerType   NVARCHAR(20)   NOT NULL,
+                Mode          NVARCHAR(10)   NOT NULL,
+                Phase         NVARCHAR(20)   NULL,
+                ToName        NVARCHAR(50)   NULL,
+                ToEmail       NVARCHAR(400)  NULL,
+                CcEmail       NVARCHAR(400)  NULL,
+                Result        NVARCHAR(20)   NOT NULL,
+                Detail        NVARCHAR(1000) NULL,
+                TriggeredBy   NVARCHAR(100)  NULL
+            )
+            CREATE INDEX IX_NotifyLog_SentAt ON dbo.NotifyLog (SentAt)
+        END
+        ");
 // 每一段都跑完（或都跳過）之後才收掉那條共用連線
 bootstrapConn?.Dispose();
 
@@ -3391,6 +3423,9 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
 
     tx.Commit();
 
+    // 第 188 批：自動寄信（交棒）。只在目前階段真的往前推時；補記不推、不寄。背景寄、不等
+    if (!backfill && newStage > curStageNum) QueueAutoNotify(id, "handoff", actor, actorSrc);
+
     return Results.Ok(new
     {
         // 一併記錄了哪幾個階段一定要講出來 —— 那幾筆是系統替使用者宣告的事實，
@@ -3584,6 +3619,9 @@ app.MapPost("/api/requirements/{id}/rollback", async (int id, RollbackRequest bo
     }
 
     tx.Commit();
+
+    // 第 188 批：自動寄信（退回重做）。背景寄、不等
+    QueueAutoNotify(id, "rollback", actor, actorSrc, body.note?.Trim() ?? "");
 
     return Results.Ok(new
     {
@@ -4458,10 +4496,13 @@ app.MapPost("/api/requirements/{id}/notify-unset", async (int id, NotifyRequest?
         lines.Add("現況描述：");
         lines.Add(cur.currentStatus!.Trim());
     }
-    if (mailAppUrl != "")
+    // 第 189 批（使用者看過示意圖）：連結直接開到收件者自己的「我的待辦」—— 收件者一定是負責人。
+    //    ⚠️ 只換這一行網址與下面 HTML 那一行的比對字，寄信本身一個字沒動
+    var todoUrl = AppLink(mailAppUrl, "view=mytodo");
+    if (todoUrl != "")
     {
         lines.Add("");
-        lines.Add($"需求管控表：{mailAppUrl}");
+        lines.Add($"到「我的待辦」處理：{todoUrl}");
     }
     lines.Add("");
     lines.Add("（本信由需求管控表系統自動發出，請勿直接回覆本信箱。）");
@@ -4474,8 +4515,8 @@ app.MapPost("/api/requirements/{id}/notify-unset", async (int id, NotifyRequest?
     // ⚠️ 每一行都要先 HtmlEncode：現況描述是使用者自由輸入的文字，直接塞進 HTML 會被當標記解讀。
     var mailHtml = "<div style=\"font-family:Segoe UI,Microsoft JhengHei,sans-serif;font-size:14px;line-height:1.6\">"
                  + string.Join("<br>", lines.Select(l =>
-                       mailAppUrl != "" && l.StartsWith("需求管控表：", StringComparison.Ordinal)
-                           ? $"需求管控表：<a href=\"{System.Net.WebUtility.HtmlEncode(mailAppUrl)}\">{System.Net.WebUtility.HtmlEncode(mailAppUrl)}</a>"
+                       todoUrl != "" && l.StartsWith("到「我的待辦」處理：", StringComparison.Ordinal)
+                           ? $"到「我的待辦」處理：<a href=\"{System.Net.WebUtility.HtmlEncode(todoUrl)}\">{System.Net.WebUtility.HtmlEncode(todoUrl)}</a>"
                            : System.Net.WebUtility.HtmlEncode(l)))
                  + "</div>";
 
@@ -4782,11 +4823,13 @@ app.MapPost("/api/notify-attention", async (NotifyAttentionRequest? body, HttpCo
             }
         }
         L("──────────────────────────────", "<span style=\"color:#999999\">──────────────────────────────</span>");
-        if (mailAppUrl != "")
+        // 第 189 批：收件者可能是群組信箱或主管（沒有「我的待辦」），所以開需求列表並篩好「需關注」—— 與信裡列的同一批
+        var attnUrl = AppLink(mailAppUrl, "due=attention");
+        if (attnUrl != "")
         {
             L("");
-            L($"需求管控表：{mailAppUrl}",
-              $"需求管控表：<a href=\"{System.Net.WebUtility.HtmlEncode(mailAppUrl)}\">{System.Net.WebUtility.HtmlEncode(mailAppUrl)}</a>");
+            L($"看全部需關注：{attnUrl}",
+              $"看全部需關注：<a href=\"{System.Net.WebUtility.HtmlEncode(attnUrl)}\">{System.Net.WebUtility.HtmlEncode(attnUrl)}</a>");
         }
         L("");
         L("（本信由需求管控表系統自動發出，請勿直接回覆本信箱。）", "<span style=\"color:#888888\">（本信由需求管控表系統自動發出，請勿直接回覆本信箱。）</span>");
@@ -4896,6 +4939,461 @@ var exportColumns = new (string Header, string Column)[]
 // ⚠️ 與 /api/assignees 同一批補上 try/catch（2026-08-23 / 第 25 批）。
 //    這一支是用 window.open 開的（前端 handleExport），沒有 try/catch 時使用者看到的是
 //    一個沒有訊息的 500 分頁 —— 完全判斷不出「是匯出失敗還是檔案下載到哪去了」。
+// ─── 自動寄信：交棒、退回重做（第 188 批，2026-10-13 使用者看過示意圖選的）───
+// 使用者：「照你建議的，先只留交棒+退回重做，要B提示」「不等，直接寄。也加B提示」。
+//   · 交棒＝/done 成功、目前階段往前推了、新的那一階段還沒壓日期 → 寄給那一階段的負責人，副本另一位
+//   · 退回重做＝/rollback 成功 → 被退回那一階段日期已清空 → 寄給那一階段的負責人，信裡附退回原因
+// ⚠️⚠️ 一律在交易 **Commit 之後**、丟到背景跑（QueueAutoNotify）：
+//    完成／退回不可以因為寄信失敗而失敗，也不可以讓按的人等郵件伺服器（最久 20 秒）。
+//    代價：App 剛好在寄的那幾秒被回收，那一封就沒了 —— 使用者接受（不做待寄表）。
+// ⚠️ 收件者、階段一律在背景**重新讀 DB 再算**（UnsetPhaseOf），不信任端點當下的值：
+//    幾毫秒內別人已經把日期壓上去，就不該再請他壓。
+// ⚠️ 不寄：模擬帳號、收件者就是按的本人（工號比對）、收件者已停用（IsActive=0，也不記錄）、
+//    補記／撤銷／匯入（那幾支根本不呼叫這裡）。
+// ⚠️ 試寄：所有自動信只寄給 AutoTestTo、沒有副本；不寫 Controltable_History（否則手動 ✉ 會以為
+//    「今天已寄過」）。試寄收件人沒設好 → 一封都不寄（fail-closed）、記一筆失敗。
+// ⚠️ 正式寄出寫 `通知寄送`，Note 與單筆 ✉「尚未壓定日期」那一種**同一個格式**（NOTIFY_TO_RE、
+//    「未確認送出」）—— phaseNotifiedEntry() 因此認得它，之後按 ✉ 會看到「今天已寄過一次」。
+//    尾巴多「；自動寄送（…）」，前端靠「自動寄送」四個字分自動／手動（改字兩邊一起改）。
+// ⚠️ 寄信本身沿用 SendNotifyMailAsync／SendViaDbMailAsync，一個字都沒改（受保護路徑）。
+// 信裡的連結（第 189 批）：Mail:AppUrl 後面接一段查詢字串，直接開到該去的畫面。
+// AppUrl 沒填 → 空字串（整行不印，與原本一樣）；已經帶 ? 就接 &；路徑沒有結尾斜線就補一個
+// （「…/Controltable?view=…」在子路徑部署下也能開，但補上斜線最不會被 IIS 轉址吃掉查詢字串）
+static string AppLink(string baseUrl, string query)
+{
+    var b = (baseUrl ?? "").Trim();
+    if (b == "") return "";
+    if (b.Contains('?')) return b + "&" + query;
+    return (b.EndsWith("/") ? b : b + "/") + "?" + query;
+}
+static string AutoTriggerText(string t) => t switch { "handoff" => "交棒", "rollback" => "退回重做", "sample" => "樣本", _ => t };
+
+static async Task<(string Mode, bool Handoff, bool Rollback, string TestTo)> ReadAutoNotifySettingsAsync(SqlConnection conn)
+{
+    var d = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    using (var cmd = new SqlCommand("SELECT SettingKey, Value FROM dbo.NotifySettings", conn))
+    using (var r = await cmd.ExecuteReaderAsync())
+        while (await r.ReadAsync()) d[r.GetString(0)] = r.IsDBNull(1) ? "" : r.GetString(1).Trim();
+    // 認不得的值一律當關閉 —— 寧可少寄，不可多寄
+    var mode = d.TryGetValue("AutoMode", out var m) ? m.ToLowerInvariant() : "off";
+    if (mode != "test" && mode != "on") mode = "off";
+    // 兩個開關沒有那一列＝開（預設勾），只有明寫 false 才關
+    var handoff = !(d.TryGetValue("AutoHandoff", out var h) && h.Equals("false", StringComparison.OrdinalIgnoreCase));
+    var rollback = !(d.TryGetValue("AutoRollback", out var rb) && rb.Equals("false", StringComparison.OrdinalIgnoreCase));
+    return (mode, handoff, rollback, d.TryGetValue("AutoTestTo", out var t) ? t : "");
+}
+
+// 「知道了」那一刻的 NotifyLog MAX(Id)（第 189 批）。沒按過＝0（全部未寄出都算）
+static async Task<int> AutoFailAckIdAsync(SqlConnection conn)
+{
+    using var cmd = new SqlCommand("SELECT Value FROM dbo.NotifySettings WHERE SettingKey = N'AutoFailAckId'", conn);
+    var v = await cmd.ExecuteScalarAsync();
+    return v is string sv && int.TryParse(sv, out var n) ? n : 0;
+}
+
+// 指派人員的信箱、工號、是否在職。比對與 AssigneeEmailAsync 同一套（(DEPT, NAME) 兩邊 trim）。
+// ⚠️ 另寫一支、不改 AssigneeEmailAsync：那支在受保護的單筆 ✉ 路徑上
+static async Task<(bool Found, string Email, string Empo, bool Active)> AssigneeInfoAsync(SqlConnection conn, string dept, string name)
+{
+    using var cmd = new SqlCommand(@"
+        SELECT TOP 1 EMAIL, EMPO, IsActive FROM dbo.Assignee
+        WHERE DEPT = @Dept AND LTRIM(RTRIM(NAME)) = @Name
+        ORDER BY CASE WHEN EMAIL IS NULL OR LTRIM(RTRIM(EMAIL)) = N'' THEN 1 ELSE 0 END, IsActive DESC", conn);
+    cmd.Parameters.AddWithValue("@Dept", dept);
+    cmd.Parameters.AddWithValue("@Name", (name ?? "").Trim());
+    using var r = await cmd.ExecuteReaderAsync();
+    if (!await r.ReadAsync()) return (false, "", "", true);
+    return (true, r.IsDBNull(0) ? "" : r.GetString(0).Trim(), r.IsDBNull(1) ? "" : r.GetString(1).Trim(),
+            r.IsDBNull(2) || r.GetBoolean(2));
+}
+
+static async Task<Requirement?> ReadReqForMailAsync(SqlConnection conn, int id)
+{
+    using var cmd = new SqlCommand(@"
+        SELECT NID, Status, StageCode, MainCat, SubCat, EmsOwner, MsdOwner, CurrentStatus,
+               SpecStart, SpecEnd, SpecActualEnd,
+               MsdConfirm, MsdConfirmActualEnd, MsdStart, MsdEnd, MsdActualEnd,
+               UatStart, UatEnd, UatActualEnd
+        FROM dbo.Controltable WHERE Id = @Id AND IsDeleted = 0", conn);
+    cmd.Parameters.AddWithValue("@Id", id);
+    using var r = await cmd.ExecuteReaderAsync();
+    if (!await r.ReadAsync()) return null;
+    return new Requirement
+    {
+        Id = id,
+        nid = ReadString(r, "NID"), status = ReadString(r, "Status"), stageCode = ReadString(r, "StageCode"),
+        mainCat = ReadString(r, "MainCat"), subCat = ReadString(r, "SubCat"),
+        emsOwner = ReadString(r, "EmsOwner"), msdOwner = ReadString(r, "MsdOwner"),
+        currentStatus = ReadString(r, "CurrentStatus"),
+        spec = new Phase { start = ReadDate(r, "SpecStart"), end = ReadDate(r, "SpecEnd"), actualEnd = ReadDate(r, "SpecActualEnd") },
+        msd  = new MsdPhase {
+            confirm = ReadDate(r, "MsdConfirm"), confirmActualEnd = ReadDate(r, "MsdConfirmActualEnd"),
+            start = ReadDate(r, "MsdStart"), end = ReadDate(r, "MsdEnd"), actualEnd = ReadDate(r, "MsdActualEnd") },
+        uat  = new Phase { start = ReadDate(r, "UatStart"), end = ReadDate(r, "UatEnd"), actualEnd = ReadDate(r, "UatActualEnd") }
+    };
+}
+
+// 寄送紀錄（管理設定的「最近 5 封」）。⚠️ best-effort：寫不進去不可以讓任何東西失敗
+static async Task InsertNotifyLogAsync(SqlConnection conn, int? reqId, string? nid, string trigger, string mode,
+    string? phase, string? toName, string? toEmail, string? ccEmail, string result, string? detail, string? by)
+{
+    static object V(string? s, int max) => string.IsNullOrEmpty(s) ? DBNull.Value : (s.Length > max ? s[..max] : s);
+    try
+    {
+        using var cmd = new SqlCommand(@"
+            INSERT INTO dbo.NotifyLog (RequirementId, NID, TriggerType, Mode, Phase, ToName, ToEmail, CcEmail, Result, Detail, TriggeredBy)
+            VALUES (@R, @N, @T, @M, @P, @TN, @TE, @CE, @Res, @D, @By)", conn);
+        cmd.Parameters.AddWithValue("@R", reqId.HasValue ? reqId.Value : DBNull.Value);
+        cmd.Parameters.AddWithValue("@N", V(nid, 50));
+        cmd.Parameters.AddWithValue("@T", trigger);
+        cmd.Parameters.AddWithValue("@M", mode);
+        cmd.Parameters.AddWithValue("@P", V(phase, 20));
+        cmd.Parameters.AddWithValue("@TN", V(toName, 50));
+        cmd.Parameters.AddWithValue("@TE", V(toEmail, 400));
+        cmd.Parameters.AddWithValue("@CE", V(ccEmail, 400));
+        cmd.Parameters.AddWithValue("@Res", result);
+        cmd.Parameters.AddWithValue("@D", V(detail, 1000));
+        cmd.Parameters.AddWithValue("@By", V(by, 100));
+        await cmd.ExecuteNonQueryAsync();
+    }
+    catch (Exception ex) { AppDiag.Error("auto-notify", "寄送紀錄寫不進 dbo.NotifyLog（23_add_auto_notify.sql 跑了嗎？）", ex, by, reqId); }
+}
+
+// 組信。內容版型與單筆 ✉ 那封一樣（表格、現況描述、連結、落款），只換主旨與開頭幾句。
+// ⚠️ 刻意另寫、不抽 /notify-unset 的組信：那支是受保護路徑，未經指示不動
+static (string Subject, string Text, string Html) ComposeAutoMail(Requirement cur, string trigger, string phaseLabel, string side,
+    string toName, string prevLabel, string reason, string banner, string tag, string appUrl)
+{
+    var who = string.Join(" / ", new[] { cur.nid == "" ? null : $"NID {cur.nid}", cur.mainCat, cur.subCat }
+                                 .Where(s => !string.IsNullOrWhiteSpace(s)));
+    var stageName = SubjectStageName(phaseLabel);
+    var subject = "[需求管控表] " + (tag == "" ? "" : $"[{tag}] ")
+                + (trigger == "rollback" ? $"退回重做，請重新壓定「{stageName}」日期：{who}"
+                                         : $"請壓定「{stageName}」日期：{who}");
+    var lines = new List<string>();
+    if (banner != "") { lines.Add(banner); lines.Add(""); }
+    lines.Add($"{toName} 您好：");
+    lines.Add("");
+    if (trigger == "rollback")
+    {
+        lines.Add($"需求「{who}」已退回重做至「{phaseLabel}」，這個階段（含之後）的日期已經清空。");
+        lines.Add("請進入需求管控表重新壓定日期。");
+        if (!string.IsNullOrWhiteSpace(reason)) lines.Add($"退回原因：{reason.Trim()}");
+    }
+    else
+    {
+        lines.Add($"需求「{who}」的「{prevLabel}」已經標記完成，現在進入「{phaseLabel}」階段，但這個階段還沒有壓定日期。");
+        lines.Add("請撥空進入需求管控表填寫，以利後續進度追蹤。");
+    }
+    lines.AddRange(new[]
+    {
+        "",
+        "──────────────────────────────",
+        $"NID        ：{(cur.nid == "" ? "（未填）" : cur.nid)}",
+        $"分類        ：{cur.mainCat} / {cur.subCat}",
+        $"目前階段：{StageText(cur.stageCode)}",
+        $"待壓定階段  ：{phaseLabel}（{side} 負責）",
+        $"EMS 負責人  ：{(string.IsNullOrWhiteSpace(cur.emsOwner) ? "（未指派）" : cur.emsOwner)}",
+        $"MSD 負責人  ：{(string.IsNullOrWhiteSpace(cur.msdOwner) ? "（未指派）" : cur.msdOwner)}",
+        "──────────────────────────────"
+    });
+    if (!string.IsNullOrWhiteSpace(cur.currentStatus)) { lines.Add(""); lines.Add("現況描述："); lines.Add(cur.currentStatus!.Trim()); }
+    // 第 189 批：與單筆 ✉ 同一行 —— 直接開到收件者自己的「我的待辦」
+    var todoUrl = AppLink(appUrl, "view=mytodo");
+    if (todoUrl != "") { lines.Add(""); lines.Add($"到「我的待辦」處理：{todoUrl}"); }
+    lines.Add("");
+    lines.Add("（本信由需求管控表系統自動發出，請勿直接回覆本信箱。）");
+    var text = string.Join("\r\n", lines);
+    // ⚠️ 每一行先 HtmlEncode（現況描述、退回原因是使用者打的字），只把網址包 <a>
+    var html = "<div style=\"font-family:Segoe UI,Microsoft JhengHei,sans-serif;font-size:14px;line-height:1.6\">"
+             + string.Join("<br>", lines.Select(l =>
+                   todoUrl != "" && l.StartsWith("到「我的待辦」處理：", StringComparison.Ordinal)
+                       ? $"到「我的待辦」處理：<a href=\"{System.Net.WebUtility.HtmlEncode(todoUrl)}\">{System.Net.WebUtility.HtmlEncode(todoUrl)}</a>"
+                       : System.Net.WebUtility.HtmlEncode(l)))
+             + "</div>";
+    return (subject, text, html);
+}
+
+// 寄一封（兩種傳輸方式），回傳 (失敗原因, 未確認送出, 稽核用的「未確認」那一句)
+async Task<(string? Error, bool Uncertain, string UncertainNote)> SendAutoMailAsync(SqlConnection conn, string to, string cc, string subject, string text, string html)
+{
+    if (useDbMail)
+    {
+        var r = await SendViaDbMailAsync(conn, mailFrom, mailFromName, to, cc, "", subject, html);
+        return (r.Error, r.Queued, r.Queued ? $"；⚠ 已排入 Database Mail 佇列（mailitem_id={r.MailItemId}）但未確認送出" : "");
+    }
+    var s = await SendNotifyMailAsync(mailFrom, mailFromName, to, cc, "", subject, text, html);
+    return (s.Error, s.Uncertain, s.Uncertain ? $"；⚠ SMTP 對話在 {mailTimeout / 1000} 秒內未完成，未確認送出" : "");
+}
+
+async Task RunAutoNotifyAsync(int id, string trigger, string? actor, string actorSrc, string reason)
+{
+    using var conn = new SqlConnection(connectionString);
+    await conn.OpenAsync();
+    var s = await ReadAutoNotifySettingsAsync(conn);
+    if (s.Mode == "off") return;
+    if (trigger == "handoff" ? !s.Handoff : !s.Rollback) return;
+
+    var cur = await ReadReqForMailAsync(conn, id);
+    if (cur == null) return;
+    var target = UnsetPhaseOf(cur);
+    if (target == null) return;              // 下一階段已經有日期、或結案 → 沒有要請誰壓日期
+    var (phaseKey, phaseLabel, side) = target.Value;
+    var stageNum = int.TryParse(NormStage(cur.stageCode), out var sn) ? sn : 0;
+    var prevLabel = stageNum >= 2 ? StageDatesOf(stageNum - 1).Label : "";
+
+    var toName = ((side == "MSD" ? cur.msdOwner : cur.emsOwner) ?? "").Trim();
+    var ccDept = side == "MSD" ? "EMS" : "MSD";
+    var ccName = ((side == "MSD" ? cur.emsOwner : cur.msdOwner) ?? "").Trim();
+    Task Fail(string detail) => InsertNotifyLogAsync(conn, id, cur.nid, trigger, s.Mode, phaseKey, toName, "", "", "failed", detail, actor);
+
+    if (toName == "") { await Fail($"「{phaseLabel}」的負責人（{side}）還沒指派，不知道要寄給誰"); return; }
+    var to = await AssigneeInfoAsync(conn, side, toName);
+    if (to.Found && !to.Active) return;      // 已停用（離職／轉調）→ 不寄也不記（使用者 10/09 定的）
+    // 收件者就是按的本人 → 不寄（③ 開發通常就是做完 ② 的同一位 MSD）
+    if (actor != null && to.Empo != "" && StripDomain(to.Empo, authStripPrefix).Equals(actor, StringComparison.OrdinalIgnoreCase)) return;
+    // 「名字對不上」與「沒填信箱」要分開講：一個是去改負責人欄位、一個是去 SSMS 補信箱
+    if (!to.Found) { await Fail($"指派人員主檔裡找不到「{toName}／{side}」（負責人欄位的名字對不上），不知道信箱"); return; }
+    if (to.Email == "") { await Fail($"指派人員主檔裡「{toName}／{side}」沒有填 EMAIL（請在 SSMS 的 dbo.Assignee 補上）"); return; }
+    if (!IsValidMailAddress(to.Email)) { await Fail($"指派人員主檔裡「{toName}／{side}」的 EMAIL 格式不正確：{to.Email}"); return; }
+
+    // 副本：另一位負責人。查不到、停用、格式壞、與收件者同一個信箱 → 沒有副本照寄
+    var ccEmail = "";
+    if (ccName != "")
+    {
+        var cc = await AssigneeInfoAsync(conn, ccDept, ccName);
+        if (cc.Found && cc.Active && IsValidMailAddress(cc.Email) && !cc.Email.Equals(to.Email, StringComparison.OrdinalIgnoreCase))
+            ccEmail = cc.Email;
+    }
+
+    if (!mailReady) { await Fail("郵件伺服器還沒設定（appsettings.json 的 Mail:Host）"); return; }
+    if (mailFrom == "" || !IsValidMailAddress(mailFrom)) { await Fail("寄件的系統信箱（appsettings.json 的 Mail:From）沒設定或格式不正確"); return; }
+
+    var test = s.Mode == "test";
+    if (test && (s.TestTo == "" || !IsValidMailAddress(s.TestTo)))
+    { await Fail("試寄收件人還沒設定或格式不正確，這一封沒有寄出（試寄期間不會寄給負責人）"); return; }
+    var origin = $"{toName} <{to.Email}>" + (ccEmail != "" ? $"，副本 {ccName} <{ccEmail}>" : "");
+    var banner = test ? $"【試寄】這封原本要寄給 {origin}。試寄期間只寄到試寄收件人，負責人收不到。" : "";
+    var mail = ComposeAutoMail(cur, trigger, phaseLabel, side, toName, prevLabel, reason, banner, test ? "試寄" : "", mailAppUrl);
+    var realTo = test ? s.TestTo : to.Email;
+    var realCc = test ? "" : ccEmail;
+
+    var sent = await SendAutoMailAsync(conn, realTo, realCc, mail.Subject, mail.Text, mail.Html);
+    await InsertNotifyLogAsync(conn, id, cur.nid, trigger, s.Mode, phaseKey, toName, realTo, realCc,
+        sent.Error != null ? "failed" : sent.Uncertain ? "uncertain" : "sent",
+        sent.Error != null ? "寄信失敗：" + sent.Error : test ? "試寄，原本要寄給 " + origin : null, actor);
+    if (sent.Error != null || test) return;
+
+    // 正式寄出 → 變更軌跡留一列 `通知寄送`（格式見本段開頭）。寫失敗不重寄（信已經出去了）
+    var note = $"通知「{phaseLabel}」尚未壓定日期 → 收件者 {toName} <{to.Email}>"
+             + (ccEmail != "" ? $"，副本 {ccName} <{ccEmail}>" : "")
+             + $"；寄件者 {mailFromName} <{mailFrom}>（系統信箱）"
+             + sent.UncertainNote
+             + (trigger == "rollback" ? "；自動寄送（退回重做後）" : "；自動寄送（標記完成後）");
+    var empty = ((string?)null, (string?)null, (string?)null);
+    try { await InsertHistoryAsync(conn, id, cur.nid, phaseKey, "通知寄送", null, note, actor, actorSrc, empty, empty); }
+    catch (Exception ex) { AppDiag.Error("auto-notify", "自動信已寄出，但變更軌跡沒寫進去", ex, actor, id); }
+}
+
+// 端點 Commit 之後呼叫。⚠️ 不 await、不丟例外：回應不等寄信（使用者選的「不等，直接寄」）
+void QueueAutoNotify(int id, string trigger, string? actor, string actorSrc, string reason = "")
+{
+    if (actorSrc == "simulated") return;     // 模擬帳號是測試主機上看畫面用的，不寄給真的同事
+    _ = Task.Run(async () =>
+    {
+        try { await RunAutoNotifyAsync(id, trigger, actor, actorSrc, reason); }
+        catch (Exception ex) { AppDiag.Error("auto-notify", $"自動寄信（{AutoTriggerText(trigger)}）失敗", ex, actor, id); }
+    });
+}
+
+// 前端「標記完成／退回重做」視窗那一行提示要知道模式與開關。匿名（與 /api/history 同等級）。
+// 試寄收件人也回傳：視窗要寫「試寄中：信會寄到 ○○」
+app.MapGet("/api/auto-notify/status", async () =>
+{
+    try
+    {
+        using var conn = new SqlConnection(connectionString);
+        await conn.OpenAsync();
+        var s = await ReadAutoNotifySettingsAsync(conn);
+        return Results.Ok(new { mode = s.Mode, handoff = s.Handoff, rollback = s.Rollback, testTo = s.TestTo });
+    }
+    catch (Exception ex)
+    {
+        // 讀不到就當關閉 —— 那一行提示寧可不出現，也不可以講「會寄」而其實不會
+        app.Logger.LogError(ex, "auto-notify status 讀取失敗");
+        return Results.Ok(new { mode = "off", handoff = false, rollback = false, testTo = "", error = true });
+    }
+});
+
+app.MapGet("/api/auto-notify", async (HttpContext ctx) =>
+{
+    var me = WindowsEmpId(ctx);
+    if (!await IsAccessAdminAsync(me))
+        return Results.Json(new { message = "只有管理者可以查看自動寄信設定" }, statusCode: 403);
+    try
+    {
+        using var conn = new SqlConnection(connectionString);
+        await conn.OpenAsync();
+        var s = await ReadAutoNotifySettingsAsync(conn);
+        async Task<List<object>> Rows(string sql, int? ackId = null)
+        {
+            var list = new List<object>();
+            using var cmd = new SqlCommand(sql, conn);
+            if (ackId != null) cmd.Parameters.AddWithValue("@Ack", ackId.Value);
+            using var r = await cmd.ExecuteReaderAsync();
+            while (await r.ReadAsync())
+                list.Add(new
+                {
+                    at = r.GetDateTime(0).ToString("yyyy-MM-dd HH:mm"),
+                    nid = r.IsDBNull(1) ? "" : r.GetString(1),
+                    trigger = r.GetString(2), triggerText = AutoTriggerText(r.GetString(2)),
+                    mode = r.GetString(3),
+                    toName = r.IsDBNull(4) ? "" : r.GetString(4),
+                    toEmail = r.IsDBNull(5) ? "" : r.GetString(5),
+                    result = r.GetString(6),
+                    detail = r.IsDBNull(7) ? "" : r.GetString(7)
+                });
+            return list;
+        }
+        const string cols = "SELECT {0} SentAt, NID, TriggerType, Mode, ToName, ToEmail, Result, Detail FROM dbo.NotifyLog";
+        var recent = await Rows(string.Format(cols, "TOP 5") + " ORDER BY Id DESC");
+        // ─── 沒寄出的提醒（第 189 批）───
+        // 「知道了」存的是按下去那一刻 NotifyLog 的 MAX(Id)（AutoFailAckId）—— 用 Id 不用時間，
+        // 網站主機與 DB 主機的時鐘對不上也不會漏算或重算。樣本不算（管理者自己按的，當場就看到結果）。
+        var ackId = await AutoFailAckIdAsync(conn);
+        var failWhere = " WHERE Result = N'failed' AND TriggerType <> N'sample' AND Id > @Ack";
+        int failCount;
+        using (var c = new SqlCommand("SELECT COUNT(*) FROM dbo.NotifyLog" + failWhere, conn))
+        {
+            c.Parameters.AddWithValue("@Ack", ackId);
+            failCount = (int)(await c.ExecuteScalarAsync() ?? 0);
+        }
+        var failures = failCount == 0 ? new List<object>()
+            : await Rows(string.Format(cols, "TOP 10") + failWhere + " ORDER BY Id DESC", ackId);
+        return Results.Ok(new
+        {
+            mode = s.Mode, handoff = s.Handoff, rollback = s.Rollback, testTo = s.TestTo,
+            from = mailFrom, mailReady, fromOk = mailFrom != "" && IsValidMailAddress(mailFrom),
+            recent, failCount, failures
+        });
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(ex, "auto-notify 讀取失敗");
+        return ServerError("讀取自動寄信設定失敗：" + ex.Message
+            + "（若訊息是 Invalid object name 'dbo.NotifySettings'／'dbo.NotifyLog'，代表 23_add_auto_notify.sql 還沒執行、啟動時也沒建成功）");
+    }
+}).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
+
+// 改設定：只送要改的那幾項（每一項直接存，沒有儲存鈕 —— 與批次提醒名單同一種手感）
+app.MapPut("/api/auto-notify", async (HttpContext ctx, AutoNotifyRequest body) =>
+{
+    if (IsCrossSiteRequest(ctx)) return Results.Json(new { message = "拒絕跨站請求" }, statusCode: 403);
+    var me = WindowsEmpId(ctx);
+    if (!await IsAccessAdminAsync(me))
+        return Results.Json(new { message = "只有管理者可以修改自動寄信設定" }, statusCode: 403);
+    var mode = body?.mode?.Trim().ToLowerInvariant();
+    if (mode != null && mode != "off" && mode != "test" && mode != "on")
+        return Results.BadRequest(new { message = "模式只能是關閉、試寄或開啟" });
+    var testTo = body?.testTo?.Trim();
+    if (testTo != null && testTo.Length > 200)
+        return Results.BadRequest(new { message = $"試寄收件人信箱太長（上限 200 字，目前 {testTo.Length} 字）" });
+    if (testTo != null && testTo != "" && !IsValidMailAddress(testTo))
+        return Results.BadRequest(new { message = $"試寄收件人信箱格式不正確：{testTo}（只能填一個信箱）" });
+    try
+    {
+        using var conn = new SqlConnection(connectionString);
+        await conn.OpenAsync();
+        var cur = await ReadAutoNotifySettingsAsync(conn);
+        var effTestTo = testTo ?? cur.TestTo;
+        // 試寄一定要有地方寄 —— 否則切到試寄之後每一封都會記成失敗，而沒有人知道為什麼
+        if (mode == "test" && (effTestTo == "" || !IsValidMailAddress(effTestTo)))
+            return Results.BadRequest(new { message = "請先填好試寄收件人，再切到試寄" });
+        if (testTo == "" && cur.Mode == "test" && mode == null)
+            return Results.BadRequest(new { message = "試寄中不能清空試寄收件人，請先切到關閉或開啟" });
+        var sets = new List<(string Key, string Val)>();
+        if (mode != null) sets.Add(("AutoMode", mode));
+        if (body?.handoff != null) sets.Add(("AutoHandoff", body.handoff.Value ? "true" : "false"));
+        if (body?.rollback != null) sets.Add(("AutoRollback", body.rollback.Value ? "true" : "false"));
+        if (testTo != null) sets.Add(("AutoTestTo", testTo));
+        foreach (var (k, v) in sets)
+        {
+            using var cmd = new SqlCommand(@"
+                MERGE dbo.NotifySettings AS t USING (SELECT @K AS SettingKey) AS s ON t.SettingKey = s.SettingKey
+                WHEN MATCHED THEN UPDATE SET Value = @V, UpdatedBy = @By, UpdatedAt = SYSDATETIME()
+                WHEN NOT MATCHED THEN INSERT (SettingKey, Value, UpdatedBy) VALUES (@K, @V, @By);", conn);
+            cmd.Parameters.AddWithValue("@K", k);
+            cmd.Parameters.AddWithValue("@V", v);
+            cmd.Parameters.AddWithValue("@By", (object?)me ?? DBNull.Value);
+            await cmd.ExecuteNonQueryAsync();
+        }
+        // 「知道了」（第 189 批）：記下現在 NotifyLog 的 MAX(Id)，之前的未寄出不再亮紅點
+        if (body?.ackFailures == true)
+        {
+            using var cmd = new SqlCommand(@"
+                DECLARE @V NVARCHAR(20) = (SELECT CONVERT(NVARCHAR(20), ISNULL(MAX(Id), 0)) FROM dbo.NotifyLog);
+                MERGE dbo.NotifySettings AS t USING (SELECT N'AutoFailAckId' AS SettingKey) AS s ON t.SettingKey = s.SettingKey
+                WHEN MATCHED THEN UPDATE SET Value = @V, UpdatedBy = @By, UpdatedAt = SYSDATETIME()
+                WHEN NOT MATCHED THEN INSERT (SettingKey, Value, UpdatedBy) VALUES (N'AutoFailAckId', @V, @By);", conn);
+            cmd.Parameters.AddWithValue("@By", (object?)me ?? DBNull.Value);
+            await cmd.ExecuteNonQueryAsync();
+        }
+        var now = await ReadAutoNotifySettingsAsync(conn);
+        return Results.Ok(new { mode = now.Mode, handoff = now.Handoff, rollback = now.Rollback, testTo = now.TestTo });
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(ex, "auto-notify 儲存失敗");
+        return ServerError("儲存自動寄信設定失敗：" + ex.Message);
+    }
+}).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
+
+// 寄一封樣本到試寄收件人（不必真的去完成一筆需求就能看到信長什麼樣子）。
+// ⚠️ 資料是假的（寫明「樣本」），不讀任何一筆需求、不寫變更軌跡；等寄完才回（管理者自己按的，要看結果）
+app.MapPost("/api/auto-notify/sample", async (HttpContext ctx) =>
+{
+    if (IsCrossSiteRequest(ctx)) return Results.Json(new { message = "拒絕跨站請求" }, statusCode: 403);
+    var me = WindowsEmpId(ctx);
+    if (!await IsAccessAdminAsync(me))
+        return Results.Json(new { message = "只有管理者可以寄樣本" }, statusCode: 403);
+    if (!mailReady)
+        return Results.BadRequest(new { message = "尚未設定郵件伺服器，無法寄出。\n\n請在 appsettings.json 的 Mail 區塊填入 Host 後重新啟動服務。" });
+    if (mailFrom == "" || !IsValidMailAddress(mailFrom))
+        return Results.BadRequest(new { message = "寄件的系統信箱（appsettings.json 的 Mail:From）沒設定或格式不正確，無法寄出。" });
+    try
+    {
+        using var conn = new SqlConnection(connectionString);
+        await conn.OpenAsync();
+        var s = await ReadAutoNotifySettingsAsync(conn);
+        if (s.TestTo == "" || !IsValidMailAddress(s.TestTo))
+            return Results.BadRequest(new { message = "請先填好試寄收件人，樣本會寄到那裡" });
+        var fake = new Requirement
+        {
+            nid = "0000", mainCat = "類型分類", subCat = "子分類（樣本）", stageCode = "2",
+            emsOwner = "EMS 負責人", msdOwner = "MSD 負責人", currentStatus = "（這是樣本信，資料是假的）"
+        };
+        var mail = ComposeAutoMail(fake, "handoff", StageDatesOf(2).Label, "MSD", "MSD 負責人", StageDatesOf(1).Label, "",
+                                   "【樣本】這是自動寄信「交棒」那一種的樣子，資料是假的。退回重做那一種只差主旨與開頭兩句（多一行退回原因）。",
+                                   "樣本", mailAppUrl);
+        var sent = await SendAutoMailAsync(conn, s.TestTo, "", mail.Subject, mail.Text, mail.Html);
+        await InsertNotifyLogAsync(conn, null, null, "sample", s.Mode == "off" ? "test" : s.Mode, null, "（樣本）", s.TestTo, "",
+            sent.Error != null ? "failed" : sent.Uncertain ? "uncertain" : "sent",
+            sent.Error != null ? "寄信失敗：" + sent.Error : null, me);
+        if (sent.Error != null)
+            return Results.Json(new { message = "樣本寄不出去：" + sent.Error }, statusCode: 502);
+        return Results.Ok(new
+        {
+            uncertain = sent.Uncertain,
+            message = sent.Uncertain ? $"樣本已交給郵件系統，但還沒確認送出（{s.TestTo}）" : $"樣本已寄到 {s.TestTo}"
+        });
+    }
+    catch (Exception ex)
+    {
+        app.Logger.LogError(ex, "auto-notify 樣本寄送失敗");
+        return ServerError("寄樣本失敗：" + ex.Message);
+    }
+}).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
+
 app.MapGet("/api/export", async () =>
 {
     try
@@ -5976,6 +6474,15 @@ public class NotifyAttentionRequest
     public int[]? ids { get; set; }
 }
 // 信件通知收件名單（第 185 批，dbo.NotifyRecipients）
+// 自動寄信設定（第 188 批）。每一項都可不帶＝不改
+public class AutoNotifyRequest
+{
+    public string? mode { get; set; }
+    public bool? handoff { get; set; }
+    public bool? rollback { get; set; }
+    public string? testTo { get; set; }
+    public bool? ackFailures { get; set; }   // 第 189 批：「知道了」—— 之前的未寄出不再亮紅點
+}
 public class NotifyRecipientRequest
 {
     public string? kind { get; set; }

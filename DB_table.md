@@ -542,6 +542,35 @@
 
 不寫 `dbo.AccessLog`（那是瀏覽權限的稽核，混進去會出現在卡控的「最近異動」）。
 
+## dbo.NotifySettings / dbo.NotifyLog（自動寄信，第 188 批 / 2026-10-13，`23_add_auto_notify.sql`）
+
+標記完成（交棒）、退回重做之後自動寄信。🔐 管理設定 →「信件通知」→「⚡ 自動寄信」維護。⚠️ 同樣**不放進 `dbo.AppSettings`**（卡控總開關在裡面）。
+
+### dbo.NotifySettings（一個設定一列）
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| `SettingKey` | NVARCHAR(50) PK | `AutoMode`（off／test／on，**沒有這一列＝off**，認不得的值也當 off）、`AutoHandoff`／`AutoRollback`（true／false，沒有這一列＝true，只有明寫 false 才關）、`AutoTestTo`（試寄收件人）、`AutoFailAckId`（第 189 批：管理者按「知道了」那一刻 `NotifyLog` 的 MAX(Id)，紅點只算比它大的 failed；沒有＝0） |
+| `Value` | NVARCHAR(400) NULL | |
+| `UpdatedBy` / `UpdatedAt` | NVARCHAR(50) NULL / DATETIME2(0) | 誰改的（Windows 工號） |
+
+### dbo.NotifyLog（每一封自動信一列，含試寄、樣本、寄失敗）
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| `Id` | INT IDENTITY PK | |
+| `SentAt` | DATETIME2(0) | `IX_NotifyLog_SentAt` |
+| `RequirementId` / `NID` | INT NULL / NVARCHAR(50) NULL | 樣本是 NULL |
+| `TriggerType` | NVARCHAR(20) | `handoff`／`rollback`／`sample` |
+| `Mode` | NVARCHAR(10) | 寄的當下是 `test` 還是 `on` |
+| `Phase` / `ToName` | NVARCHAR(20) / NVARCHAR(50) | 請誰壓哪一階段 |
+| `ToEmail` / `CcEmail` | NVARCHAR(400) | **實際**寄到的信箱（試寄＝試寄收件人、沒有副本） |
+| `Result` | NVARCHAR(20) | `sent`／`uncertain`（未確認送出）／`failed` |
+| `Detail` | NVARCHAR(1000) NULL | 失敗原因；試寄時「原本要寄給 …」 |
+| `TriggeredBy` | NVARCHAR(100) NULL | 按完成／退回的人（工號） |
+
+⚠️ **不是稽核表**。正式寄出（Mode=on 且沒失敗）另外在 `dbo.Controltable_History` 寫 `通知寄送`；試寄與樣本不寫（否則單筆 ✉ 會以為今天已寄過）。收件者是本人、負責人停用、模擬帳號**不寄也不記**。寫不進這張表一律靜靜跳過（記 `AppDiag`）。
+
 ## dbo.AppLog（後端錯誤日誌，第 82 批 / 2026-09-25，`20_add_applog.sql`）
 
 | 欄位 | 型別 | 說明 |
@@ -617,6 +646,7 @@
 | `19_add_access_admins.sql` | 2026-09-21 | **已執行**（本機） | 瀏覽權限的管理者清單搬進 DB（第 75 批）：建立 `dbo.AccessAdmins`（`Empno` UNIQUE）、種入 `00002732` / `00041817` / `yu-tinglin`、`CK_AccessLog_Action` 擴充 `ADD_ADMIN` / `DELETE_ADMIN`。實際執行：表建立、種入 3 筆、CHECK 重建成功；重跑確認 idempotent（種入 0 筆、CHECK 走「已含，跳過」）。⚠️ 正式 DB 執行前可先把 `yu-tinglin` 那一列從 VALUES 拿掉（開發機本機帳號） |
 | `21_add_history_field_audit.sql` | 2026-09-28 | **已執行**（本機） | 非日期欄位的稽核（第 84 批）：`dbo.Controltable_History` 新增 `FieldKey NVARCHAR(50)` / `OldValue NVARCHAR(MAX)` / `NewValue NVARCHAR(MAX)`，三欄皆可為 NULL、不建索引。實際執行：三欄新增成功，另以 `sys.columns` 複驗（`max_length` 100 / −1 / −1）。⚠️ **純新增欄位，Program.cs 的啟動 bootstrap 補得到** —— 沒跑這支也不會讓 App 壞掉，但「欄位異動」那幾列會寫不進去（整筆 `PUT` 會失敗）。正式主機請執行。
 | `20_add_applog.sql` | 2026-09-25 | **已執行**（本機） | 後端錯誤日誌落地（第 82 批）：建立 `dbo.AppLog` ＋ `IX_AppLog_LoggedAt`。實際執行：表建立成功、重跑走「已存在，跳過」。⚠️ **刻意沒有啟動時 bootstrap**，而且沒跑這支也不影響任何功能（`AppDiag` 寫不進去一律靜靜跳過）。⚠️ 正式主機要跑它才查得到錯誤紀錄；連線帳號需要對這張表的 `INSERT` 權限 |
+| `23_add_auto_notify.sql` | 2026-10-13 | **已執行**（本機；表先由啟動 bootstrap 建好） | 自動寄信（第 188 批）：建立 `dbo.NotifySettings`（PK SettingKey）、`dbo.NotifyLog` ＋ `IX_NotifyLog_SentAt`。⚠️ 正式 DB：網站啟動時會自動建；手動跑要加 `-f 65001` |
 | `22_add_notify_recipients.sql` | 2026-10-12 | **已執行**（本機；表先由啟動 bootstrap 建好，腳本重跑走「已存在，略過」） | 信件通知固定收件名單（第 185 批）：建立 `dbo.NotifyRecipients` ＋ `UX_NotifyRecipients_Purpose_Email`。⚠️ 正式 DB：網站啟動時會自動建；要手動跑也可以 |
 | `15_add_assignee_email.sql` | 2026-08-31 | **已執行** | `dbo.Assignee` 新增 `EMAIL NVARCHAR(255) NULL`，並回填「玉婷／MSD」＝`Sariel_Lin@UMCG`。回填比對 `(DEPT, NAME)`（＝`UX_Assignee_Dept_Name` 的鍵，**不用 `Id`** —— IDENTITY 各環境不保證一致），且只在 `EMAIL IS NULL` 時才寫，重跑不會蓋掉人工改過的值。實際執行：欄位已新增、回填 **1 筆**（`Id 9`），13 筆中僅該筆有值。⚠️ 本檔含中文，`sqlcmd` 要加 **`-f 65001`**，否則 `N'玉婷'` 會被當 ANSI 讀進去、比對不到任何一列，而且**不報錯只回填 0 筆** |
 
