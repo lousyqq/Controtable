@@ -2924,11 +2924,11 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
     {
     // 目前的日期與狀態。稽核列要記「這個階段異動前後的值」，所以四階段的日期都要讀
     Requirement? cur = null;
-    string curStage = "", curStatus = "", curNotesLink = "";
+    string curStage = "", curStatus = "", curNotesLink = "", curMsdOwner = "";
     DateTime? plannedEnd = null;
     // ⚠️ 四個 *ActualEnd 也要讀（第 68 批）：PrevPhaseEndOf() 拿它判「前一階段實際結束在哪一天」
     using (var readCmd = new SqlCommand($@"
-        SELECT NID, Status, StageCode, NotesLink, SpecStart, SpecEnd, SpecActualEnd, MsdConfirm, MsdConfirmActualEnd,
+        SELECT NID, Status, StageCode, NotesLink, MsdOwner, SpecStart, SpecEnd, SpecActualEnd, MsdConfirm, MsdConfirmActualEnd,
                MsdStart, MsdEnd, MsdActualEnd, UatStart, UatEnd, UatActualEnd,
                {cols.EndCol} AS PlannedEnd
         FROM dbo.Controltable WHERE Id = @Id AND IsDeleted = 0", conn, tx))
@@ -2947,6 +2947,7 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
             };
             curStage = ReadString(r, "StageCode");
             curNotesLink = ReadString(r, "NotesLink") ?? "";
+            curMsdOwner = (ReadString(r, "MsdOwner") ?? "").Trim();
             curStatus = ReadString(r, "Status");
             int ord = r.GetOrdinal("PlannedEnd");
             if (!r.IsDBNull(ord)) plannedEnd = r.GetDateTime(ord);
@@ -3058,6 +3059,42 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
             });
         if (!IsLinkValue(specLinkFinal) && !await NoNotesLinkConfirmedAsync(conn, id, tx))
             autoNoLink = true;
+    }
+
+    // ─── ① 完成前一定要有 MSD 負責人（第 196 批，2026-10-15 使用者要求）───
+    // 使用者原話：「新增需求先不用強迫指定MSD負責人，但若是EMS負責人在第一階段…要標記完成時，
+    // 發現未指定MSD負責人，則先要請他先壓MSD負責人後，才允許完成」。
+    // ⚠️ 擋在**這一刻**（與 ① 的規格文件同一個作法）：① 完成＝輪到 MSD 確認，沒人接手球就掉在地上
+    //    （自動寄信「交棒」也不知道要寄給誰）。完成視窗裡有同一格下拉（鏡像），當場選、同一個交易寫進去。
+    // ⚠️ 只看 ① 自己被按完成；**事後補記不套**（記錄已經發生的事，第 14 批那條界線）；
+    //    一併記錄（alsoComplete）裡的 ① 不套 —— 那是按 ② 以後的人（多半是 MSD 自己）。
+    // ⚠️ 已經有 MSD 負責人時不看 body.msdOwner（這條路不負責換人，換人走編輯視窗）。
+    // ⚠️ 只收 dbo.Assignee 裡在職的 MSD（負責人下拉的唯一來源），姓名照主檔寫入
+    var msdOwnerIn = "";
+    if (phase == "spec" && !backfill && curMsdOwner == "")
+    {
+        var want = (body.msdOwner ?? "").Trim();
+        if (want == "")
+            return Results.BadRequest(new
+            {
+                message = $"「{cols.Label}」完成後就輪到 MSD 確認，但這筆需求還沒指定 MSD 負責人。\n\n"
+                        +"請先在完成視窗選好 MSD 負責人，再按「確認完成」。",
+                fields = new[] { "msdOwner" }
+            });
+        if (want.Length > 50)
+            return Results.BadRequest(new { message = $"MSD 負責人上限 50 字，目前 {want.Length} 字。", fields = new[] { "msdOwner" } });
+        using (var aCmd = new SqlCommand(
+            "SELECT TOP 1 LTRIM(RTRIM(NAME)) FROM dbo.Assignee WHERE DEPT = N'MSD' AND IsActive = 1 AND LTRIM(RTRIM(NAME)) = @N", conn, tx))
+        {
+            aCmd.Parameters.AddWithValue("@N", want);
+            msdOwnerIn = (await aCmd.ExecuteScalarAsync()) as string ?? "";
+        }
+        if (msdOwnerIn == "")
+            return Results.BadRequest(new
+            {
+                message = $"「{want}」不在指派人員名單（在職的 MSD）裡，請從下拉選單選一位。",
+                fields = new[] { "msdOwner" }
+            });
     }
 
     // ─── 前置階段的日期必須齊全（2026-08-23 / 第 22 批）───
@@ -3362,6 +3399,21 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
                                  null, actor, actorSrc, noneTriple, noneTriple, tx,
                                  "notesLink", (curNotesLink ?? "").Trim(), specLinkIn);
     }
+    // 第 196 批：① 完成時當場指定的 MSD 負責人 —— 同一個交易、補一筆 `欄位異動`（與上面的規格文件同一套）
+    if (msdOwnerIn != "")
+    {
+        using (var ownCmd = new SqlCommand(
+            "UPDATE dbo.Controltable SET MsdOwner = @O, UpdatedAt = SYSDATETIME() WHERE Id = @Id AND IsDeleted = 0", conn, tx))
+        {
+            ownCmd.Parameters.AddWithValue("@O", msdOwnerIn);
+            ownCmd.Parameters.AddWithValue("@Id", id);
+            await ownCmd.ExecuteNonQueryAsync();
+        }
+        var noneTriple = ((string?)null, (string?)null, (string?)null);
+        await InsertHistoryAsync(conn, id, cur.nid, "field", "欄位異動", null,
+                                 null, actor, actorSrc, noneTriple, noneTriple, tx,
+                                 "msdOwner", "", msdOwnerIn);
+    }
     // ─── 留空完成 ① → 「無連結確認」（第 115 批）───
     // ⚠️ 與 PUT 的 confirmNoNotesLink 寫的是**同一種列**（ChangeType／Phase 一字不差），
     //    NoNotesLinkConfirmedAsync() 與前端 noLinkConfirmOf() 因此不用改。說明欄多標「標記完成時留空」，
@@ -3424,7 +3476,8 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
     tx.Commit();
 
     // 第 188 批：自動寄信（交棒）。只在目前階段真的往前推時；補記不推、不寄。背景寄、不等
-    if (!backfill && newStage > curStageNum) QueueAutoNotify(id, "handoff", actor, actorSrc);
+    // 第 195 批：推到 ⑤ 就是結案 —— 沒有下一棒要壓日期，改寄「結案」那一種（開關 AutoClose，預設關）
+    if (!backfill && newStage > curStageNum) QueueAutoNotify(id, newStage >= 5 ? "close" : "handoff", actor, actorSrc);
 
     return Results.Ok(new
     {
@@ -3444,7 +3497,8 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
                       + "（已經有完成紀錄，或目前階段早就走過了），這一次沒有寫入"
                     : "")
                 // 第 115 批：留空自動記成「無 Notes Link」，成功訊息也要講（視窗上講過的事，結果要對得上）
-                + (autoNoLink ? "；規格文件記為「不另附」（之後貼上連結就會取代）" : ""),
+                + (autoNoLink ? "；規格文件記為「不另附」（之後貼上連結就會取代）" : "")
+                + (msdOwnerIn != "" ? $"；MSD 負責人指定為 {msdOwnerIn}" : ""),
         changeType = main.ChangeType,
         days = main.Days,
         actualEnd = main.CompletedStr,
@@ -4940,6 +4994,8 @@ var exportColumns = new (string Header, string Column)[]
 //    這一支是用 window.open 開的（前端 handleExport），沒有 try/catch 時使用者看到的是
 //    一個沒有訊息的 500 分頁 —— 完全判斷不出「是匯出失敗還是檔案下載到哪去了」。
 // ─── 自動寄信：交棒、退回重做（第 188 批，2026-10-13 使用者看過示意圖選的）───
+// 第 195 批（2026-10-15）加第三種「結案」：④ 完成推到 ⑤ → 收件者 MSD 負責人、副本 EMS 負責人，只是知會；
+// 開關 AutoClose **預設關**（另兩個預設開）。其餘規則（本人／停用／模擬不寄、試寄、稽核）同一套
 // 使用者：「照你建議的，先只留交棒+退回重做，要B提示」「不等，直接寄。也加B提示」。
 //   · 交棒＝/done 成功、目前階段往前推了、新的那一階段還沒壓日期 → 寄給那一階段的負責人，副本另一位
 //   · 退回重做＝/rollback 成功 → 被退回那一階段日期已清空 → 寄給那一階段的負責人，信裡附退回原因
@@ -4948,8 +5004,10 @@ var exportColumns = new (string Header, string Column)[]
 //    代價：App 剛好在寄的那幾秒被回收，那一封就沒了 —— 使用者接受（不做待寄表）。
 // ⚠️ 收件者、階段一律在背景**重新讀 DB 再算**（UnsetPhaseOf），不信任端點當下的值：
 //    幾毫秒內別人已經把日期壓上去，就不該再請他壓。
-// ⚠️ 不寄：模擬帳號、收件者就是按的本人（工號比對）、收件者已停用（IsActive=0，也不記錄）、
-//    補記／撤銷／匯入（那幾支根本不呼叫這裡）。
+// ⚠️ 不寄：模擬帳號、收件者已停用（IsActive=0，也不記錄）、補記／撤銷／匯入（那幾支根本不呼叫這裡）。
+// ⚠️⚠️ 第 197 批（2026-10-15 使用者）：**收件者就是按的本人照樣寄**（推翻第 188 批的「本人不寄」）——
+//    「每次通知都是會通知EMS跟MSD負責人，即使是本人點選完成，也是不影響原本的規則」。
+//    本人不寄的話副本那一位（另一邊的負責人）也一起收不到。三種（交棒／退回／結案）都一樣。
 // ⚠️ 試寄：所有自動信只寄給 AutoTestTo、沒有副本；不寫 Controltable_History（否則手動 ✉ 會以為
 //    「今天已寄過」）。試寄收件人沒設好 → 一封都不寄（fail-closed）、記一筆失敗。
 // ⚠️ 正式寄出寫 `通知寄送`，Note 與單筆 ✉「尚未壓定日期」那一種**同一個格式**（NOTIFY_TO_RE、
@@ -4966,9 +5024,9 @@ static string AppLink(string baseUrl, string query)
     if (b.Contains('?')) return b + "&" + query;
     return (b.EndsWith("/") ? b : b + "/") + "?" + query;
 }
-static string AutoTriggerText(string t) => t switch { "handoff" => "交棒", "rollback" => "退回重做", "sample" => "樣本", _ => t };
+static string AutoTriggerText(string t) => t switch { "handoff" => "交棒", "rollback" => "退回重做", "close" => "結案", "sample" => "樣本", _ => t };
 
-static async Task<(string Mode, bool Handoff, bool Rollback, string TestTo)> ReadAutoNotifySettingsAsync(SqlConnection conn)
+static async Task<(string Mode, bool Handoff, bool Rollback, bool Close, string TestTo)> ReadAutoNotifySettingsAsync(SqlConnection conn)
 {
     var d = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     using (var cmd = new SqlCommand("SELECT SettingKey, Value FROM dbo.NotifySettings", conn))
@@ -4980,7 +5038,10 @@ static async Task<(string Mode, bool Handoff, bool Rollback, string TestTo)> Rea
     // 兩個開關沒有那一列＝開（預設勾），只有明寫 false 才關
     var handoff = !(d.TryGetValue("AutoHandoff", out var h) && h.Equals("false", StringComparison.OrdinalIgnoreCase));
     var rollback = !(d.TryGetValue("AutoRollback", out var rb) && rb.Equals("false", StringComparison.OrdinalIgnoreCase));
-    return (mode, handoff, rollback, d.TryGetValue("AutoTestTo", out var t) ? t : "");
+    // ⚠️ 結案（第 195 批，使用者選的「預設關閉」）**方向相反**：沒有那一列＝關，只有明寫 true 才開 ——
+    //    總開關已經是「開啟」的主機一上線就會開始寄結案信，要管理者自己去勾
+    var close = d.TryGetValue("AutoClose", out var cl) && cl.Equals("true", StringComparison.OrdinalIgnoreCase);
+    return (mode, handoff, rollback, close, d.TryGetValue("AutoTestTo", out var t) ? t : "");
 }
 
 // 「知道了」那一刻的 NotifyLog MAX(Id)（第 189 批）。沒按過＝0（全部未寄出都算）
@@ -5067,14 +5128,22 @@ static (string Subject, string Text, string Html) ComposeAutoMail(Requirement cu
     var who = string.Join(" / ", new[] { cur.nid == "" ? null : $"NID {cur.nid}", cur.mainCat, cur.subCat }
                                  .Where(s => !string.IsNullOrWhiteSpace(s)));
     var stageName = SubjectStageName(phaseLabel);
+    var close = trigger == "close";
     var subject = "[需求管控表] " + (tag == "" ? "" : $"[{tag}] ")
-                + (trigger == "rollback" ? $"退回重做，請重新壓定「{stageName}」日期：{who}"
-                                         : $"請壓定「{stageName}」日期：{who}");
+                + (close ? $"需求已結案：{who}"
+                   : trigger == "rollback" ? $"退回重做，請重新壓定「{stageName}」日期：{who}"
+                                           : $"請壓定「{stageName}」日期：{who}");
     var lines = new List<string>();
     if (banner != "") { lines.Add(banner); lines.Add(""); }
     lines.Add($"{toName} 您好：");
     lines.Add("");
-    if (trigger == "rollback")
+    if (close)
+    {
+        // 第 195 批：結案只是知會，沒有要對方做的事
+        lines.Add($"需求「{who}」的「{prevLabel}」已經標記完成，這筆需求已結案。");
+        lines.Add("此信僅為知會，不需要再做任何處理。");
+    }
+    else if (trigger == "rollback")
     {
         lines.Add($"需求「{who}」已退回重做至「{phaseLabel}」，這個階段（含之後）的日期已經清空。");
         lines.Add("請進入需求管控表重新壓定日期。");
@@ -5085,30 +5154,29 @@ static (string Subject, string Text, string Html) ComposeAutoMail(Requirement cu
         lines.Add($"需求「{who}」的「{prevLabel}」已經標記完成，現在進入「{phaseLabel}」階段，但這個階段還沒有壓定日期。");
         lines.Add("請撥空進入需求管控表填寫，以利後續進度追蹤。");
     }
-    lines.AddRange(new[]
-    {
-        "",
-        "──────────────────────────────",
-        $"NID        ：{(cur.nid == "" ? "（未填）" : cur.nid)}",
-        $"分類        ：{cur.mainCat} / {cur.subCat}",
-        $"目前階段：{StageText(cur.stageCode)}",
-        $"待壓定階段  ：{phaseLabel}（{side} 負責）",
-        $"EMS 負責人  ：{(string.IsNullOrWhiteSpace(cur.emsOwner) ? "（未指派）" : cur.emsOwner)}",
-        $"MSD 負責人  ：{(string.IsNullOrWhiteSpace(cur.msdOwner) ? "（未指派）" : cur.msdOwner)}",
-        "──────────────────────────────"
-    });
+    lines.Add("");
+    lines.Add("──────────────────────────────");
+    lines.Add($"NID        ：{(cur.nid == "" ? "（未填）" : cur.nid)}");
+    lines.Add($"分類        ：{cur.mainCat} / {cur.subCat}");
+    lines.Add($"目前階段：{StageText(cur.stageCode)}");
+    if (!close) lines.Add($"待壓定階段  ：{phaseLabel}（{side} 負責）");   // 結案沒有要壓日期的階段
+    lines.Add($"EMS 負責人  ：{(string.IsNullOrWhiteSpace(cur.emsOwner) ? "（未指派）" : cur.emsOwner)}");
+    lines.Add($"MSD 負責人  ：{(string.IsNullOrWhiteSpace(cur.msdOwner) ? "（未指派）" : cur.msdOwner)}");
+    lines.Add("──────────────────────────────");
     if (!string.IsNullOrWhiteSpace(cur.currentStatus)) { lines.Add(""); lines.Add("現況描述："); lines.Add(cur.currentStatus!.Trim()); }
     // 第 189 批：與單筆 ✉ 同一行 —— 直接開到收件者自己的「我的待辦」
+    // 第 195 批：結案沒有要處理的事 → 「查看」（我的待辦有「已結案」那一區）。HTML 那一行用同一組開頭字比對
     var todoUrl = AppLink(appUrl, "view=mytodo");
-    if (todoUrl != "") { lines.Add(""); lines.Add($"到「我的待辦」處理：{todoUrl}"); }
+    var linkHead = close ? "到「我的待辦」查看：" : "到「我的待辦」處理：";
+    if (todoUrl != "") { lines.Add(""); lines.Add(linkHead + todoUrl); }
     lines.Add("");
     lines.Add("（本信由需求管控表系統自動發出，請勿直接回覆本信箱。）");
     var text = string.Join("\r\n", lines);
     // ⚠️ 每一行先 HtmlEncode（現況描述、退回原因是使用者打的字），只把網址包 <a>
     var html = "<div style=\"font-family:Segoe UI,Microsoft JhengHei,sans-serif;font-size:14px;line-height:1.6\">"
              + string.Join("<br>", lines.Select(l =>
-                   todoUrl != "" && l.StartsWith("到「我的待辦」處理：", StringComparison.Ordinal)
-                       ? $"到「我的待辦」處理：<a href=\"{System.Net.WebUtility.HtmlEncode(todoUrl)}\">{System.Net.WebUtility.HtmlEncode(todoUrl)}</a>"
+                   todoUrl != "" && l.StartsWith(linkHead, StringComparison.Ordinal)
+                       ? $"{linkHead}<a href=\"{System.Net.WebUtility.HtmlEncode(todoUrl)}\">{System.Net.WebUtility.HtmlEncode(todoUrl)}</a>"
                        : System.Net.WebUtility.HtmlEncode(l)))
              + "</div>";
     return (subject, text, html);
@@ -5132,13 +5200,25 @@ async Task RunAutoNotifyAsync(int id, string trigger, string? actor, string acto
     await conn.OpenAsync();
     var s = await ReadAutoNotifySettingsAsync(conn);
     if (s.Mode == "off") return;
-    if (trigger == "handoff" ? !s.Handoff : !s.Rollback) return;
+    var close = trigger == "close";
+    if (close ? !s.Close : trigger == "handoff" ? !s.Handoff : !s.Rollback) return;
 
     var cur = await ReadReqForMailAsync(conn, id);
     if (cur == null) return;
-    var target = UnsetPhaseOf(cur);
-    if (target == null) return;              // 下一階段已經有日期、或結案 → 沒有要請誰壓日期
-    var (phaseKey, phaseLabel, side) = target.Value;
+    string phaseKey, phaseLabel, side;
+    if (close)
+    {
+        // 第 195 批：結案通知 → 收件者 MSD 負責人、副本 EMS 負責人（使用者選的；按 ④ 完成的多半是 EMS 本人）。
+        // 背景重讀時已經不是 ⑤（幾毫秒內被撤銷）就不寄
+        if (NormStage(cur.stageCode) != "5") return;
+        (phaseKey, phaseLabel, side) = ("uat", StageText("5"), "MSD");
+    }
+    else
+    {
+        var target = UnsetPhaseOf(cur);
+        if (target == null) return;          // 下一階段已經有日期 → 沒有要請誰壓日期
+        (phaseKey, phaseLabel, side) = target.Value;
+    }
     var stageNum = int.TryParse(NormStage(cur.stageCode), out var sn) ? sn : 0;
     var prevLabel = stageNum >= 2 ? StageDatesOf(stageNum - 1).Label : "";
 
@@ -5147,11 +5227,10 @@ async Task RunAutoNotifyAsync(int id, string trigger, string? actor, string acto
     var ccName = ((side == "MSD" ? cur.emsOwner : cur.msdOwner) ?? "").Trim();
     Task Fail(string detail) => InsertNotifyLogAsync(conn, id, cur.nid, trigger, s.Mode, phaseKey, toName, "", "", "failed", detail, actor);
 
-    if (toName == "") { await Fail($"「{phaseLabel}」的負責人（{side}）還沒指派，不知道要寄給誰"); return; }
+    if (toName == "") { await Fail(close ? $"MSD 負責人還沒指派，結案通知不知道要寄給誰" : $"「{phaseLabel}」的負責人（{side}）還沒指派，不知道要寄給誰"); return; }
     var to = await AssigneeInfoAsync(conn, side, toName);
     if (to.Found && !to.Active) return;      // 已停用（離職／轉調）→ 不寄也不記（使用者 10/09 定的）
-    // 收件者就是按的本人 → 不寄（③ 開發通常就是做完 ② 的同一位 MSD）
-    if (actor != null && to.Empo != "" && StripDomain(to.Empo, authStripPrefix).Equals(actor, StringComparison.OrdinalIgnoreCase)) return;
+    // ⚠️ 第 197 批：收件者是按的本人也照寄（不可加回「本人不寄」，見本段開頭）
     // 「名字對不上」與「沒填信箱」要分開講：一個是去改負責人欄位、一個是去 SSMS 補信箱
     if (!to.Found) { await Fail($"指派人員主檔裡找不到「{toName}／{side}」（負責人欄位的名字對不上），不知道信箱"); return; }
     if (to.Email == "") { await Fail($"指派人員主檔裡「{toName}／{side}」沒有填 EMAIL（請在 SSMS 的 dbo.Assignee 補上）"); return; }
@@ -5185,11 +5264,14 @@ async Task RunAutoNotifyAsync(int id, string trigger, string? actor, string acto
     if (sent.Error != null || test) return;
 
     // 正式寄出 → 變更軌跡留一列 `通知寄送`（格式見本段開頭）。寫失敗不重寄（信已經出去了）
-    var note = $"通知「{phaseLabel}」尚未壓定日期 → 收件者 {toName} <{to.Email}>"
+    // 第 195 批：結案那一種換開頭句、尾巴「自動寄送（結案後）」—— 前端 phaseNotifiedEntry() 靠這幾個字排除它
+    //（它不是「請壓日期」的通知），改字兩邊一起改。收件者／寄件者的格式不變（NOTIFY_TO_RE、notifyToOf 照樣解析）
+    var note = (close ? $"通知需求已結案（「{prevLabel}」完成）" : $"通知「{phaseLabel}」尚未壓定日期")
+             + $" → 收件者 {toName} <{to.Email}>"
              + (ccEmail != "" ? $"，副本 {ccName} <{ccEmail}>" : "")
              + $"；寄件者 {mailFromName} <{mailFrom}>（系統信箱）"
              + sent.UncertainNote
-             + (trigger == "rollback" ? "；自動寄送（退回重做後）" : "；自動寄送（標記完成後）");
+             + (close ? "；自動寄送（結案後）" : trigger == "rollback" ? "；自動寄送（退回重做後）" : "；自動寄送（標記完成後）");
     var empty = ((string?)null, (string?)null, (string?)null);
     try { await InsertHistoryAsync(conn, id, cur.nid, phaseKey, "通知寄送", null, note, actor, actorSrc, empty, empty); }
     catch (Exception ex) { AppDiag.Error("auto-notify", "自動信已寄出，但變更軌跡沒寫進去", ex, actor, id); }
@@ -5215,13 +5297,13 @@ app.MapGet("/api/auto-notify/status", async () =>
         using var conn = new SqlConnection(connectionString);
         await conn.OpenAsync();
         var s = await ReadAutoNotifySettingsAsync(conn);
-        return Results.Ok(new { mode = s.Mode, handoff = s.Handoff, rollback = s.Rollback, testTo = s.TestTo });
+        return Results.Ok(new { mode = s.Mode, handoff = s.Handoff, rollback = s.Rollback, close = s.Close, testTo = s.TestTo });
     }
     catch (Exception ex)
     {
         // 讀不到就當關閉 —— 那一行提示寧可不出現，也不可以講「會寄」而其實不會
         app.Logger.LogError(ex, "auto-notify status 讀取失敗");
-        return Results.Ok(new { mode = "off", handoff = false, rollback = false, testTo = "", error = true });
+        return Results.Ok(new { mode = "off", handoff = false, rollback = false, close = false, testTo = "", error = true });
     }
 });
 
@@ -5272,7 +5354,7 @@ app.MapGet("/api/auto-notify", async (HttpContext ctx) =>
             : await Rows(string.Format(cols, "TOP 10") + failWhere + " ORDER BY Id DESC", ackId);
         return Results.Ok(new
         {
-            mode = s.Mode, handoff = s.Handoff, rollback = s.Rollback, testTo = s.TestTo,
+            mode = s.Mode, handoff = s.Handoff, rollback = s.Rollback, close = s.Close, testTo = s.TestTo,
             from = mailFrom, mailReady, fromOk = mailFrom != "" && IsValidMailAddress(mailFrom),
             recent, failCount, failures
         });
@@ -5315,6 +5397,7 @@ app.MapPut("/api/auto-notify", async (HttpContext ctx, AutoNotifyRequest body) =
         if (mode != null) sets.Add(("AutoMode", mode));
         if (body?.handoff != null) sets.Add(("AutoHandoff", body.handoff.Value ? "true" : "false"));
         if (body?.rollback != null) sets.Add(("AutoRollback", body.rollback.Value ? "true" : "false"));
+        if (body?.close != null) sets.Add(("AutoClose", body.close.Value ? "true" : "false"));
         if (testTo != null) sets.Add(("AutoTestTo", testTo));
         foreach (var (k, v) in sets)
         {
@@ -5339,7 +5422,7 @@ app.MapPut("/api/auto-notify", async (HttpContext ctx, AutoNotifyRequest body) =
             await cmd.ExecuteNonQueryAsync();
         }
         var now = await ReadAutoNotifySettingsAsync(conn);
-        return Results.Ok(new { mode = now.Mode, handoff = now.Handoff, rollback = now.Rollback, testTo = now.TestTo });
+        return Results.Ok(new { mode = now.Mode, handoff = now.Handoff, rollback = now.Rollback, close = now.Close, testTo = now.TestTo });
     }
     catch (Exception ex)
     {
@@ -5373,7 +5456,7 @@ app.MapPost("/api/auto-notify/sample", async (HttpContext ctx) =>
             emsOwner = "EMS 負責人", msdOwner = "MSD 負責人", currentStatus = "（這是樣本信，資料是假的）"
         };
         var mail = ComposeAutoMail(fake, "handoff", StageDatesOf(2).Label, "MSD", "MSD 負責人", StageDatesOf(1).Label, "",
-                                   "【樣本】這是自動寄信「交棒」那一種的樣子，資料是假的。退回重做那一種只差主旨與開頭兩句（多一行退回原因）。",
+                                   "【樣本】這是自動寄信「交棒」那一種的樣子，資料是假的。退回重做、結案那兩種只差主旨與開頭兩句（退回重做多一行退回原因）。",
                                    "樣本", mailAppUrl);
         var sent = await SendAutoMailAsync(conn, s.TestTo, "", mail.Subject, mail.Text, mail.Html);
         await InsertNotifyLogAsync(conn, null, null, "sample", s.Mode == "off" ? "test" : s.Mode, null, "（樣本）", s.TestTo, "",
@@ -6437,6 +6520,8 @@ public class DoneRequest
     // 稽核列說明後面固定接「（事後補記：StatusID 已在 X，不變）」—— /undo-done 靠這個標記判斷撤銷時 StatusID 該不該退。
     // ⚠️ 沒帶就是 false，curl／測試腳本行為不變。
     public bool backfill { get; set; }
+    // 第 196 批：① 完成時 MSD 負責人還沒指派 → 在完成視窗當場指定（必填）。已經有人時不看這個值
+    public string? msdOwner { get; set; }
     public string? actorEmpId { get; set; }
     public string? actorSource { get; set; }
 }
@@ -6480,6 +6565,7 @@ public class AutoNotifyRequest
     public string? mode { get; set; }
     public bool? handoff { get; set; }
     public bool? rollback { get; set; }
+    public bool? close { get; set; }         // 第 195 批：結案通知（預設關）
     public string? testTo { get; set; }
     public bool? ackFailures { get; set; }   // 第 189 批：「知道了」—— 之前的未寄出不再亮紅點
 }

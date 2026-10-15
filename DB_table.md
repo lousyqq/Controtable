@@ -550,7 +550,7 @@
 
 | 欄位 | 型別 | 說明 |
 |---|---|---|
-| `SettingKey` | NVARCHAR(50) PK | `AutoMode`（off／test／on，**沒有這一列＝off**，認不得的值也當 off）、`AutoHandoff`／`AutoRollback`（true／false，沒有這一列＝true，只有明寫 false 才關）、`AutoTestTo`（試寄收件人）、`AutoFailAckId`（第 189 批：管理者按「知道了」那一刻 `NotifyLog` 的 MAX(Id)，紅點只算比它大的 failed；沒有＝0） |
+| `SettingKey` | NVARCHAR(50) PK | `AutoMode`（off／test／on，**沒有這一列＝off**，認不得的值也當 off）、`AutoHandoff`／`AutoRollback`（true／false，沒有這一列＝true，只有明寫 false 才關）、`AutoClose`（第 195 批：結案通知，**方向相反**——沒有這一列＝false，只有明寫 true 才開；不需要 SQL 腳本）、`AutoTestTo`（試寄收件人）、`AutoFailAckId`（第 189 批：管理者按「知道了」那一刻 `NotifyLog` 的 MAX(Id)，紅點只算比它大的 failed；沒有＝0） |
 | `Value` | NVARCHAR(400) NULL | |
 | `UpdatedBy` / `UpdatedAt` | NVARCHAR(50) NULL / DATETIME2(0) | 誰改的（Windows 工號） |
 

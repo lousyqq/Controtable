@@ -1385,6 +1385,14 @@ const { useState, useMemo, Fragment, useEffect } = React;
 
         // onClick 有值時整張卡變成可點的入口（例如「需關注」→ 切到需求列表並套上篩選）。
         // 可點時多一條下底線提示，不用 hover 才知道能點
+        // ─── 統計報表每張卡的「時間口徑」膠囊（第 201 批，使用者看過示意圖選 1）───
+        // 這一頁同時有四種口徑（全部／現在／某個月／註冊年月區間），沒標出來時主管會拿兩張卡的數字互比。
+        // 只是標示，不可點；tip 講這張卡怎麼算
+        const ScopePill = ({ children, tip }) => (
+            <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full whitespace-nowrap cursor-help"
+                  style={{color:'var(--text-tertiary)', border:'1px solid var(--border-card)', background:'var(--bg-input)'}}
+                  title={tip}>{children}</span>
+        );
         const KpiCard = ({ label, value, sub, tone, onClick, hint }) => (
             <div className={`t-card px-4 py-3.5 ${onClick ? 'cursor-pointer transition-colors hover:bg-black/[0.02] dark:hover:bg-white/[0.03]' : ''}`}
                  onClick={onClick} title={onClick ? hint : undefined}
@@ -2032,22 +2040,21 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // unset 與 overdue 同一個紅（見 ALERT_STYLES.unset），只有 soon 是琥珀
             const clr = level === 'soon' ? 'var(--tone-warn)' : 'var(--tone-alert)';
             return (
-                <div className="flex items-center gap-3 px-3 py-2.5 cursor-pointer"
-                     onClick={onClick} title="檢視到期預警清單"
+                // 第 201 批：改成一行（分類 · 子分類 → 階段 · NID → 右邊狀態＋日期），每一項約 36px。
+                // 原本兩行一項約 58px，拿掉卡片內捲軸後 5 項反而比原本還高。長名稱仍然換行完整顯示、不截斷
+                <div className="flex items-baseline gap-x-3 gap-y-0.5 px-3 py-2 cursor-pointer flex-wrap"
+                     onClick={onClick} title="到需求列表看這一筆"
                      style={{background:'var(--bg-detail-card)', borderLeft:`3px solid ${clr}`}}>
-                    <div className="flex-1 min-w-0">
-                        {/* 長的分類名一律換行完整顯示，不用 "..." 截斷 —— 主管看的是清單本身，
-                            看不到後半段就得再點開一次，資訊不該藏在 tooltip 裡 */}
-                        <div className="text-sm font-semibold leading-snug break-words" style={{color:'var(--text-primary)', overflowWrap:'anywhere'}}>{item.mainCat} <span style={{color:'var(--text-muted)'}}>·</span> {item.subCat}</div>
-                        <div className="text-[11px] break-words" style={{color:'var(--text-muted)', overflowWrap:'anywhere'}}>
+                    <div className="flex-1 min-w-0 text-[13px] leading-snug break-words" style={{overflowWrap:'anywhere'}}>
+                        <span className="font-semibold" style={{color:'var(--text-primary)'}}>{item.mainCat} <span style={{color:'var(--text-muted)'}}>·</span> {item.subCat}</span>
+                        <span className="text-[11px] ml-2 whitespace-nowrap" style={{color:'var(--text-muted)'}}>
                             <span style={{color:phase.color}}>{phase.label}</span>{item.nid ? ` · NID ${item.nid}` : ''}
-                        </div>
+                        </span>
                     </div>
-                    <div className="text-right flex-shrink-0">
-                        <div className="text-xs font-semibold tabular-nums" style={{color:clr}}>{dueLabel(diffDays)}</div>
-                        {/* 未壓的那幾筆沒有日期可印，留空會讓右欄看起來像掉了一行。
-                            ⚠️ 第 152 批：原本印「尚未壓定」，與正上方的「未壓日期」是同一件事的兩組字（第 37 批那條）→ 改印 —— */}
-                        <div className="text-[10px] tabular-nums" style={{color:'var(--text-muted)'}}>{date || '—'}</div>
+                    <div className="flex-shrink-0 ml-auto flex items-baseline gap-2 tabular-nums">
+                        <span className="text-xs font-semibold" style={{color:clr}}>{dueLabel(diffDays)}</span>
+                        {/* 未壓的那幾筆沒有日期可印，印 —（第 152 批） */}
+                        <span className="text-[11px] w-[74px] text-right" style={{color:'var(--text-muted)'}}>{date || '—'}</span>
                     </div>
                 </div>
             );
@@ -2500,7 +2507,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 <div id="ct-mail-auto" className="rounded-xl border overflow-hidden scroll-mt-2" style={{borderColor:'var(--border-table)'}}>
                     <div className="px-3.5 py-2.5 flex items-center gap-2 flex-wrap border-b" style={{borderColor:'var(--border-table)'}}>
                         <span className="text-[13px] font-bold">⚡ 自動寄信</span>
-                        <span className="text-[12px]" style={{color:'var(--text-muted)'}}>標記完成、退回重做之後自動寄信請負責人壓日期</span>
+                        <span className="text-[12px]" style={{color:'var(--text-muted)'}}>標記完成、退回重做、結案之後自動寄信給負責人</span>
                         <div className="ml-auto inline-flex rounded-lg border overflow-hidden text-[12px]" role="radiogroup" aria-label="自動寄信模式"
                              style={{borderColor:'var(--border-table)'}}>
                             {MODES.map(o => {
@@ -2547,7 +2554,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     {askOn ? (
                         <div className="px-3.5 py-2.5 flex items-center gap-2 flex-wrap border-b text-[12px]"
                              style={{borderColor:'var(--border-table)', background:'var(--tone-alert-bg)', color:'var(--tone-alert)'}}>
-                            <span className="font-bold">開啟之後，標記完成與退回重做會真的寄信給負責人。確定開啟？</span>
+                            <span className="font-bold">開啟之後，標記完成、退回重做（與有開的結案通知）會真的寄信給負責人。確定開啟？</span>
                             <span className="ml-auto flex gap-2">
                                 <button type="button" disabled={saving}
                                         onClick={async () => { if (await save({ mode:'on' }, '自動寄信已開啟')) setAskOn(false); }}
@@ -2606,10 +2613,12 @@ const { useState, useMemo, Fragment, useEffect } = React;
                         模式關閉時開關看起來仍是開的，容易以為正在寄 → 標題後面講明暫不生效 */}
                     <div className="px-3.5 pt-2 pb-1 text-[12px]" style={{color:'var(--text-muted)'}}>
                         什麼時候寄（副本給另一位負責人）
-                        {cfg.mode === 'off' && <span className="ml-2" style={{color:'var(--text-secondary)'}}>目前關閉，這兩個開關暫不生效</span>}
+                        {cfg.mode === 'off' && <span className="ml-2" style={{color:'var(--text-secondary)'}}>目前關閉，這些開關暫不生效</span>}
                     </div>
                     {toggleRow({ on: cfg.handoff, field: 'handoff', label: '交棒', desc: '標記完成、下一階段還沒壓日期 → 下一階段的負責人' })}
                     {toggleRow({ on: cfg.rollback, field: 'rollback', label: '退回重做', desc: '退回重做之後 → 被退回那一階段的負責人（附退回原因）' })}
+                    {/* 第 195 批：預設關（後端沒有那一列＝關），只是知會、沒有要對方做的事 */}
+                    {toggleRow({ on: !!cfg.close, field: 'close', label: '結案', desc: '④ 標記完成、需求結案 → MSD 負責人（知會，副本 EMS 負責人）' })}
                     <div className="px-3.5 pt-2 pb-1 flex items-center text-[12px]" style={{color:'var(--text-muted)'}}>
                         最近 5 封
                         <button type="button" onClick={load} disabled={saving} className="ml-2 underline disabled:opacity-40">重新整理</button>
@@ -3386,6 +3395,14 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // `{from:'', to:''}` ＝ 自動，取最近 YM_RANGE_DEFAULT 個「有資料的年月」
             // （不是日曆月 —— 資料本來就會斷月）
             const [ymRange, setYmRange] = useState({ from:'', to:'' });
+            // ─── 統計報表「本月到期達成」（第 198 批）───
+            // 自己的月份（YYYY-MM），**不跟上面的註冊年月區間連動**；預設本月、不寫 localStorage／網址。
+            // mdFilter＝點了哪一類（null＝全部），mdOtherOpen＝最下面「不是本月到期但被改了日期」展開沒
+            const [mdMonth, setMdMonth] = useState(() => TODAY_ISO.slice(0, 7));
+            const [mdFilter, setMdFilter] = useState(null);
+            const [mdOtherOpen, setMdOtherOpen] = useState(false);
+            // 第 199 批：「改到本月的」那一段（原訂在別的月、不計分）預設展開 —— 那些是這個月真的要交的
+            const [mdMovedOpen, setMdMovedOpen] = useState(true);
             // ─── 精簡模式（2026-08-19）───
             // 給高階主管看的顯示模式：把次要欄位收起來，只留「哪一筆、誰負責、卡在哪、什麼時候到期」。
             // ⚠️ 刻意只做「隱藏既有欄位」，不另外組一張新表 —— 第 12 批已經因為
@@ -4419,6 +4436,15 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     //    ⚠️ 有填就一定要是開得起來的連結（linkOkOpt）：打錯的字不可以靜靜被當成「無」。
                     needLink: phaseKey ==='spec' && !backfill && !noLinkConfirmOf(original.id),
                     notesLink: original.notesLink || '',
+                    // ─── ① 完成前一定要有 MSD 負責人（第 196 批，2026-10-15 使用者要求）───
+                    // 「新增需求先不用強迫指定MSD負責人，但…要標記完成時，發現未指定MSD負責人，則先要請他先壓MSD負責人後，才允許完成」
+                    // ⚠️ 與上面的規格文件同一個作法：欄位放在完成視窗裡、當場選、同一個 /done 送出（後端鏡像、同一個交易）。
+                    //    補記不套；已經有人時不出現（這裡不負責換人）。編輯視窗裡剛選了還沒存的那位先帶進來
+                    needOwner: phaseKey === 'spec' && !backfill && !(original.msdOwner || '').trim(),
+                    msdOwner: (() => {
+                        const v = inModal && editingData?.id === original.id ? (editingData.msdOwner || '').trim() : '';
+                        return v && assigneeList.some(a => a.dept === 'MSD' && a.isActive && (a.name || '').trim() === v) ? v : '';
+                    })(),
                     extras
                 };
                 // ─── 卡片上的完成日晶片（第 92 批 B 組）───
@@ -4437,6 +4463,8 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     // ⚠️ 第 115 批起 Notes Link 是選填，但卡片這條路**仍然一律退回完成視窗**：留空會自動記成
                     //    「無 Notes Link」，那件事要在視窗上講過一次才算數（第 60 批「不可以靜靜地做」）。
                     if (m.needLink && !isLinkVal(m.notesLink)) { setDoneModal(m); return; }
+                    // 第 196 批：還沒有 MSD 負責人 → 一律退回完成視窗（那裡才選得到人）
+                    if (m.needOwner) { setDoneModal(m); return; }
                     if (m.extras.length === 0 && isDateVal(qd) && qd >= mm.min && qd <= m.max) {
                         submitDone(m);
                         return;
@@ -4537,6 +4565,16 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     });
                     return;
                 }
+                // 第 196 批：① 完成前要先選 MSD 負責人（後端 /done 鏡像）
+                if (m.needOwner && !(m.msdOwner || '').trim()) {
+                    setAlertModal({
+                        title: '還沒指定 MSD 負責人，無法標記完成',
+                        message: `「${m.label}」完成後就輪到 MSD 確認，但這筆需求還沒指定 MSD 負責人。
+
+請在完成視窗的「MSD 負責人」選一位，再按「確認完成」。`
+                    });
+                    return;
+                }
                 if (!doneExtrasOk(m)) {
                     setAlertModal({
                         title: '一併記錄的完成日超出範圍',
@@ -4558,6 +4596,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                             //    才寫進主表，並在**同一個交易**裡補一筆 `欄位異動` 稽核列
                             body: JSON.stringify({ phase: m.phaseKey, completedAt: m.date,
                                                    ...(m.needLink ? { notesLink: (m.notesLink || '').trim() } : {}),
+                                                   ...(m.needOwner ? { msdOwner: (m.msdOwner || '').trim() } : {}),
                                                    // 事後補記（第 70 批）：後端據此跳過「已經走過」的 guard、不動目前階段
                                                    backfill: !!m.backfill,
                                                    alsoComplete: (m.extras || [])
@@ -6157,6 +6196,119 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 return { total, ongoing, done, totalChanges, maxLoad, stageYm, ems:sortW(emsW), msd:sortW(msdW), trend:Object.values(trend).sort((a,b)=>a.name.localeCompare(b.name)) };
             }, [requirementsData, historyEntries]);
 
+            // ─── 本月到期達成（第 198 批，2026-10-15 使用者看過兩張示意圖：「照你的建議放A，5個都照你的建議做」）───
+            // 問的是「這個月該交的，交得怎麼樣」：把**原訂**結束日（② 是確認日）落在這個月的每一個階段，分成五類、每個只歸一類：
+            //   rb   退回重做  —— 這一關被退回過（規格回退），原本的時程作廢
+            //   chg  改過日期  —— 有「日期異動」（與 ⚠N／時程異動 KPI 同一把尺：isDateChange）。
+            //                    ⚠️ 改過日期之後才如期完成的也算這一類（使用者同意的第 2 點：先往後改再準時，不算如期）
+            //   ok   如期完成  —— 沒改過、完成日 ≤ 原訂
+            //   late 延期完成  —— 沒改過、完成日 > 原訂
+            //   open 未完成    —— 還沒走完；目前的 End 已過＝逾期，否則還沒到期（不算進如期率的分母）
+            // ⚠️ 「原訂」＝這一階段**第一次有日期**的那一筆稽核列的值（init 的新值，或第一筆變更的舊值）——
+            //    與明細日期鏈第一格的「原訂」同一個意思。不可改用目前的 End：原訂 10 月、被改到 11 月的那一關
+            //    會從 10 月消失，而它正是最該被看到的。沒有任何稽核列（匯入的舊資料）只能拿目前的 End，標 noHist。
+            // ⚠️ 走完了沒走 phaseDoneEntryOn()（有效完成紀錄）或 isPhasePassed()（目前階段已經過去、沒有完成紀錄）——
+            //    與資料列、我的待辦同一套，不自己判斷。
+            // ⚠️ 軌跡讀不到（historyError）時整張卡不出數字：0 個改過日期會被讀成「大家都很準時」（第 24 批那條）
+            // ─── 第 199 批（使用者看過兩張示意圖：「照這張示意圖改」）：每一關只在**原訂月份**計分 ───
+            //   使用者問「原訂 01/01 → 改 04/01 → 再改 05/01，2 月還看得到嗎、原訂顯示哪一個」→ 我建議兩邊都列、
+            //   使用者反問「1 月和 5 月各出現一次合理嗎」→ 改成：上方數字與如期率**只算原訂在本月**的；
+            //   **目前日期**改到本月、原訂在別的月的另列 movedIn（「改到本月的」，預設展開，**不計分**——
+            //   同一次延誤不扣兩次分、各月數字可以加總比較）。原訂一律是第一次壓的那一天，改幾次都不變。
+            //   原訂月那一列被改走時接「已改到 N 月」；次數一律寫「至今改 N 次」；tooltip 列出**每一次**改動。
+            const monthDue = useMemo(() => {
+                const M = mdMonth;
+                const RANK = { ok:0, late:1, chg:2, rb:3, open:4 };
+                const rows = [], movedIn = [], inSet = new Set(), baseOf = new Map();
+                let minM = TODAY_ISO.slice(0, 7), maxM = minM;
+                const DATE_TYPES = new Set(['init', '日期異動', '提早完成', '延期完成', '重新排程', '規格回退', '撤銷完成']);
+                const ymText = ym => ym.slice(0, 4) === M.slice(0, 4) ? `${parseInt(ym.slice(5, 7), 10)} 月` : ym;
+                // 每一次改動（日期異動＋退回重做）各一段，空一行隔開
+                const allWhy = hs => hs.filter(h => isDateChange(h) || h.changeType === '規格回退').map(hopTitleOf).join('\n\n');
+                requirementsData.forEach(item => {
+                    const all = (historyMap.get(item.id) || []).slice().sort((a, b) => a.id - b.id);
+                    PHASE_KEYS.forEach(pk => {
+                        const P = PHASES[pk];
+                        const dp = DUE_PHASES.find(d => d.key === pk);
+                        const curEnd = (item[P.obj] && item[P.obj][P.endKey]) || '';
+                        const actual = (item[P.obj] && item[P.obj][P.actualKey]) || '';
+                        const hs = all.filter(h => h.phase === pk);
+                        const firstH = hs.find(h => DATE_TYPES.has(h.changeType) && (endOf(h, 'old') || endOf(h, 'new')));
+                        const base = firstH ? (endOf(firstH, 'old') || endOf(firstH, 'new')) : curEnd;
+                        if (!isDateVal(base)) return;
+                        baseOf.set(item.id + '|' + pk, base);
+                        const doneE = phaseDoneEntryOn(item.id, pk);
+                        // 「目前預定的日期」：提早／準時完成會把 End 蓋成完成日，那不是改期 —— 改用完成前的那一天
+                        // （否則提早完成的會被說成「已改到上個月」、還跑去上個月的「改到本月」）
+                        const plan = doneE && doneE.changeType === '提早完成' ? (endOf(doneE, 'old') || curEnd) : curEnd;
+                        const bm = base.slice(0, 7);
+                        const cm = isDateVal(plan) ? plan.slice(0, 7) : '';
+                        [bm, cm].forEach(m => { if (m && m < minM) minM = m; if (m && m > maxM) maxM = m; });
+                        if (bm !== M && cm !== M) return;
+                        const rbE = [...hs].reverse().find(h => h.changeType === '規格回退');
+                        const chgs = hs.filter(isDateChange);
+                        const passed = !!doneE || isPhasePassed(item, pk);
+                        const doneDate = passed ? (actual || curEnd) : '';
+                        const overdue = !passed && isDateVal(curEnd) && curEnd < TODAY_ISO;
+                        // 「目前日期／完成日」那一格與逾期／剩幾天
+                        const now = passed ? (isDateVal(doneDate) ? `完成 ${doneDate}` : '已走過')
+                                  : isDateVal(curEnd) ? `目前 ${curEnd}` : '未填';
+                        const due = !passed && isDateVal(curEnd) ? (overdue ? `逾期 ${dayDiff(curEnd, TODAY_ISO)} 天` : `剩 ${dayDiff(TODAY_ISO, curEnd)} 天`) : '';
+                        const common = { item, pk, label: P.label, color: P.color, owner: ((dp && dp.owner(item)) || '').trim(),
+                                         base, now, overdue, why: allWhy(hs), noHist: !firstH, noRecord: passed && !doneE };
+                        if (bm !== M) {
+                            // 改到本月（原訂在別的月，已在那個月計分）
+                            movedIn.push({ ...common, plan, chgN: chgs.length, rolled: !!rbE, due, countedIn: bm });
+                            return;
+                        }
+                        inSet.add(item.id + '|' + pk);
+                        let cat;
+                        if (rbE) cat = 'rb';
+                        else if (chgs.length) cat = 'chg';
+                        else if (passed) cat = isDateVal(doneDate) && doneDate > base ? 'late' : 'ok';
+                        else cat = 'open';
+                        const notDue = cat === 'open' && !overdue;
+                        const parts = [];
+                        if (cat === 'late') parts.push(`晚 ${dayDiff(base, doneDate)} 天`);
+                        else if (cat === 'chg') parts.push(`至今改 ${chgs.length} 次`);
+                        if (cat !== 'rb' && cm && cm !== M) parts.push(`已改到 ${ymText(cm)}`);
+                        if (cat !== 'rb' && due) parts.push(due);
+                        rows.push({ ...common, cat, sub: parts.join(' · '), notDue });
+                    });
+                });
+                movedIn.sort((a, b) => a.plan.localeCompare(b.plan));
+                rows.sort((a, b) => (RANK[a.cat] - RANK[b.cat]) || a.base.localeCompare(b.base) || String(a.item.nid).localeCompare(String(b.item.nid)));
+                const count = { ok:0, late:0, chg:0, rb:0, open:0 };
+                rows.forEach(r => { count[r.cat]++; });
+                const overdueN = rows.filter(r => r.cat === 'open' && r.overdue).length;
+                const notDueN = rows.filter(r => r.notDue).length;
+                const denom = rows.length - notDueN;
+                // 最下面那一段：這個月有人改了日期、但原訂與目前日期都不在這個月的（每個階段收成一列：這個月最早的舊值 → 最後的新值）
+                const movedSet = new Set(movedIn.map(r => r.item.id + '|' + r.pk));
+                const other = new Map();
+                [...historyEntries].sort((a, b) => a.id - b.id).forEach(h => {
+                    if (!isDateChange(h) || (h.changedAt || '').slice(0, 7) !== M) return;
+                    const k = h.requirementId + '|' + h.phase;
+                    if (inSet.has(k) || movedSet.has(k)) return;
+                    const item = requirementsData.find(r => r.id === h.requirementId);
+                    if (!item) return;
+                    const o = other.get(k);
+                    if (!o) other.set(k, { item, pk: h.phase, label: (PHASES[h.phase] && PHASES[h.phase].label) || h.phase,
+                                           color: PHASES[h.phase] && PHASES[h.phase].color, base: baseOf.get(k) || '',
+                                           from: endOf(h, 'old'), to: endOf(h, 'new'), n: 1, last: h, list: [h] });
+                    else { o.to = endOf(h, 'new'); o.last = h; o.n++; o.list.push(h); }
+                });
+                const others = [...other.values()].sort((a, b) => b.last.id - a.last.id);
+                // 變更紀錄從哪一天開始有（匯入會清空）：選的月份不晚於那個月時，「改過日期」可能偏少
+                const histStart = historyEntries.reduce((m, h) => (h.changedAt && (!m || h.changedAt < m)) ? h.changedAt : m, '');
+                return { rows, count, overdueN, notDueN, denom, rate: denom > 0 ? Math.round(count.ok / denom * 100) : null,
+                         reqN: new Set(rows.map(r => r.item.id)).size, movedIn, others, minM, maxM,
+                         histStart: histStart.slice(0, 10), histPartial: !!histStart && M <= histStart.slice(0, 7) };
+            }, [requirementsData, historyEntries, historyMap, mdMonth, todayTick]);
+
+            // 第 201 批：風險預警卡只列最急的幾項
+            const RISK_TOP = 5;
+
             // ─── 到期預警 ───
             // 規則的唯一來源是 buildDueList() → resolveFocusPhase()：
             //   1. 當前這一階段（目前階段）沒壓日期 → 就是它，level='unset'，排最前面（第 33 批）
@@ -6238,6 +6390,9 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     outOngoing: out.reduce((s,r)=>s+r.ongoing, 0),
                 };
             }, [analytics.trend, effFrom, effTo]);
+            // 第 201 批：交叉表／趨勢圖標題旁的口徑膠囊（宣告在 trendView 之後，TDZ）
+            const ymScopeText = trendView.rows.length
+                ? `註冊 ${trendView.rows[0].name.replace('20','')}–${trendView.rows[trendView.rows.length - 1].name.replace('20','')}` : '';
 
             // 交叉表的列：1~5 固定都列出來（0 件也要看得到「這一階段是空的」），
             // 推不出階段的 '-' 只有真的存在時才多一列
@@ -6933,6 +7088,8 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     // 「已排入佇列但未確認送出」不算寄過（使用者的用詞是「寄信一次**成功**」）。
                     // 後端在 Note 上標了這句話就是為了讓這一列日後分得出來，dbmail 模式會用到
                     if (note.includes('未確認送出')) return false;
+                    // 第 195 批：自動寄的結案通知只是知會，不算催過壓日期（字樣與後端 RunAutoNotifyAsync 鏡像）
+                    if (note.includes('自動寄送（結案後）')) return false;
                     if (dueEnd ? !note.includes(`已逾期（原訂 ${dueEnd}）`) : note.includes('已逾期（原訂')) return false;
                     const m = note.match(NOTIFY_TO_RE);
                     return !!m && m[1].trim().toLowerCase() === want;
@@ -7031,24 +7188,27 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // ─── 自動寄信那一行提示（第 188 批，使用者選的「B 提示」）───
             // ⚠️ 後端 RunAutoNotifyAsync() 的**預告版**：真正寄不寄、寄給誰由後端在存好之後重讀 DB 再算，
             //    這裡只照同一組規則先講一次 —— 模式／開關、模擬帳號不寄、交棒時下一棒已壓日期不寄、
-            //    收件者是本人不寄（**工號**比對，與後端同一條）、已停用不寄；副本＝另一位負責人。改規則兩邊一起改。
+            //    已停用不寄；副本＝另一位負責人。改規則兩邊一起改。
+            //    ⚠️ 第 197 批：收件者是按的本人**照樣寄**（使用者：「即使是本人點選完成，也是不影響原本的規則」），不可加回
             // 回傳 null＝不會寄（那一行不出現）；有 problem＝會試著寄但寄不出去（那一行講原因）
+            // 第 195 批：kind='close'（推到 ⑤ 結案）→ 收件者 MSD 負責人、副本 EMS 負責人，開關 s.close（預設關）
             const autoNotifyPreview = (kind, item, stageAfter) => {
                 const s = autoNotify;
-                if (!s || s.mode === 'off' || !(kind === 'handoff' ? s.handoff : s.rollback)) return null;
+                if (!s || s.mode === 'off' || !(kind === 'close' ? s.close : kind === 'handoff' ? s.handoff : s.rollback)) return null;
                 if (actor.source === 'simulated' || !item) return null;
-                const ph = DUE_PHASES.find(p => p.code === String(stageAfter));
-                if (!ph) return null;                                       // 推到 ⑤ 結案：沒有下一棒
+                const ph = kind === 'close'
+                    ? { label: STAGE_CODES['5'].label, side: 'MSD', owner: r => r.msdOwner, getDate: () => '' }
+                    : DUE_PHASES.find(p => p.code === String(stageAfter));
+                if (!ph) return null;
                 if (kind === 'handoff' && isDateVal(ph.getDate(item))) return null;
                 const toName = (ph.owner(item) || '').trim();
                 const ccSide = ph.side === 'MSD' ? 'EMS' : 'MSD';
                 const ccName = ((ccSide === 'EMS' ? item.emsOwner : item.msdOwner) || '').trim();
-                const base = { phLabel: ph.label, side: ph.side, toName, ccName: '', test: s.mode === 'test', testTo: s.testTo || '' };
-                if (!toName) return { ...base, problem: `「${ph.label}」還沒指派 ${ph.side} 負責人，自動信不知道要寄給誰` };
+                const base = { kind, phLabel: ph.label, side: ph.side, toName, ccName: '', test: s.mode === 'test', testTo: s.testTo || '' };
+                if (!toName) return { ...base, problem: kind === 'close' ? '還沒指派 MSD 負責人，結案通知不知道要寄給誰'
+                                                                         : `「${ph.label}」還沒指派 ${ph.side} 負責人，自動信不知道要寄給誰` };
                 const hit = assigneeList.find(a => a.dept === ph.side && (a.name || '').trim() === toName);
                 if (hit && !hit.isActive) return null;
-                const me = String(actor.empId || '').trim().toLowerCase();
-                if (hit && me && stripDomain(hit.empNo || '').toLowerCase() === me) return null;
                 if (!hit) return { ...base, problem: `${toName} 不在指派名單裡（名字對不上），自動信寄不出去` };
                 const email = assigneeEmailOf(ph.side, toName);
                 if (!email || !isMailAddr(email))
@@ -7064,7 +7224,12 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 const cur = Number(m.curStage) || 0;
                 const next = Math.max(cur, Number(m.doneStage) || 0);
                 if (next <= cur) return null;
-                return autoNotifyPreview('handoff', requirementsData.find(r => r.id === m.id), next);
+                // 第 196 批：還沒選 MSD 負責人時不講（這時根本按不下去，講「不知道要寄給誰、完成照樣會存」會誤導）
+                if (m.needOwner && !(m.msdOwner || '').trim()) return null;
+                const item = requirementsData.find(r => r.id === m.id);
+                // 第 196 批：完成視窗裡剛選的 MSD 負責人＝這一次會收到交棒信的人
+                return autoNotifyPreview(next >= 5 ? 'close' : 'handoff',
+                                         item && m.needOwner ? { ...item, msdOwner: (m.msdOwner || '').trim() } : item, next);
             };
             const autoNotifyLine = (p, kind) => !p ? null : (
                 <div className="flex items-start gap-1.5 pt-2.5 border-t text-[12px] leading-snug"
@@ -7073,6 +7238,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     <span>
                         {p.problem ? <>{p.problem}（{kind === 'rollback' ? '退回' : '完成'}照樣會存）</>
                          : p.test ? <>試寄中：自動信會寄到 <span className="font-mono break-all">{p.testTo}</span>，{p.toName} 收不到</>
+                         : p.kind === 'close' ? <>完成後會自動寄信通知 <span className="font-bold" style={{color:'var(--text-primary)'}}>{p.toName}</span>（MSD 負責人）這筆需求已結案{p.ccName ? `，副本 ${p.ccName}` : ''}</>
                          : <>{kind === 'rollback' ? '退回' : '完成'}後會自動寄信請 <span className="font-bold" style={{color:'var(--text-primary)'}}>{p.toName}</span>（{p.phLabel}）{kind === 'rollback' ? '重新' : ''}壓日期{p.ccName ? `，副本 ${p.ccName}` : ''}</>}
                     </span>
                 </div>
@@ -7080,6 +7246,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // 成功 toast 接的那半句。⚠️ 信在背景寄（使用者選的「不等」），所以只能說「會寄」，不說「已寄出」
             const autoNotifyToast = (p, kind) => !p || p.problem ? ''
                 : p.test ? `；試寄信會寄到 ${p.testTo}`
+                : p.kind === 'close' ? `；系統會寄信通知 ${p.toName} 已結案`
                 : `；系統會寄信請 ${p.toName} ${kind === 'rollback' ? '重新' : ''}壓日期`;
 
             // ─── 「需關注」批次提醒（第 125 批；第 185 批改成寄一封給固定名單）───
@@ -7508,6 +7675,19 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 setDuePriority(readDuePriorityPref());
                 if (apply) apply();
                 setActiveView('table');
+            };
+            // ─── 統計報表的長條圖／交叉表 → 需求列表（第 200 批，使用者看過示意圖：「兩張都做，照示意圖改」）───
+            // 篩「註冊日期」欄位（colFilters.regDate，比對畫面上的 YYYY/MM/DD，所以給 YYYY/MM 就是那個月）＋進度或目前階段。
+            // ⚠️ 兩張圖分組用的 yearMonth 是由 RegDate 反推的（本機 69/69 筆一致），所以篩出來的筆數＝點的那個數字。
+            //    '-'（沒有年月）與「— 未分類」那一列不給點：篩不出同一群。
+            // prog：'ongoing'／'done'／null（全部）；stage：'1'~'5'／null
+            const openYmList = (ym, prog, stage) => {
+                if (!ym || ym === '-') return;
+                openListWith(() => {
+                    setColFilters({ regDate: ym });
+                    if (prog) setProgressFilter(prog);
+                    if (stage) setStageFilter([stage]);
+                });
             };
 
             const sortedData = useMemo(() => {
@@ -9334,49 +9514,357 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                     <KpiCard label="時程異動" value={historyError ? '—' : analytics.totalChanges}
                                              tone={historyError ? 'alert' : (analytics.totalChanges>0?'warn':null)}
                                              sub={historyError ? '軌跡讀取失敗，數字暫不可用'
-                                                  : analytics.totalChanges>0?`累計變更 · 涉及 ${alertCounts.changed} 件`:"累計時程變更次數"}
+                                                  : analytics.totalChanges>0?`累計 · 不分月份 · 涉及 ${alertCounts.changed} 件`:"累計 · 不分月份"}
                                              onClick={!historyError && alertCounts.changed>0 ? ()=>openListWith(()=>setAlertFilter('changed')) : null}
                                              hint="點此切到需求列表，只看有時程異動過的需求" />
+                                </div>
+                                {/* ─── KPI 的口徑＋頁內跳轉（第 201 批，使用者看過示意圖選 1、2）───
+                                    整頁約 2.7 個螢幕高：一行連結直接捲到那張卡（扣掉黏在上面的頁首）。不列印 */}
+                                <div className="flex items-center gap-x-3 gap-y-1.5 flex-wrap -mt-1 text-[12px] no-print" style={{color:'var(--text-muted)'}}>
+                                    <span className="flex items-center gap-1.5">
+                                        <ScopePill tip="上面五張 KPI 算的是全部需求，不分時間">全部需求</ScopePill>
+                                        <span>上面五張 KPI</span>
+                                    </span>
+                                    <span className="ml-auto flex items-center gap-1 flex-wrap">
+                                        跳到：
+                                        {[['ct-dash-risk', `風險預警 ${dueAlerts.length}`],
+                                          ['ct-dash-month', `本月到期 ${monthDue.rows.length}`],
+                                          ['ct-dash-ym', '年月統計'],
+                                          ['ct-dash-people', '人員負載']].map(([id, t], i) => (
+                                            <Fragment key={id}>
+                                                {i > 0 && <span aria-hidden="true">·</span>}
+                                                <button type="button" className="font-semibold hover:underline" style={{color:'var(--brand)'}}
+                                                        onClick={() => {
+                                                            const el = document.getElementById(id);
+                                                            if (!el) return;
+                                                            const hh = appHeaderRef.current ? appHeaderRef.current.getBoundingClientRect().height : 0;
+                                                            window.scrollTo(0, el.getBoundingClientRect().top + window.scrollY - hh - 12);
+                                                        }}>{t}</button>
+                                            </Fragment>
+                                        ))}
+                                    </span>
                                 </div>
 
                                 {/* 「需求狀態分佈」已於第 12 批搬到需求列表 —— 改為可點的統計卡，
                                     點下去直接篩選出那一群資料，不再另外維護一份唯讀的統計。
                                     統計報表保留圖表分析與人員負載（那些放進表格反而擠）。 */}
-                                <div className="t-card p-5">
-                                    <div className="flex items-center justify-between mb-4">
-                                        <h2 className="text-sm font-semibold" style={{color:'var(--text-primary)'}}>風險預警</h2>
+                                <div id="ct-dash-risk" className="t-card p-5">
+                                    <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
+                                        <div className="flex items-center gap-2">
+                                            <h2 className="text-sm font-semibold" style={{color:'var(--text-primary)'}}>風險預警</h2>
+                                            <ScopePill tip="看的是現在：已到階段卻沒壓日期、已逾期、7 日內到期">現在</ScopePill>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                        {dueAlerts.length > 0 && (
+                                            <span className="text-[11px]" style={{color:'var(--text-muted)'}}>
+                                                {dueCountsAll.unset > 0 ? `未壓日期 ${dueCountsAll.unset} · ` : ''}逾期 {dueCountsAll.overdue} · {DUE_WINDOW_DEFAULT} 日內 {dueCountsAll.soon}
+                                            </span>
+                                        )}
                                         <span className="text-[10px] font-semibold px-2 py-0.5 rounded"
                                               style={dueAlerts.length>0
                                                   ? {color:'var(--tone-alert)', background:'var(--tone-alert-bg)', border:'1px solid var(--tone-alert-border)'}
                                                   : {color:'var(--text-muted)', border:'1px solid var(--border-card)'}}>
                                             {dueAlerts.length>0 ? `${dueAlerts.length} 項需關注` : '全數正常'}
                                         </span>
+                                        </div>
                                     </div>
-                                    <div className="space-y-1.5 max-h-[260px] overflow-y-auto scrollbar-thin pr-1">
+                                    {/* 第 201 批（使用者選 3）：只列最急的 RISK_TOP 項（dueAlerts 本來就依急迫度排好），拿掉卡片內的捲軸 ——
+                                        原本 260px 的捲動區 14 項只看得到 4 項。其餘用「看全部」切到需求列表（與 KPI「需關注」同一條路） */}
+                                    <div className="space-y-1.5">
                                         {dueAlerts.length===0
                                             ? <div className="text-center py-8 text-sm" style={{color:'var(--text-muted)'}}>目前無逾期或 {DUE_WINDOW_DEFAULT} 日內到期的項目</div>
                                             // 點一筆預警 → 切到需求列表、套上「需關注」篩選，並把該列展開。
                                             // 不用 NID 當搜尋字串 —— NID「6」會連帶命中 16、26
-                                            : dueAlerts.map((entry, idx) => (
+                                            : dueAlerts.slice(0, RISK_TOP).map((entry, idx) => (
                                                 <AlertItem key={entry.item.id || entry.item.nid || idx} entry={entry}
                                                            onClick={()=>openListWith(()=>{ setDueFilter('attention'); setDuePriority(true);
                                                                                           setExpandedRows(new Set([entry.item.id])); })} />
                                               ))
                                         }
                                     </div>
+                                    {dueAlerts.length > RISK_TOP && (
+                                        <div className="mt-3 flex">
+                                            <button type="button" className="text-[12px] font-semibold hover:underline" style={{color:'var(--brand)'}}
+                                                    onClick={() => openListWith(() => { setDueFilter('attention'); setDuePriority(true); })}>
+                                                看全部 {dueAlerts.length} 項（需求列表・需關注）→
+                                            </button>
+                                            <span className="ml-2 text-[11px] self-center" style={{color:'var(--text-muted)'}}>這裡列最急的 {RISK_TOP} 項</span>
+                                        </div>
+                                    )}
                                 </div>
+
+                                {/* ═══ 本月到期達成（第 198 批）═══ 計算見 monthDue。放在風險預警與交叉表之間（使用者選 A）。
+                                    ⚠️ 月份是這張卡自己的，不跟下面的註冊年月區間連動 —— 標題底下一定要講「依原訂結束日」。
+                                    點一列＝切到需求列表、展開那一筆（同風險預警），清掉篩選所以結案的也看得到 */}
+                                {(() => {
+                                    const md = monthDue;
+                                    const CATS = [
+                                        { k:'ok',   t:'如期完成', c:'var(--tone-good)',  bg:'var(--tone-good-bg)',
+                                          tip:'沒改過日期，完成日在原訂當天或之前' },
+                                        { k:'late', t:'延期完成', c:'var(--tone-alert)', bg:'var(--tone-alert-bg)',
+                                          tip:'沒改過日期，但完成日晚於原訂' },
+                                        { k:'chg',  t:'改過日期', c:'var(--tone-warn)',  bg:'var(--tone-warn-bg)',
+                                          tip:'有「日期異動」（改過結束日）。改過之後才如期完成的也算這一類' },
+                                        { k:'rb',   t:'退回重做', c:CHANGE_TYPES['規格回退'].color, bg:CHANGE_TYPES['規格回退'].bg,
+                                          tip:'這一關被退回重做過，原本的時程作廢' },
+                                        { k:'open', t:'未完成',   c:'var(--text-secondary)', bg:'var(--bg-input)',
+                                          tip:'還沒完成。目前的日期已過＝逾期；還沒到期的不算進如期率' }
+                                    ];
+                                    const catOf = k => CATS.find(x => x.k === k);
+                                    const shown = mdFilter ? md.rows.filter(r => r.cat === mdFilter) : md.rows;
+                                    const [y, mo] = mdMonth.split('-').map(Number);
+                                    const shiftM = d => { const t = new Date(y, mo - 1 + d, 1); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}`; };
+                                    const prevM = shiftM(-1), nextM = shiftM(1);
+                                    const goM = m => { setMdMonth(m); setMdFilter(null); setMdOtherOpen(false); };
+                                    // 點一列 → 需求列表、展開那一筆，捲到它（結案的會沉底，不捲就找不到）
+                                    const openReq = id => {
+                                        openListWith(() => setExpandedRows(new Set([id])));
+                                        setTimeout(() => { const el = document.querySelector(`tr[data-row-id="${id}"]`); if (el) el.scrollIntoView({ block:'center' }); }, 80);
+                                    };
+                                    return (
+                                <div id="ct-dash-month" className="t-card p-5">
+                                    <div className="flex items-start justify-between gap-3 mb-3 flex-wrap">
+                                        <div>
+                                            <div className="flex items-center gap-2">
+                                                <h2 className="text-sm font-semibold" style={{color:'var(--text-primary)'}}>本月到期達成</h2>
+                                                <ScopePill tip="看的是右邊選的那一個月（依原訂結束日）">{mdMonth}</ScopePill>
+                                            </div>
+                                            <p className="text-[11px] mt-0.5" style={{color:'var(--text-muted)'}}>
+                                                數字只算<span className="font-semibold">原訂</span>在這個月的階段；改到這個月的另外列在下面，不重複計分（② 看確認日；不跟下面的註冊年月區間連動）
+                                            </p>
+                                        </div>
+                                        <div className="flex items-center gap-1.5" role="group" aria-label="選擇月份">
+                                            <button type="button" className="ctl ctl-icon" disabled={prevM < md.minM}
+                                                    onClick={() => goM(prevM)} aria-label="上個月" title={prevM < md.minM ? '更早的月份沒有到期的階段' : `看 ${prevM}`}>‹</button>
+                                            <span className="text-[13px] font-semibold tabular-nums px-1" style={{color:'var(--text-primary)'}}>{mdMonth}</span>
+                                            <button type="button" className="ctl ctl-icon" disabled={nextM > md.maxM}
+                                                    onClick={() => goM(nextM)} aria-label="下個月" title={nextM > md.maxM ? '更晚的月份沒有到期的階段' : `看 ${nextM}`}>›</button>
+                                            {mdMonth !== TODAY_ISO.slice(0, 7) && (
+                                                <button type="button" className="ctl text-[12px]" onClick={() => goM(TODAY_ISO.slice(0, 7))}>回到本月</button>
+                                            )}
+                                        </div>
+                                    </div>
+                                    {historyError ? (
+                                        // 軌跡讀不到：不出數字（0 個改過日期＝「大家都很準時」，是相反的結論）
+                                        <div className="rounded-lg p-3 text-sm font-semibold"
+                                             style={{color:'var(--tone-alert)', background:'var(--tone-alert-bg)', border:'1px solid var(--tone-alert-border)'}}>
+                                            變更紀錄讀取失敗，無法判斷哪些如期、哪些改過日期。請按頁首的重新整理再試一次。
+                                        </div>
+                                    ) : md.rows.length === 0 && md.movedIn.length === 0 ? (
+                                        <div className="text-center py-8 text-sm" style={{color:'var(--text-muted)'}}>{mdMonth} 沒有在這個月到期的階段</div>
+                                    ) : (<>
+                                    {md.histPartial && (
+                                        <div className="mb-3 rounded-lg px-3 py-2 text-[12px]"
+                                             style={{color:'var(--tone-warn)', background:'var(--tone-warn-bg)', border:'1px solid var(--tone-warn-border)'}}>
+                                            變更紀錄從 {md.histStart} 才開始有，這個月的「改過日期」可能偏少（之前的改動查不到）
+                                        </div>
+                                    )}
+                                    <div className="flex items-baseline gap-x-4 gap-y-1 flex-wrap text-[13px] mb-2" style={{color:'var(--text-secondary)'}}>
+                                        <span>原訂在本月 <b className="tabular-nums" style={{color:'var(--text-primary)'}}>{md.rows.length}</b> 個階段（{md.reqN} 筆需求）</span>
+                                        <span title="如期完成 ÷（到期的階段 − 還沒到期的未完成）。改過日期、延期、退回重做、逾期都算沒如期">
+                                            如期率 <b className="tabular-nums" style={{color:'var(--text-primary)'}}>{md.rate === null ? '—' : `${md.rate}%`}</b>
+                                            <span className="text-[12px]">（{md.count.ok} / {md.denom}{md.notDueN > 0 ? `，不含還沒到期的 ${md.notDueN} 個` : ''}）</span>
+                                        </span>
+                                        {md.movedIn.length > 0 && (
+                                            <span style={{color:'var(--brand)'}} title="原訂在其他月份、目前日期改到這個月的階段。已在原訂月份計算，這裡不計分">
+                                                另有 {md.movedIn.length} 個改到本月（不計分）
+                                            </span>
+                                        )}
+                                    </div>
+                                    {/* 比例條：五類依序、寬度＝件數 */}
+                                    <div className="flex h-2 rounded overflow-hidden mb-3" aria-hidden="true">
+                                        {CATS.filter(x => md.count[x.k] > 0).map(x => (
+                                            <div key={x.k} style={{flex: md.count[x.k], background: x.c}} />
+                                        ))}
+                                    </div>
+                                    {/* 五類：點了只看那一類，再點一次回到全部 */}
+                                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                                        {CATS.map(x => {
+                                            const on = mdFilter === x.k;
+                                            const n = md.count[x.k];
+                                            return (
+                                                <button key={x.k} type="button" aria-pressed={on} disabled={n === 0}
+                                                        onClick={() => setMdFilter(on ? null : x.k)} title={x.tip}
+                                                        className="text-left rounded-lg px-3 py-2 border transition-colors disabled:cursor-default"
+                                                        style={{background: on ? x.bg : 'var(--bg-card)',
+                                                                borderColor: on ? x.c : 'var(--border-card)',
+                                                                boxShadow: on ? `inset 0 0 0 1px ${x.c}` : 'none'}}>
+                                                    <div className="text-[22px] leading-none font-semibold tabular-nums" style={{color: n ? x.c : 'var(--text-muted)'}}>{n}</div>
+                                                    <div className="text-[12px] mt-1" style={{color:'var(--text-secondary)'}}>
+                                                        {x.t}
+                                                        {x.k === 'open' && md.overdueN > 0 && <span style={{color:'var(--tone-alert)'}}>（逾期 {md.overdueN}）</span>}
+                                                    </div>
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                    <div className="flex items-center mt-4 mb-1.5 text-[12px]" style={{color:'var(--text-muted)'}}>
+                                        <span><span className="font-semibold" style={{color:'var(--text-secondary)'}}>原訂在本月</span> {mdFilter ? `只看「${catOf(mdFilter).t}」${shown.length} 個` : `${md.rows.length} 個`} · 點一列到需求列表看那一筆 · 滑鼠停在列上看每一次改動</span>
+                                        {mdFilter && <button type="button" className="ctl ml-auto text-[12px]" onClick={() => setMdFilter(null)}>看全部</button>}
+                                    </div>
+                                    <div className="max-h-[360px] overflow-y-auto scrollbar-thin">
+                                        <table className="w-full text-xs border-collapse">
+                                            <thead>
+                                                <tr style={{color:'var(--text-tertiary)'}}>
+                                                    {['NID','需求','階段','負責人','原訂','目前日期／完成日','結果'].map(h => (
+                                                        <th key={h} className="px-2 py-2 text-left font-bold whitespace-nowrap sticky top-0"
+                                                            style={{background:'var(--bg-card)', borderBottom:'2px solid var(--border-card)'}}>{h}</th>
+                                                    ))}
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {shown.map(r => {
+                                                    const cx = catOf(r.cat);
+                                                    const subAlert = r.overdue || r.cat === 'late';
+                                                    return (
+                                                        <tr key={r.item.id + r.pk} className="cursor-pointer hover:bg-black/[0.02] dark:hover:bg-white/[0.03]"
+                                                            onClick={() => openReq(r.item.id)} title={r.why || undefined}>
+                                                            <td className="px-2 py-1.5 whitespace-nowrap" style={{borderBottom:'1px solid var(--border-table)'}}>
+                                                                <button type="button" className="font-semibold tabular-nums hover:underline" style={{color:'var(--brand)'}}
+                                                                        onClick={e => { e.stopPropagation(); openReq(r.item.id); }}
+                                                                        aria-label={`到需求列表看 NID ${r.item.nid || r.item.id}`}>{r.item.nid || '—'}</button>
+                                                            </td>
+                                                            <td className="px-2 py-1.5" style={{borderBottom:'1px solid var(--border-table)', color:'var(--text-primary)'}}>
+                                                                {r.item.mainCat}{r.item.subCat ? <span style={{color:'var(--text-muted)'}}> / {r.item.subCat}</span> : null}
+                                                            </td>
+                                                            <td className="px-2 py-1.5 whitespace-nowrap font-semibold" style={{borderBottom:'1px solid var(--border-table)', color:r.color}}>{r.label}</td>
+                                                            <td className="px-2 py-1.5 whitespace-nowrap" style={{borderBottom:'1px solid var(--border-table)', color:'var(--text-secondary)'}}>{r.owner || '—'}</td>
+                                                            <td className="px-2 py-1.5 whitespace-nowrap tabular-nums" style={{borderBottom:'1px solid var(--border-table)', color:'var(--text-secondary)'}}
+                                                                title={r.noHist ? '這一關沒有變更紀錄（例如匯入的資料），以目前的日期當原訂' : undefined}>
+                                                                {r.base}{r.noHist && <span style={{color:'var(--text-muted)'}}> *</span>}
+                                                            </td>
+                                                            <td className="px-2 py-1.5 whitespace-nowrap tabular-nums" style={{borderBottom:'1px solid var(--border-table)', color:'var(--text-primary)'}}
+                                                                title={r.noRecord ? '目前階段已經過了這一關，但沒有「標記完成」的紀錄，以目前的日期判斷' : undefined}>
+                                                                {r.now}{r.noRecord && <span style={{color:'var(--text-muted)'}}> *</span>}
+                                                            </td>
+                                                            <td className="px-2 py-1.5 whitespace-nowrap" style={{borderBottom:'1px solid var(--border-table)'}}>
+                                                                <span className="text-[11px] font-semibold px-1.5 py-0.5 rounded" style={{color:cx.c, background:cx.bg}}>{cx.t}</span>
+                                                                {r.sub && <span className="ml-1.5 text-[11px]" style={{color: subAlert ? 'var(--tone-alert)' : 'var(--text-muted)'}}>{r.sub}</span>}
+                                                                {r.why && <span className="ml-1 text-[11px] cursor-help" style={{color:'var(--text-muted)'}} aria-hidden="true">ⓘ</span>}
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                })}
+                                            </tbody>
+                                        </table>
+                                        {md.rows.length === 0 && (
+                                            <div className="text-center py-4 text-[12px]" style={{color:'var(--text-muted)'}}>沒有原訂在這個月的階段</div>
+                                        )}
+                                    </div>
+                                    {/* ─── 改到本月的（第 199 批）：原訂在別的月、目前日期在這個月。已在原訂月份計分，這裡只列、不計分；預設展開 ─── */}
+                                    {md.movedIn.length > 0 && (
+                                        <div className="mt-4">
+                                            <button type="button" className="text-[12px] font-semibold" style={{color:'var(--text-secondary)'}}
+                                                    aria-expanded={mdMovedOpen} onClick={() => setMdMovedOpen(o => !o)}>
+                                                {mdMovedOpen ? '▾' : '▸'} 改到本月的 {md.movedIn.length} 個
+                                                <span className="font-normal ml-1" style={{color:'var(--text-muted)'}}>（原訂在其他月份，已在原訂月份計算，這裡不計分）</span>
+                                            </button>
+                                            {mdMovedOpen && (
+                                                <table className="w-full text-xs border-collapse mt-2">
+                                                    <thead>
+                                                        <tr style={{color:'var(--text-tertiary)'}}>
+                                                            {['NID','需求','階段','負責人','原訂','目前日期／完成日','狀況'].map(h => (
+                                                                <th key={h} className="px-2 py-1.5 text-left font-bold whitespace-nowrap" style={{borderBottom:'2px solid var(--border-card)'}}>{h}</th>
+                                                            ))}
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        {md.movedIn.map(r => (
+                                                            <tr key={r.item.id + r.pk} className="cursor-pointer hover:bg-black/[0.02] dark:hover:bg-white/[0.03]"
+                                                                onClick={() => openReq(r.item.id)} title={r.why || undefined}>
+                                                                <td className="px-2 py-1.5 whitespace-nowrap" style={{borderBottom:'1px solid var(--border-table)'}}>
+                                                                    <button type="button" className="font-semibold tabular-nums hover:underline" style={{color:'var(--brand)'}}
+                                                                            onClick={e => { e.stopPropagation(); openReq(r.item.id); }}
+                                                                            aria-label={`到需求列表看 NID ${r.item.nid || r.item.id}`}>{r.item.nid || '—'}</button>
+                                                                </td>
+                                                                <td className="px-2 py-1.5" style={{borderBottom:'1px solid var(--border-table)', color:'var(--text-primary)'}}>
+                                                                    {r.item.mainCat}{r.item.subCat ? <span style={{color:'var(--text-muted)'}}> / {r.item.subCat}</span> : null}
+                                                                </td>
+                                                                <td className="px-2 py-1.5 whitespace-nowrap font-semibold" style={{borderBottom:'1px solid var(--border-table)', color:r.color}}>{r.label}</td>
+                                                                <td className="px-2 py-1.5 whitespace-nowrap" style={{borderBottom:'1px solid var(--border-table)', color:'var(--text-secondary)'}}>{r.owner || '—'}</td>
+                                                                <td className="px-2 py-1.5 whitespace-nowrap tabular-nums" style={{borderBottom:'1px solid var(--border-table)', color:'var(--text-secondary)'}}
+                                                                    title={r.noHist ? '這一關沒有變更紀錄（例如匯入的資料），以目前的日期當原訂' : undefined}>
+                                                                    {r.base}{r.noHist && <span style={{color:'var(--text-muted)'}}> *</span>}
+                                                                </td>
+                                                                <td className="px-2 py-1.5 whitespace-nowrap tabular-nums font-semibold" style={{borderBottom:'1px solid var(--border-table)', color:'var(--text-primary)'}}>{r.now}</td>
+                                                                <td className="px-2 py-1.5 text-[11px]" style={{borderBottom:'1px solid var(--border-table)', color:'var(--text-secondary)'}}>
+                                                                    {(r.chgN > 0 || r.rolled) && (
+                                                                        <div>{[r.chgN > 0 ? `至今改 ${r.chgN} 次` : '', r.rolled ? '曾退回重做' : ''].filter(Boolean).join(' · ')}
+                                                                            {r.why && <span className="ml-1 cursor-help" style={{color:'var(--text-muted)'}} aria-hidden="true">ⓘ</span>}</div>
+                                                                    )}
+                                                                    {r.due && <div style={{color: r.overdue ? 'var(--tone-alert)' : 'var(--text-muted)'}}>{r.due}</div>}
+                                                                    <div style={{color:'var(--text-muted)'}}>已在 {r.countedIn} 計算</div>
+                                                                </td>
+                                                            </tr>
+                                                        ))}
+                                                    </tbody>
+                                                </table>
+                                            )}
+                                        </div>
+                                    )}
+                                    </>)}
+                                    {/* 最下面：這個月有人改了日期、但原訂與目前日期都不在這個月的（使用者同意的第 3 點：平常收起來） */}
+                                    {!historyError && md.others.length > 0 && (
+                                        <div className="mt-3 pt-3" style={{borderTop:'1px solid var(--border-table)'}}>
+                                            <button type="button" className="text-[12px] font-semibold" style={{color:'var(--text-secondary)'}}
+                                                    aria-expanded={mdOtherOpen} onClick={() => setMdOtherOpen(o => !o)}>
+                                                {mdOtherOpen ? '▾' : '▸'} 這個月還做了 {md.others.length} 個日期修改
+                                                <span className="font-normal ml-1" style={{color:'var(--text-muted)'}}>（原訂、目前都不在本月）</span>
+                                            </button>
+                                            {mdOtherOpen && (
+                                                <table className="w-full text-xs border-collapse mt-2">
+                                                    <thead>
+                                                        <tr style={{color:'var(--text-tertiary)'}}>
+                                                            {['NID','需求','階段','原訂','這個月的改動','改的人／日期'].map(h => (
+                                                                <th key={h} className="px-2 py-1.5 text-left font-bold whitespace-nowrap" style={{borderBottom:'2px solid var(--border-card)'}}>{h}</th>
+                                                            ))}
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody>
+                                                        {md.others.map(o => (
+                                                            <tr key={o.item.id + o.pk} className="cursor-pointer hover:bg-black/[0.02] dark:hover:bg-white/[0.03]"
+                                                                onClick={() => openReq(o.item.id)} title={o.list.map(hopTitleOf).join('\n\n')}>
+                                                                <td className="px-2 py-1.5 whitespace-nowrap" style={{borderBottom:'1px solid var(--border-table)'}}>
+                                                                    <button type="button" className="font-semibold tabular-nums hover:underline" style={{color:'var(--brand)'}}
+                                                                            onClick={e => { e.stopPropagation(); openReq(o.item.id); }}
+                                                                            aria-label={`到需求列表看 NID ${o.item.nid || o.item.id}`}>{o.item.nid || '—'}</button>
+                                                                </td>
+                                                                <td className="px-2 py-1.5" style={{borderBottom:'1px solid var(--border-table)', color:'var(--text-primary)'}}>
+                                                                    {o.item.mainCat}{o.item.subCat ? <span style={{color:'var(--text-muted)'}}> / {o.item.subCat}</span> : null}
+                                                                </td>
+                                                                <td className="px-2 py-1.5 whitespace-nowrap font-semibold" style={{borderBottom:'1px solid var(--border-table)', color:o.color}}>{o.label}</td>
+                                                                <td className="px-2 py-1.5 whitespace-nowrap tabular-nums" style={{borderBottom:'1px solid var(--border-table)', color:'var(--text-secondary)'}}>{o.base || '—'}</td>
+                                                                <td className="px-2 py-1.5 whitespace-nowrap tabular-nums" style={{borderBottom:'1px solid var(--border-table)', color:'var(--text-primary)'}}>
+                                                                    {o.from || '未填'} → {o.to || '未填'}{o.n > 1 && <span style={{color:'var(--text-muted)'}}>（改 {o.n} 次）</span>}
+                                                                </td>
+                                                                <td className="px-2 py-1.5 whitespace-nowrap" style={{borderBottom:'1px solid var(--border-table)', color:'var(--text-secondary)'}}>
+                                                                    {whoShort(o.last.changedBy)} {(o.last.changedAt || '').slice(0, 10)}
+                                                                </td>
+                                                            </tr>
+                                                        ))}
+                                                    </tbody>
+                                                </table>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                                    );
+                                })()}
 
                                 {/* ═══ 各年月 × 目前階段交叉統計表（2026-08-19 使用者要求）═══
                                     列＝目前階段五階段、欄＝年月、右邊帶合計。
                                     ⚠️ 分組用的年月與下方趨勢圖是**同一個** yearMonth，區間也是同一組 state，
                                     所以「合計列」的每一格必然等於下方那根柱子的總高。
                                     這是刻意的：同一頁上兩個數字對不起來，主管就不會再信任整頁。 */}
-                                <div className="t-card p-5">
+                                <div id="ct-dash-ym" className="t-card p-5">
                                     <div className="flex items-start justify-between gap-3 mb-4 flex-wrap">
                                         <div>
-                                            <h2 className="text-sm font-semibold" style={{color:'var(--text-primary)'}}>各年月 × 目前階段案件數</h2>
+                                            <div className="flex items-center gap-2">
+                                                <h2 className="text-sm font-semibold" style={{color:'var(--text-primary)'}}>各年月 × 目前階段案件數</h2>
+                                                {ymScopeText && <ScopePill tip="依註冊年月分組，區間由右邊選（下方趨勢圖同一個區間）">{ymScopeText}</ScopePill>}
+                                            </div>
                                             <p className="text-[10px] mt-0.5" style={{color:'var(--text-muted)'}}>
-                                                依<span className="font-semibold">註冊年月</span>分組（同下方趨勢圖），欄位為該需求<span className="font-semibold">目前所在的階段</span>
+                                                依<span className="font-semibold">註冊年月</span>分組（同下方趨勢圖），欄位為該需求<span className="font-semibold">目前所在的階段</span> · 點數字看是哪些需求
                                             </p>
                                             {/* 區間外還有幾件（第 84 批）。⚠️ 放在標題底下、不是塞進表格裡 ——
                                                 表格本身要能被讀成「區間內的事實」，這一句講的是它的邊界 */}
@@ -9425,10 +9913,23 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                             {/* 0 一律留白（不寫 0）—— 有值的格子才跳得出來，
                                                                 滿版的 0 會把真正的數字淹掉。列高由左邊的階段名撐著，
                                                                 不需要塞占位字元 */}
-                                                            {row.cells.map((n, i) => (
-                                                                <td key={i} className="px-2 py-1.5 text-right tabular-nums font-semibold"
-                                                                    style={{color:'var(--text-secondary)', borderBottom:'1px solid var(--border-table)'}}>{n || ''}</td>
-                                                            ))}
+                                                            {/* 第 200 批：有數字的格子可以點 → 需求列表篩「註冊日期＋目前階段」。未分類那一列不給點 */}
+                                                            {row.cells.map((n, i) => {
+                                                                const ym = trendView.rows[i]?.name;
+                                                                const can = n > 0 && sc && ym && ym !== '-';
+                                                                return (
+                                                                    <td key={i} className="px-2 py-1.5 text-right tabular-nums font-semibold"
+                                                                        style={{color:'var(--text-secondary)', borderBottom:'1px solid var(--border-table)'}}>
+                                                                        {can ? (
+                                                                            <button type="button" className="tabular-nums font-semibold rounded px-1 -mx-1 hover:underline"
+                                                                                    style={{color:'inherit'}}
+                                                                                    onClick={() => openYmList(ym, null, row.key)}
+                                                                                    title={`${ym} · ${sc.label} ${n} 件 · 點一下在需求列表查看`}
+                                                                                    aria-label={`${ym} ${sc.label} ${n} 件，到需求列表查看`}>{n}</button>
+                                                                        ) : (n || '')}
+                                                                    </td>
+                                                                );
+                                                            })}
                                                         </tr>
                                                     );
                                                 })}
@@ -9444,8 +9945,15 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                     {trendView.rows.map((r,i) => (
                                                         <td key={r.name} className="px-2 py-2 text-right font-black tabular-nums"
                                                             style={{color:'var(--text-primary)', borderTop:'2px solid var(--border-card)'}}
-                                                            title={`${r.name}：進行中 ${r.ongoing} · 已完成 ${r.done}`}>
-                                                            {stageRows.reduce((s,row)=>s+row.cells[i], 0) || ''}
+                                                            title={`${r.name}：進行中 ${r.ongoing} · 已完成 ${r.done}${r.name !== '-' ? ' · 點一下在需求列表查看' : ''}`}>
+                                                            {(() => {
+                                                                const tot = stageRows.reduce((s,row)=>s+row.cells[i], 0);
+                                                                return tot && r.name !== '-' ? (
+                                                                    <button type="button" className="tabular-nums font-black hover:underline" style={{color:'inherit'}}
+                                                                            onClick={() => openYmList(r.name, null, null)}
+                                                                            aria-label={`${r.name} 全部 ${tot} 件，到需求列表查看`}>{tot}</button>
+                                                                ) : (tot || '');
+                                                            })()}
                                                         </td>
                                                     ))}
                                                 </tr>
@@ -9469,8 +9977,11 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                             這裡只註明「跟著同一個區間」—— 同一頁擺兩組一模一樣的控制項
                                             只會讓人懷疑它們是不是各管各的 */}
                                         <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
-                                            <h2 className="text-sm font-semibold" style={{color:'var(--text-primary)'}}>各年月案件數</h2>
-                                            <span className="text-[10px]" style={{color:'var(--text-muted)'}}>區間與上方統計表連動</span>
+                                            <div className="flex items-center gap-2">
+                                                <h2 className="text-sm font-semibold" style={{color:'var(--text-primary)'}}>各年月案件數</h2>
+                                                {ymScopeText && <ScopePill tip="依註冊年月分組，區間與上方統計表連動">{ymScopeText}</ScopePill>}
+                                            </div>
+                                            <span className="text-[10px]" style={{color:'var(--text-muted)'}}>區間與上方統計表連動 · 點長條看是哪些需求</span>
                                         </div>
                                         {/* 「全部」時柱子不再無限壓縮：每根至少 44px，超過卡片寬度就在卡片內
                                             左右捲動。捲動條留在這一層，不可以讓它變成整頁的橫向捲動 */}
@@ -9489,27 +10000,52 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                     const ongoingH=totalH-doneH;
                                                     const donePx=doneH*1.4, ongoingPx=ongoingH*1.4;
                                                     return (
-                                                        <div key={i} className="flex-1 flex flex-col items-center cursor-default"
-                                                             title={`${t.name}　進行中 ${t.ongoing} · 已完成 ${t.done}`}>
+                                                        // 第 200 批：灰色＝進行中、綠色＝已完成、柱頂數字與年月文字＝全部 → 都可以點，切到需求列表篩那個註冊年月。
+                                                        // '-'（沒有年月）不給點。每一段都是真的 <button>，提示寫明件數與「點一下在需求列表查看」
+                                                        (() => {
+                                                        const can = t.name !== '-';
+                                                        const tip = (what, n) => `${t.name} ${what} ${n} 件${can ? ' · 點一下在需求列表查看' : ''}`;
+                                                        return (
+                                                        <div key={i} className="flex-1 flex flex-col items-center">
                                                             <div className="flex-1 w-full flex flex-col justify-end items-center">
-                                                                <div className="text-[11px] font-black tabular-nums mb-1"
-                                                                     style={{color:'var(--text-primary)'}}>{sum || ''}</div>
+                                                                {sum > 0 && (can ? (
+                                                                    <button type="button" className="text-[11px] font-black tabular-nums mb-1 hover:underline"
+                                                                            style={{color:'var(--text-primary)'}} onClick={() => openYmList(t.name, null, null)}
+                                                                            title={tip('全部', sum)} aria-label={`${t.name} 全部 ${sum} 件，到需求列表查看`}>{sum}</button>
+                                                                ) : (
+                                                                    <div className="text-[11px] font-black tabular-nums mb-1" style={{color:'var(--text-primary)'}}>{sum}</div>
+                                                                ))}
                                                                 <div className="w-full max-w-[30px] flex flex-col items-stretch">
                                                                     {donePx>0 && (
-                                                                        <div className="flex items-center justify-center" style={{height:`${donePx}px`, background:'#0f766e'}}>
+                                                                        <button type="button" disabled={!can}
+                                                                                className="flex items-center justify-center hover:brightness-125 disabled:cursor-default"
+                                                                                style={{height:`${donePx}px`, background:'#0f766e'}}
+                                                                                onClick={() => openYmList(t.name, 'done', null)}
+                                                                                title={tip('已完成', t.done)} aria-label={`${t.name} 已完成 ${t.done} 件，到需求列表查看`}>
                                                                             {donePx>=16 && <span className="text-[10px] font-bold tabular-nums" style={{color:'#ffffff'}}>{t.done}</span>}
-                                                                        </div>
+                                                                        </button>
                                                                     )}
                                                                     {ongoingPx>0 && (
-                                                                        <div className="flex items-center justify-center" style={{height:`${ongoingPx}px`, background:'#94a3b8'}}>
+                                                                        <button type="button" disabled={!can}
+                                                                                className="flex items-center justify-center hover:brightness-110 disabled:cursor-default"
+                                                                                style={{height:`${ongoingPx}px`, background:'#94a3b8'}}
+                                                                                onClick={() => openYmList(t.name, 'ongoing', null)}
+                                                                                title={tip('進行中', t.ongoing)} aria-label={`${t.name} 進行中 ${t.ongoing} 件，到需求列表查看`}>
                                                                             {ongoingPx>=16 && <span className="text-[10px] font-bold tabular-nums" style={{color:'#0f172a'}}>{t.ongoing}</span>}
-                                                                        </div>
+                                                                        </button>
                                                                     )}
                                                                 </div>
                                                             </div>
-                                                            <div className="text-[10px] mt-2 font-semibold whitespace-nowrap"
-                                                                 style={{color:'var(--text-tertiary)'}}>{t.name.replace('20','')}</div>
+                                                            {can ? (
+                                                                <button type="button" className="text-[10px] mt-2 font-semibold whitespace-nowrap underline decoration-dotted underline-offset-2"
+                                                                        style={{color:'var(--text-tertiary)'}} onClick={() => openYmList(t.name, null, null)}
+                                                                        title={tip('全部', sum)} aria-label={`${t.name} 全部 ${sum} 件，到需求列表查看`}>{t.name.replace('20','')}</button>
+                                                            ) : (
+                                                                <div className="text-[10px] mt-2 font-semibold whitespace-nowrap" style={{color:'var(--text-tertiary)'}}>{t.name.replace('20','')}</div>
+                                                            )}
                                                         </div>
+                                                        );
+                                                        })()
                                                     );
                                                 })}
                                             </div>
@@ -9546,32 +10082,45 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                     才是「上面看區間、下面看現況」兩段讀得下去的版面。
                                     兩側加總必然等於「進行中」KPI（每件各算 EMS／MSD 一次，
                                     沒填的歸「未指派」、「未定」不計），所以數字直接寫進說明裡對得起來。 */}
-                                <div className="t-card p-5">
+                                <div id="ct-dash-people" className="t-card p-5">
                                         <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
-                                            <h2 className="text-sm font-semibold" style={{color:'var(--text-primary)'}}>人員負載（進行中案件數）</h2>
+                                            <div className="flex items-center gap-2">
+                                                <h2 className="text-sm font-semibold" style={{color:'var(--text-primary)'}}>人員負載（進行中案件數）</h2>
+                                                <ScopePill tip="看的是現在：目前還沒結案的需求">現在</ScopePill>
+                                            </div>
                                             <span className="text-[10px] cursor-help" style={{color:'var(--text-muted)'}}
                                                   title="這張卡看的是「現在誰身上壓著幾件」，所以不跟上面那三張的年月區間連動 —— 區間是依註冊年月分組的，套上去會變成「某段期間註冊、而且目前仍未結案」的混合數字。兩側各自加總都等於最上面「進行中」那張 KPI 卡的數字。">
-                                                不分區間 · 目前未結案的 {analytics.ongoing} 件
+                                                不分區間 · 目前未結案的 {analytics.ongoing} 件 · 點人名或長條看他手上的需求
                                             </span>
                                         </div>
                                         {/* 顏色一律走 inline style。用 `bg-${x}-500/10` 這種字串拼接的 class，
                                             Tailwind 靜態掃描時看不到完整字串，實際上不會被產生出來。 */}
                                         <div className="grid grid-cols-2 gap-6">
-                                            {[{title:'EMS 需求方', data:analytics.ems, color:'#64748b'},
-                                              {title:'MSD 開發方', data:analytics.msd, color:'#0f766e'}].map(side => (
+                                            {[{title:'EMS 需求方', data:analytics.ems, color:'#64748b', dept:'EMS'},
+                                              {title:'MSD 開發方', data:analytics.msd, color:'#0f766e', dept:'MSD'}].map(side => (
                                                 <div key={side.title}>
                                                     <div className="text-[10px] font-semibold mb-2 pb-1.5" style={{color:'var(--text-muted)', borderBottom:'1px solid var(--border-card)'}}>{side.title}</div>
                                                     {side.data.length === 0
                                                         ? <div className="text-[11px] py-2" style={{color:'var(--text-muted)'}}>尚無指派</div>
                                                         : side.data.map(o => (
-                                                        <div key={o.name} className="flex items-center gap-2 mb-2">
-                                                            <span className="text-xs truncate w-14 flex-shrink-0" style={{color:'var(--text-secondary)'}} title={o.name}>{o.name}</span>
-                                                            <div className="flex-1 h-3" style={{background:'var(--bg-bar-track)'}}>
+                                                        // 第 201 批（使用者選 6）：點人名 → 需求列表篩那個人＋進行中（筆數＝右邊的數字；未指派也篩得到）。
+                                                        // 第 202 批（使用者附截圖：「這邊也一起做成點擊直條圖可以對應到需求清單」）：整列（人名＋長條＋數字）都是同一顆 <button>
+                                                        <button key={o.name} type="button"
+                                                                className="group w-full flex items-center gap-2 mb-1 py-0.5 px-1 -mx-1 rounded text-left hover:bg-black/[0.03] dark:hover:bg-white/[0.04]"
+                                                                title={`${o.name}（${side.dept}）進行中 ${o.count} 件 · 點一下在需求列表查看`}
+                                                                aria-label={`${side.dept} ${o.name} 進行中 ${o.count} 件，到需求列表查看`}
+                                                                onClick={() => openListWith(() => {
+                                                                    if (side.dept === 'EMS') setEmsFilter(o.name); else setMsdFilter(o.name);
+                                                                    setProgressFilter('ongoing');
+                                                                })}>
+                                                            <span className="text-xs truncate w-14 flex-shrink-0 group-hover:underline decoration-dotted underline-offset-2"
+                                                                  style={{color:'var(--text-secondary)'}}>{o.name}</span>
+                                                            <span className="flex-1 h-3 block" style={{background:'var(--bg-bar-track)'}}>
                                                                 {/* 兩邊共用同一個基準值，EMS 與 MSD 的長度才有可比性 */}
-                                                                <div className="h-full" style={{width:`${Math.min((o.count/analytics.maxLoad)*100,100)}%`, background:side.color}}></div>
-                                                            </div>
+                                                                <span className="h-full block group-hover:brightness-125" style={{width:`${Math.min((o.count/analytics.maxLoad)*100,100)}%`, background:side.color}}></span>
+                                                            </span>
                                                             <span className="text-xs font-semibold tabular-nums w-5 text-right flex-shrink-0" style={{color:'var(--text-primary)'}}>{o.count}</span>
-                                                        </div>
+                                                        </button>
                                                     ))}
                                                 </div>
                                             ))}
@@ -10431,6 +10980,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                             左側凍結欄也讀這個 --row-bg（它會自己疊在不透明的卡片色上，
                                                             因為 --bg-row-done 這些值本身是半透明的） */}
                                                         <tr className={`row-main cursor-pointer transition-colors${isExp ? ' row-exp' : ''}`}
+                                                            data-row-id={item.id}
                                                             style={{borderBottom: isExp ? '1px solid var(--border-exp-row)' : '1px solid var(--border-row)',
                                                                     '--row-bg': rowBg}}
                                                             onClick={()=>toggleRow(item.id)}>
@@ -11134,7 +11684,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                     <AssigneeErrorHint error={assigneeError} />
                                                 </div>
                                                 <div>
-                                                    <label className="block text-sm font-bold mb-1.5" style={{color:'var(--text-primary)'}}>MSD 負責人 <span className="text-[11px] font-normal" style={{color:'var(--text-muted)'}}>選填</span></label>
+                                                    <label className="block text-sm font-bold mb-1.5" style={{color:'var(--text-primary)'}}>MSD 負責人 <span className="text-[11px] font-normal" style={{color:'var(--text-muted)'}}>選填（① 標記完成前要指定）</span></label>
                                                     {/* 「還不確定」就是空值 —— 建單當下多半真的還沒指定人，
                                                         「請選擇」會讀成「你漏了這一欄」 */}
                                                     <select className="w-full px-3 py-2.5 rounded-lg text-sm border outline-none focus:ring-2 ring-indigo-500/50" style={{background:'var(--bg-main)', borderColor:'var(--border-table)'}} value={editingData.msdOwner||''} onChange={e=>setEditingData({...editingData, msdOwner:e.target.value})}>
@@ -11896,6 +12446,30 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         </div>
                                         );
                                         })()}
+                                        {/* ─── ① 完成前要先指定 MSD 負責人（第 196 批）───
+                                            ⚠️ 必填；選項＝在職的 MSD（ownerSelectOptions，與編輯視窗同一份）。底色不透明（select 那條） */}
+                                        {m.needOwner && (
+                                        <div>
+                                            <label htmlFor="ct-done-msd-owner" className="block text-xs font-bold mb-1.5" style={{color:'var(--text-secondary)'}}>
+                                                MSD 負責人 <span style={{color:'var(--tone-alert)'}}>*</span>
+                                                <span className="font-normal ml-1" style={{color:'var(--text-muted)'}}>這筆還沒指定，完成前要先選</span>
+                                            </label>
+                                            <select id="ct-done-msd-owner" value={m.msdOwner || ''}
+                                                    onChange={e=>setDoneModal({...m, msdOwner:e.target.value})}
+                                                    className="w-full px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-teal-500/50"
+                                                    style={{background:'var(--bg-main)',
+                                                            borderColor: (m.msdOwner || '').trim() ? 'var(--border-table)' : 'var(--tone-alert)'}}>
+                                                <option value="">請選擇</option>
+                                                {ownerSelectOptions('MSD', '').map(name => <option key={name} value={name}>{name}</option>)}
+                                            </select>
+                                            <div className="mt-1 text-[11px]" style={{color: (m.msdOwner || '').trim() ? 'var(--text-muted)' : 'var(--tone-alert)'}}>
+                                                {(m.msdOwner || '').trim()
+                                                    ? '這筆需求的 MSD 負責人會一併存進去（會記在變更軌跡裡）。'
+                                                    : '① 完成後就輪到 MSD 確認，要先決定由誰接手。'}
+                                            </div>
+                                            <AssigneeErrorHint error={assigneeError} />
+                                        </div>
+                                        )}
                                         {/* 即時判定：按下去之前就看得到會被記成什麼 */}
                                         <div className="p-2.5 rounded-lg text-[11px]"
                                              style={ok
@@ -12010,7 +12584,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         {/* ⚠️⚠️ 一定要包一層箭頭函式：submitDone 第 92 批起收參數 mIn，
                                             寫成 onClick={submitDone} 時 React 會把**點擊事件**當成 mIn 傳進去，
                                             m 變成事件物件 → 日期判成無效 → 跳出的提示又被這個視窗蓋住 ＝「按了沒反應」（第 115 批） */}
-                                        <button onClick={() => submitDone()} disabled={isSubmitting || !ok || !exOk || (m.needLink && (!linkOkOpt(m.notesLink) || isOverLimit(m.notesLink, FIELD_MAX.notesLink)))}
+                                        <button onClick={() => submitDone()} disabled={isSubmitting || !ok || !exOk || (m.needLink && (!linkOkOpt(m.notesLink) || isOverLimit(m.notesLink, FIELD_MAX.notesLink))) || (m.needOwner && !(m.msdOwner || '').trim())}
                                                 className="px-5 py-2 rounded-lg text-sm font-bold text-white shadow-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                                                 style={{background:'var(--tone-good)'}}>
                                             {isSubmitting ? '處理中…' : m.backfill ? '確認補記' : '確認完成'}
