@@ -150,7 +150,7 @@ AppDiag.Init(connectionString);
 // `smtp`   ：這台主機自己連 relay（第 39 批做的，已完整測過）
 // `dbmail` ：呼叫 DB 主機上的 `msdb.dbo.sp_send_dbmail`，**借用 DB 主機到 relay 那條已經通的路**
 //
-// 為什麼會有第二種：網站跑在 p58esiap12、DB 在 p58esiap08，而 relay（10.20.30.12）
+// 為什麼會有第二種：網站跑在 p58esiap12、DB 在 p58esiap08，而 relay（當時寫的是 10.20.30.12；第 184 批起實際用 10.13.2.221，見 Mail:Host）
 // 是**依來源 IP 白名單**放行的 —— p58esiap08 早就在清單裡（它的 Database Mail 一直在用），
 // p58esiap12 是新的來源。使用者選擇不去測 p58esiap12 那條路，直接借道 p58esiap08。
 // ⚠️ 信的內容、收件者、副本、寄件者規則**兩種模式完全共用**，換的只有最後「怎麼送出去」。
@@ -160,10 +160,10 @@ var useDbMail    = mailMode == "dbmail";
 // Database Mail 的設定檔名稱。留空 = 交給 SQL Server 用預設設定檔
 //（先找目前使用者的預設私人設定檔，再找預設公用設定檔）。
 var dbMailProfile = (builder.Configuration["Mail:DbMailProfile"] ?? "").Trim();
-// ⚠️ 讓 sp_send_dbmail 用「操作者本人」當寄件者（`@from_address`）。
-//    有些 relay 只准設定檔裡那個帳戶當寄件者，被拒的話把這個設成 false ——
-//    那時寄件者會變成 Database Mail 帳戶本身，但 `@reply_to` 仍然是本人，
-//    收件者按「回覆」還是會回到他手上（使用者要的那件事沒有丟掉）。
+// ⚠️ 讓 sp_send_dbmail 用 Mail:From（系統信箱 Controltable@umc.com，第 184 批起一律用它；
+//    在此之前是「按按鈕的本人」）當寄件者（`@from_address`）。
+//    有些 relay 只准 Database Mail 設定檔裡那個帳戶當寄件者，被拒的話把這個設成 false ——
+//    那時寄件者會變成 Database Mail 帳戶本身，`@reply_to` 仍然是系統信箱（信尾寫明請勿直接回覆）。
 var dbMailOverrideFrom = builder.Configuration.GetValue<bool?>("Mail:DbMailOverrideFrom") ?? true;
 
 var mailHost     = (builder.Configuration["Mail:Host"] ?? "").Trim();
@@ -611,6 +611,31 @@ static string ReadStamp(SqlDataReader reader, string column)
     return reader.IsDBNull(ord) ? "" : reader.GetDateTime(ord).ToString("yyyy-MM-dd HH:mm:ss");
 }
 
+// ─── 版本 token ＝「UpdatedAt（到秒）＃最後一筆變更紀錄的 Id」（第 226 批，健檢 C2）───
+// 只比 UpdatedAt 的話，同一秒內的兩次存檔互相看不見（DATETIME2(0) 只到秒）：
+// 實測甲改 ③ 結束日、乙同一秒用舊畫面存 → 乙沒被 409 擋，反而跳「③ 結束日被修改了，必須填理由」。
+// 每一次真的有改東西都會寫稽核列（日期、狀態、欄位異動、完成、退回、撤銷…），所以接上最後一筆的 Id
+// 就分得出同一秒內的兩個版本，**不需要資料庫腳本**。
+// ⚠️ 排除 `通知寄送`：別人按了 ✉ 不算改了這筆需求，不可以讓正在編輯的人存不了檔。
+// ⚠️ GET 與 PUT 的 before 讀取都要帶 LastHistIdSql 這一欄，兩邊才對得上。
+const string LastHistIdSql = @"(SELECT MAX(h.Id) FROM dbo.Controltable_History h
+                                 WHERE h.RequirementId = dbo.Controltable.Id AND h.ChangeType <> N'通知寄送') AS LastHistId";
+static string ReadVersionToken(SqlDataReader reader)
+{
+    int ord = reader.GetOrdinal("LastHistId");
+    var hid = reader.IsDBNull(ord) ? 0 : reader.GetInt32(ord);
+    return ReadStamp(reader, "UpdatedAt") + "#" + hid;
+}
+// 呼叫端送來的 token 對不對得上目前的版本。⚠️ 舊格式（沒有「#」，第 226 批之前開著的畫面）只比 UpdatedAt，
+// 否則部署當下所有開著的編輯視窗一按儲存都會被當成「已被其他人修改」
+static bool VersionTokenMatches(string sent, string current)
+{
+    sent = sent.Trim();
+    if (sent.Contains('#')) return sent == current;
+    var i = current.IndexOf('#');
+    return sent == (i < 0 ? current : current[..i]);
+}
+
 // INT 欄位；三個計數欄雖然是 NOT NULL DEFAULT 0，仍防一手 NULL
 static int ReadInt(SqlDataReader reader, string column)
 {
@@ -619,9 +644,10 @@ static int ReadInt(SqlDataReader reader, string column)
 }
 
 // ─── 異動人員 (ChangedBy) ───
-// 作法對齊 C:\Gantt：前端載入時打 /api/whoami 取得 Windows 帳號，之後每次寫入時附帶。
-// ⚠️ 帳號由前端帶回來是可以被偽造的，但本專案目前沒有權限模型（見 memory.md「角色權限暫不實作」），
-//    Gantt 也是同樣做法。等日後真的做權限時再改成後端直接取。
+// 第 222 批起**一律由伺服器讀 Windows 帳號**（ResolveActor → WindowsEmpId，測試區模擬中＝被模擬的人）。
+// 前端仍會照送 actorEmpId／actorSource（欄位保留），後端不看。
+// 在此之前（作法對齊 Gantt 專案）是前端打 /api/whoami 取得帳號、寫入時附帶 —— 可以被偽造，所以改掉了。
+// ⚠️ 只改「記成誰」，不檢查「誰可以改」（本專案沒有角色權限模型）。
 var authStripPrefix = builder.Configuration["Auth:WindowsDomainStripPrefix"] ?? "UMC";
 var allowSimulation = builder.Configuration.GetValue<bool>("Auth:AllowSimulation");
 
@@ -636,19 +662,22 @@ static string StripDomain(string raw, string prefix)
     return s.Trim();
 }
 
-// 前端送來的操作者資訊 → (帳號, 來源)。
+// 這次寫入記成誰 → (帳號, 來源)。（函式名稱與下面幾行沿用第 222 批之前「讀前端送來的資訊」那一版，現在一律讀伺服器端的 Windows 帳號，見下方第 222 批）
 // 來源只認 windows / simulated，其餘一律 unknown —— 模擬帳號一定要留下標記，
 // 否則假身分會靜靜混進稽核紀錄，而那正是稽核表要防的事。
-(string? Name, string Source) ResolveActor(Requirement req)
+// ⚠️⚠️ 第 222 批（2026-10-17 健檢 A1，使用者選的）：**不再採用前端送的 actorEmpId／actorSource**。
+//    在此之前繞過畫面送「工號 CEO001、來源 windows」就會照記（實測），變更軌跡可以冒名。
+//    現在七支寫入端點（新增／存檔／刪除／完成／退回重做／撤銷完成／單筆 ✉）都掛 Negotiate，
+//    工號一律由 WindowsEmpId() 讀：正式區＝Windows 登入者；測試區模擬中（X-CT-Sim-EmpId，第 221 批）＝被模擬的人、來源記 simulated。
+//    只改「記成誰」，**不加任何「誰可以改」的檢查**（管理者改別人負責的需求照舊）。
+//    Requirement／DoneRequest… 的 actorEmpId／actorSource 欄位保留（前端照送、這裡不看），舊版前端打過來也不會壞。
+(string? Name, string Source) ResolveActor(HttpContext ctx)
 {
-    var name = StripDomain(req.actorEmpId ?? "", authStripPrefix);
+    var name = WindowsEmpId(ctx);
+    if (name == null) return (null, "unknown");
     if (name.Length > 100) name = name[..100];
-    if (string.IsNullOrWhiteSpace(name)) return (null, "unknown");
-
-    var src = (req.actorSource ?? "").Trim().ToLowerInvariant();
-    if (src == "simulated") return (allowSimulation ? name : null, allowSimulation ? "simulated" : "unknown");
-    if (src == "windows") return (name, "windows");
-    return (name, "unknown");
+    var simulated = allowSimulation && ctx.Request.Headers["X-CT-Sim-EmpId"].ToString() != "";
+    return (name, simulated ? "simulated" : "windows");
 }
 
 // ─── 跨站請求防護（2026-08-23 / 第 22 批）───
@@ -727,7 +756,16 @@ app.MapGet("/api/whoami", (HttpContext ctx) =>
 
 // 模擬帳號是否開放（前端要知道要不要顯示切換入口）。這支不需要驗證，
 // 否則非網域環境連「能不能模擬」都問不到，等於整個功能鎖死
-app.MapGet("/api/authinfo", () => Results.Ok(new { allowSimulation }));
+// 第 229 批（健檢 K1，使用者看過示意圖：「照你建議修改」）：envLabel ＝ 設定檔的 Site:EnvLabel（這台主機叫什麼）。
+// 測試區與正式區是兩個資料庫、各有自己的寄信模式，畫面卻一模一樣 —— 由使用者**明確指定**，不從「有沒有開模擬帳號」推
+// （正式區暫時開模擬時會被標錯）。沒寫或空白＝不顯示，所以正式區不用改任何東西。最多 10 字。
+// ⚠️ 版控裡的 appsettings.json **不可以寫這一段**（會跟著發佈到正式區）；開發機寫在 appsettings.Development.json。
+app.MapGet("/api/authinfo", () =>
+{
+    var envLabel = (app.Configuration["Site:EnvLabel"] ?? "").Trim();
+    if (envLabel.Length > 10) envLabel = envLabel[..10];
+    return Results.Ok(new { allowSimulation, envLabel });
+});
 
 // ─── 頁面瀏覽權限卡控（第 74 批，2026-09-21）───
 // 做法對齊 C:\Gantt（Program.cs 的 /api/access-check 那一段）：登入者工號 → 查
@@ -737,8 +775,8 @@ app.MapGet("/api/authinfo", () => Results.Ok(new { allowSimulation }));
 //
 // ⚠️ 與 Gantt 的三個刻意差異（使用者 2026-09-21 拍板）：
 //   1. **工號由後端自己從 ctx.User 讀**（這幾支都掛 Negotiate），不收前端的 ?empId ——
-//      Gantt 那支收參數，改網址就能用別人的工號過門。模擬帳號（AllowSimulation）因此也
-//      不能拿來過門：它只存在前端 state 裡，這裡看不到。
+//      Gantt 那支收參數，改網址就能用別人的工號過門。
+//      ⚠️ 第 221 批起：測試區（AllowSimulation=true）模擬中改看被模擬的人（見 WindowsEmpId），正式區照舊只看 ctx.User。
 //   2. **誰能改規則 = appsettings 的 Access:Admins 工號清單**，不是「自己選主管登入」。
 //      管理者**一律可瀏覽、不受規則限制** —— 規則設錯時唯一的出路不能只剩 SSMS。
 //   3. 卡控**只擋畫面**：/api/requirements 等端點維持匿名，curl／測試腳本／寄信路徑完全不受影響。
@@ -796,8 +834,25 @@ async Task<HashSet<string>> AccessAdminsAsync(SqlConnection conn)
 }
 
 // 目前這個請求的 Windows 工號。掛了 Negotiate 的端點才會有值；其餘是 null
+// ⚠️⚠️ 第 221 批（2026-10-17 使用者：模擬帳號要完全等同那個人用 Windows 帳號登入 → 全改）：
+//    **Auth:AllowSimulation=true（只在測試區開）時**，前端模擬中會在每個請求帶 X-CT-Sim-EmpId（encodeURIComponent），
+//    這裡改回傳被模擬的人 —— 瀏覽權限閘門、管理者判斷（🔐 面板與它的寫入）、批次提醒能不能按，全部跟著被模擬的人走，
+//    推翻第 74／135 批「模擬過不了門、後端只看真實帳號」。正式區 AllowSimulation=false，這個標頭一律不看，
+//    所以正式區的安全邊界不變。/api/whoami 不經過這裡（前端靠它拿真實帳號，才還原得回來）
 string? WindowsEmpId(HttpContext ctx)
 {
+    if (allowSimulation)
+    {
+        var raw = ctx.Request.Headers["X-CT-Sim-EmpId"].ToString();
+        if (raw != "")
+        {
+            string dec;
+            try { dec = Uri.UnescapeDataString(raw); } catch { dec = raw; }
+            var sim = StripDomain(dec, authStripPrefix);
+            if (sim.Length > 100) sim = sim[..100];
+            if (sim != "") return sim;
+        }
+    }
     var s = StripDomain(ctx.User?.Identity?.Name ?? "", authStripPrefix);
     return string.IsNullOrWhiteSpace(s) ? null : s;
 }
@@ -1486,7 +1541,7 @@ app.MapGet("/api/requirements", async () =>
                    MsdStart, MsdEnd, MsdActualEnd, MsdHistory,
                    UatStart, UatEnd, UatActualEnd, UatHistory,
                    CurrentStatus, MpSaving, CreatedAt, UpdatedAt,
-                   DelayCount, EarlyCount, RollbackCount
+                   DelayCount, EarlyCount, RollbackCount, " + LastHistIdSql + @"
             FROM dbo.Controltable
             WHERE IsDeleted = 0
             -- ⚠️ ORDER BY 不可省（2026-08-23 / 第 22 批）。前端的預設排序鍵是 null，
@@ -1520,7 +1575,7 @@ app.MapGet("/api/requirements", async () =>
                 createdAt = ReadDateTime(reader, "CreatedAt"),
                 updatedAt = ReadDateTime(reader, "UpdatedAt"),
                 // 樂觀鎖的版本 token（帶秒）。前端原樣帶回 PUT，不顯示在畫面上
-                updatedAtToken = ReadStamp(reader, "UpdatedAt"),
+                updatedAtToken = ReadVersionToken(reader),
                 delayCount = ReadInt(reader, "DelayCount"),
                 earlyCount = ReadInt(reader, "EarlyCount"),
                 rollbackCount = ReadInt(reader, "RollbackCount"),
@@ -1633,8 +1688,22 @@ app.MapGet("/api/assignees", async () =>
     }
 });
 
+// ─── 指派名單的寫入預設關閉（第 222 批，2026-10-17 健檢 A2，使用者選「預設關閉」）───
+// 名單由使用者在 SSMS 維護、畫面入口 2026-08-18 已拿掉，但這三支一直是匿名可寫：健檢實測不登入就能新增 MSD 人員
+// （→ 需求列表整頁可編輯）、改掉別人的工號、刪人，而且沒有任何紀錄。比照 Import:Enabled（第 149 批）：
+// Assignee:EditEnabled 沒寫或不是 true 一律 403，擋在最前面。即時讀取、字串比對（不用 GetValue<bool>，壞值會 500）。
+// GET 照舊匿名（負責人下拉、模擬視窗、信箱查詢都靠它）。
+// 日後要恢復「指派人員維護」視窗：設定檔開 Assignee:EditEnabled ＋ 把入口鈕加回來，**同時改成只給管理者並補名單變動紀錄**（健檢 G4）。
+IResult? AssigneeEditBlocked(string what)
+{
+    if (string.Equals(app.Configuration["Assignee:EditEnabled"]?.Trim(), "true", StringComparison.OrdinalIgnoreCase)) return null;
+    AppDiag.Error("assignees", $"指派名單{what}被拒絕：Assignee:EditEnabled 未開啟。");
+    return Results.Json(new { message = "指派人員名單請在 SSMS 的 dbo.Assignee 維護，網頁上不開放新增、修改或刪除，名單沒有任何變動。" }, statusCode: 403);
+}
+
 app.MapPost("/api/assignees", async (Assignee a) =>
 {
+    if (AssigneeEditBlocked("新增") is { } blockedAdd) return blockedAdd;
     var err = ValidateAssignee(a);
     if (err != null) return Results.BadRequest(new { message = err });
 
@@ -1673,6 +1742,7 @@ app.MapPost("/api/assignees", async (Assignee a) =>
 //    一律驗的話，光是按「停用」（只改 IsActive）都會被擋住。
 app.MapPut("/api/assignees/{id}", async (int id, Assignee a) =>
 {
+    if (AssigneeEditBlocked("修改") is { } blockedPut) return blockedPut;
     var err = ValidateAssignee(a);
     if (err != null) return Results.BadRequest(new { message = err });
 
@@ -1743,6 +1813,7 @@ app.MapPut("/api/assignees/{id}", async (int id, Assignee a) =>
 // 真的刪除只留給「從來沒被指派過」的錯誤建檔（例如打錯字的那種）。
 app.MapDelete("/api/assignees/{id}", async (int id) =>
 {
+    if (AssigneeEditBlocked("刪除") is { } blockedDel) return blockedDel;
     using var conn = new SqlConnection(connectionString);
     await conn.OpenAsync();
 
@@ -1801,8 +1872,9 @@ static string[] MissingRequiredFields(Requirement req, Requirement? before = nul
     // 只會逼使用者先隨手填一個，而那個假日期會直接流進逾期判定與統計，
     // 比「沒有日期」更難查（沒有日期至少看得出來是沒排）。
     // ⚠️ 沒壓日期**不會變成沒人管**：新增時 StatusID 一律是 1，① 這一階段自己沒有日期
-    //    就正好命中第 33 批的「⚠ 未壓日期」—— 資料列上那一格會標紅色徽章並附一顆 ✉，
-    //    儲存成功後前端也會直接問要不要寄信通知 EMS 負責人（見 app.jsx 的 askNotifyUnset）。
+    //    就正好命中第 33 批的「⚠ 未壓日期」—— 資料列上那一格會標紅色徽章並附一顆 ✉（MSD／管理者），
+    //    EMS 負責人自己的「我的待辦」也會把它列在「要你處理」。
+    //    （第 124 批起存檔後**不再**自動問要不要寄信，askNotifyUnset 不接回 saveRequirement）
     //    這條規則能放寬的前提就是那兩個出口，動它們之前先回來看這一段。
     //
     // 規格回退到 ① 會把 SpecStart / SpecEnd 清成 NULL，同樣不擋（2026-08-22 / 第 21 批）——
@@ -1810,7 +1882,15 @@ static string[] MissingRequiredFields(Requirement req, Requirement? before = nul
     // 就是第 14 批刻意避開的「有值卻改不動」。
     // 條件寫成「原本有值」而不是直接不驗，是為了仍然擋住「手動把既有的 Spec 結束日清空」。
     if (before != null && !string.IsNullOrWhiteSpace(before.spec?.end))
-        Need(req.spec?.end, "EMS 提 Spec 結束日");
+        Need(req.spec?.end, "① EMS規格確認 結束日");
+    // ─── 過了 ① 就不能把 MSD 負責人清空（第 215 批，使用者同意）───
+    // ① 標記完成時一定要指定 MSD 負責人（第 196 批），但在這之前 PUT 可以事後把它清掉，
+    // ②③ 的交棒信就變成「不知道要寄給誰」。界線與上面的 Spec 結束日同一套：**只擋原本有值、這次清空**，
+    // 換人照樣可以；匯入來的舊資料本來就空的不擋（否則連改現況描述都存不了，第 14 批）。
+    // ⚠️ 看的是 before 的目前階段（往回改有 H2 擋著）。前端 requiredFieldsFor() 是鏡像
+    if (before != null && !string.IsNullOrWhiteSpace(before.msdOwner)
+        && int.TryParse(NormStage(before.stageCode), out var bStage) && bStage >= 2)
+        Need(req.msdOwner, "MSD 負責人（已過 ①，只能換人、不能清空）");
     return missing.ToArray();
 }
 
@@ -1823,7 +1903,8 @@ static string[] MissingRequiredFields(Requirement req, Requirement? before = nul
 // ⚠️⚠️ **不可以改成「靜靜截斷」** —— 那是把他剛打的字丟掉而且不告訴他。
 //    一律回 400 並講明：哪一欄、上限幾字、他現在打了幾字。
 // ⚠️ 這些數字**必須與 DB 的欄位定義一致**（見 DB_table.md）；前端 app.jsx 的 FIELD_MAX
-//    是這一份的鏡像（maxLength 屬性 ＋ validateEdit 就地標紅），**改了要兩邊一起改**。
+//    是這一份的鏡像（LenHint 提示 ＋ validateEdit 就地標紅），**改了要兩邊一起改**。
+//    ⚠️ 第 178 批起前端輸入框**刻意不設 maxLength**（貼上會被靜靜截掉），不要加回去。
 // ⚠️ 現況描述（CurrentStatus）是 NVARCHAR(MAX)，**刻意沒有上限**，不要順手補一個。
 // ⚠️ 用 Trim() 之後的長度算 —— 寫入走 AddText()，它存進去的就是 Trim 過的值。
 // ⚠️ 數字本身放在檔尾的 FieldLimits（top-level statements 裡不能宣告 static readonly 欄位）。
@@ -1887,11 +1968,51 @@ static string[] InvalidDateRanges(Requirement req)
         if (s.HasValue && e.HasValue && e.Value < s.Value) bad.Add(label);
     }
 
-    Check(req.spec?.start, req.spec?.end, "1. EMS 需求Spec提供");
-    Check(req.msd?.start, req.msd?.end, "3. MSD 開發");
-    Check(req.uat?.start, req.uat?.end, "4. EMS 驗收");
+    // 第 223 批健檢順手：階段名換成現行寫法（第 151 批起不可再寫「1. EMS…」）
+    Check(req.spec?.start, req.spec?.end, "① EMS規格確認");
+    Check(req.msd?.start, req.msd?.end, "③ MSD開發");
+    Check(req.uat?.start, req.uat?.end, "④ EMS驗收");
     return bad.ToArray();
 }
+
+// ─── 年份明顯不合理的日期（第 224 批，2026-10-17 健檢 A5，使用者：「A5先做」）───
+// 健檢實測後端收 1900-01-01、2099-12-31。把 2026 打成 2062 存進去之後，改回來會被當成一次「日期異動」
+// （要填理由、⚠ 加一、本月到期達成可能算成日期延後）—— 一個打字錯誤變成一筆看起來像延誤的紀錄。
+// 只擋「明顯不可能」的：早於 2000-01-01 或晚於今天＋10 年；一年以上的遠期日期由前端多問一次（不擋）。
+// ⚠️ 只看這次被動到的欄位（與 gating 同一條界線）：既有資料就算有怪年份，改別的欄位照樣存得了。
+// 前端 validateEdit 鏡像（implausibleDates），改界線兩邊一起改。
+static (string Key, string Text)[] ImplausibleDates(Requirement req, Requirement? before)
+{
+    var min = new DateTime(2000, 1, 1);
+    var max = DateTime.Today.AddYears(10);
+    var list = new (string Key, string Label, string? Now, string? Was)[]
+    {
+        ("spec.start",  "① EMS規格確認 開始日", req.spec?.start,  before?.spec?.start),
+        ("spec.end",    "① EMS規格確認 結束日", req.spec?.end,    before?.spec?.end),
+        ("msd.confirm", "② MSD確認 確認日",    req.msd?.confirm, before?.msd?.confirm),
+        ("msd.start",   "③ MSD開發 開始日",    req.msd?.start,   before?.msd?.start),
+        ("msd.end",     "③ MSD開發 結束日",    req.msd?.end,     before?.msd?.end),
+        ("uat.start",   "④ EMS驗收 開始日",    req.uat?.start,   before?.uat?.start),
+        ("uat.end",     "④ EMS驗收 結束日",    req.uat?.end,     before?.uat?.end),
+    };
+    var bad = new List<(string, string)>();
+    foreach (var x in list)
+    {
+        var d = ParseDate(x.Now);
+        if (!d.HasValue) continue;
+        if (before != null && ParseDate(x.Was) == d) continue;
+        if (d.Value < min || d.Value > max) bad.Add((x.Key, $"{x.Label} {d.Value:yyyy-MM-dd}"));
+    }
+    // 開始日沒填時 ApplyStartDefaults 會補成與結束日同一天 —— 同一個錯字不要列兩行（fields 照樣兩格都標）
+    var shown = bad.Where(b => !(b.Item1.EndsWith(".start")
+                                 && bad.Any(e => e.Item1 == b.Item1.Replace(".start", ".end")
+                                              && e.Item2.EndsWith(b.Item2[^10..])))).ToList();
+    return shown.Count == bad.Count ? bad.ToArray()
+         : shown.Concat(bad.Except(shown).Select(b => (b.Item1, ""))).ToArray();
+}
+static string ImplausibleDatesMessage((string Key, string Text)[] bad) =>
+    $"以下日期的年份看起來不對（只接受 2000-01-01 到 {DateTime.Today.AddYears(10):yyyy-MM-dd}），資料沒有存：\n"
+    + string.Join("\n", bad.Where(b => b.Text != "").Select(b => "• " + b.Text)) + "\n\n請確認年份有沒有打錯。";
 
 // ─── 跨階段的 End 必須遞增（2026-08-22 / 第 21 批）───
 // InvalidDateRanges() 只管每個階段**自己**的 start ≤ end，PhaseGatingViolations() 只管
@@ -2022,7 +2143,7 @@ static string? StatusStageMismatch(Requirement req)
           + "結案只能由 ④ EMS驗收 的「標記完成…」推進（它會把目前階段推到「⑤ 結案」並自動改成 Done）；"
           + "若是匯入資料的階段填錯，請把目前階段一併調到「⑤ 結案」並填寫異動原因。"
         : $"目前階段是「⑤ 結案」時 Status 必須是 Done（目前是 {StatusText(req.status)}）。\n\n"
-          + "要把已結案的需求重新打開，請用「🔄 退回重做」—— 它會把目前階段退回去並自動改成 Ongoing；"
+          + "要把已結案的需求重新打開，請用「退回重做」—— 它會把目前階段退回去並自動改成 Ongoing；"
           + "直接改 Status 會留下一筆「目前階段已結案、卻算在進行中」的需求，而且不會出現在任何預警裡。";
 }
 
@@ -2163,10 +2284,55 @@ static async Task<bool> NidExistsAsync(SqlConnection conn, string? nid, int excl
 //    因此 POST 在 **交易裡**用 (UPDLOCK, HOLDLOCK) 再查一次 —— 後進來的那一個會被擋住，
 //    等前一個 commit 之後就看得到那筆、回 409 請他換號。沒有這一道而索引又不存在時，
 //    結果是兩筆 NID 63 靜靜進了資料庫，而這張表的所有畫面都假設 NID 是唯一的。
+// ─── 這個名字是不是「在職的 MSD」（第 215 批）───
+// 回 null＝沒問題；否則回原因（給 /done 的 400 訊息）。前端 msdOwnerIssue() 是鏡像，改規則兩邊一起改。
+// 比對兩邊 trim（控表存姓名字串、沒有外鍵，見 dbo.Assignee 的說明）
+static async Task<string?> MsdOwnerIssueAsync(SqlConnection conn, string? name, SqlTransaction? tx = null)
+{
+    var n = (name ?? "").Trim();
+    if (n == "") return "還沒指定";
+    using var cmd = new SqlCommand(
+        "SELECT TOP 1 CAST(ISNULL(IsActive, 0) AS INT) FROM dbo.Assignee WHERE DEPT = N'MSD' AND LTRIM(RTRIM(NAME)) = @N ORDER BY IsActive DESC", conn, tx);
+    cmd.Parameters.AddWithValue("@N", n);
+    var v = await cmd.ExecuteScalarAsync();
+    if (v == null || v == DBNull.Value) return $"「{n}」不在指派人員名單（MSD）裡";
+    return Convert.ToInt32(v) == 1 ? null : $"「{n}」已停用";
+}
+
+// ─── 負責人欄位要是指派名單裡「同部門、在職」的人（第 220 批）───
+// 控表存姓名字串、沒有外鍵；畫面是下拉選單選不出別的值，但 API 直接送什麼都收 —— 實測 MSD 負責人存成「不存在的人」、
+// EMS 負責人填 MSD 的人都存得進去，結果那筆不會出現在任何人的「我的待辦」、自動信也寄不出去。
+// ⚠️ **只在欄位這次被改動時才驗**（第 14 批「有值卻永遠改不動」那條界線）：既有的停用／對不上的舊值不被動到就不擋。
+// 空字串回 null（要不要必填由 MissingRequiredFields 決定）。前端 ownerIssueOf() 是鏡像
+static async Task<string?> OwnerIssueAsync(SqlConnection conn, string dept, string? name, SqlTransaction? tx = null)
+{
+    var n = (name ?? "").Trim();
+    if (n == "") return null;
+    using var cmd = new SqlCommand(
+        "SELECT TOP 1 CAST(ISNULL(IsActive, 0) AS INT) FROM dbo.Assignee WHERE DEPT = @D AND LTRIM(RTRIM(NAME)) = @N ORDER BY IsActive DESC", conn, tx);
+    cmd.Parameters.AddWithValue("@D", dept);
+    cmd.Parameters.AddWithValue("@N", n);
+    var v = await cmd.ExecuteScalarAsync();
+    if (v == null || v == DBNull.Value) return $"「{n}」不在指派人員名單（{dept}）裡";
+    return Convert.ToInt32(v) == 1 ? null : $"「{n}」在指派人員名單裡已停用";
+}
+
+// 目前階段 ≥ 2（已經走過 ①、交給 MSD）時 MSD 負責人要是在職的 MSD（第 220 批）。null＝沒問題
+static async Task<string?> StageNeedsMsdOwnerAsync(SqlConnection conn, Requirement req, SqlTransaction? tx = null)
+{
+    if (!int.TryParse(NormStage(req.stageCode), out var n) || n < 2) return null;
+    var w = await MsdOwnerIssueAsync(conn, req.msdOwner, tx);
+    return w == null ? null
+        : $"目前階段是「{StageText(req.stageCode)}」，代表已經走過「① EMS規格確認」、交給 MSD，MSD 負責人一定要是在職的 MSD（{w}）。\n\n"
+        + "請先指定 MSD 負責人再儲存。";
+}
+
 static bool IsUniqueViolation(SqlException ex) => ex.Number == 2601 || ex.Number == 2627;
 
-app.MapPost("/api/requirements", async (Requirement req) =>
+app.MapPost("/api/requirements", async (Requirement req, HttpContext ctx) =>
 {
+    if (IsCrossSiteRequest(ctx))   // 第 233 批：見撤銷完成那一支的說明
+        return Results.BadRequest(new { message = "偵測到跨站請求，已拒絕。請從系統本身的畫面操作。" });
     ApplyStartDefaults(req);                      // Start 沒填就補成與 End 同一天（要在所有驗證之前）
     var missing = MissingRequiredFields(req);
     if (missing.Length > 0)
@@ -2192,6 +2358,14 @@ app.MapPost("/api/requirements", async (Requirement req) =>
             message = "以下區塊的 End Date 早於 Start Date：" + string.Join("、", badRanges) + "。End Date 必須等於或晚於 Start Date。",
             fields = badRanges
         });
+
+    // 年份明顯不合理（第 224 批，健檢 A5）
+    var oddDates = ImplausibleDates(req, null);
+    if (oddDates.Length > 0)
+        return Results.BadRequest(new { message = ImplausibleDatesMessage(oddDates), fields = oddDates.Select(b => b.Key).ToArray() });
+    // 規格文件有填就一定要是連結（第 227 批，健檢 C3）
+    var linkIssueNew = NotesLinkIssue(req, null);
+    if (linkIssueNew != null) return Results.BadRequest(new { message = linkIssueNew, fields = new[] { "notesLink" } });
 
     // Status 只能是 Init / Ongoing / Done 或空（第 23 批）。新增是「整筆都是新填的」，所以一律驗
     if (!IsValidStatus(req.status))
@@ -2248,6 +2422,19 @@ app.MapPost("/api/requirements", async (Requirement req) =>
     if (await NidExistsAsync(conn, req.nid))
         return Results.Conflict(new { message = $"NID「{req.nid}」已存在，請改用其他編號。", field = "nid" });
 
+    // 第 220 批：負責人要是同部門、在職的人；目前階段 ≥ 2 時一定要有 MSD 負責人（實測 API 能直接建在第 3 階段、沒有 MSD 負責人）
+    {
+        var probs = new List<string>(); var fs = new List<string>();
+        var we = await OwnerIssueAsync(conn, "EMS", req.emsOwner);
+        if (we != null) { probs.Add($"EMS 負責人：{we}"); fs.Add("emsOwner"); }
+        var wm = await OwnerIssueAsync(conn, "MSD", req.msdOwner);
+        if (wm != null) { probs.Add($"MSD 負責人：{wm}"); fs.Add("msdOwner"); }
+        if (probs.Count > 0)
+            return Results.BadRequest(new { message = "負責人要從指派人員名單裡選：\n" + string.Join("\n", probs.Select(p => "• " + p)), fields = fs });
+        var ws = await StageNeedsMsdOwnerAsync(conn, req);
+        if (ws != null) return Results.BadRequest(new { message = ws, fields = new[] { "msdOwner" } });
+    }
+
     // 註冊日期沒帶就用今天（見 FIELD_SPEC.md「情況一：新增需求」的自動預設值）
     if (!ParseDate(req.regDate).HasValue)
         req.regDate = DateTime.Today.ToString("yyyy-MM-dd");
@@ -2279,7 +2466,7 @@ app.MapPost("/api/requirements", async (Requirement req) =>
         req.Id = newId;
 
         // 新增時已填的日期一律記成 init（不算異動，只是留下起始基準）
-        var (actor, actorSrc) = ResolveActor(req);
+        var (actor, actorSrc) = ResolveActor(ctx);
         await WriteAuditAsync(conn, newId, req, null, actor, actorSrc, tx);
         // ─── 建立紀錄（第 85 批，2026-09-28）───
         // ⚠️⚠️ 在此之前「這筆需求是誰開的」全系統查不到：dbo.Controltable 沒有 CreatedBy 欄，
@@ -2310,10 +2497,12 @@ app.MapPost("/api/requirements", async (Requirement req) =>
     }
 
     return Results.Ok(req);
-});
+}).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
 
-app.MapPut("/api/requirements/{id}", async (int id, Requirement req) =>
+app.MapPut("/api/requirements/{id}", async (int id, Requirement req, HttpContext ctx) =>
 {
+    if (IsCrossSiteRequest(ctx))   // 第 233 批：見撤銷完成那一支的說明
+        return Results.BadRequest(new { message = "偵測到跨站請求，已拒絕。請從系統本身的畫面操作。" });
     ApplyStartDefaults(req);                      // Start 沒填就補成與 End 同一天（要在所有驗證與稽核比對之前）
 
     // ⚠️ 必填欄位的檢查移到讀出 before 之後（第 21 批）—— Spec 結束日的必填與否
@@ -2348,12 +2537,14 @@ app.MapPut("/api/requirements/{id}", async (int id, Requirement req) =>
     //    MpSaving / Remark / NotesLink / CurrentStatus）—— WriteFieldAuditAsync() 要拿它們比對。
     //    少讀一欄的後果是「那一欄永遠被判成從空白改成新值」，而不是「不記錄」，所以這份
     //    SELECT 與 AuditFields 必須對齊：日後往 AuditFields 加欄位，這裡要一起加。
+    // ⚠️ WITH (UPDLOCK, ROWLOCK)（第 226 批，健檢 C1）：同時到的兩個存檔，第二個會停在這裡等第一個 Commit，
+    //    再讀到新的版本 → 樂觀鎖正確回 409。沒有這道鎖時兩個都讀到舊版本、都通過比對、後存的整筆蓋掉先存的。
     using (var oldCmd = new SqlCommand(@"
         SELECT Status, StageCode, MsdConfirmNote, UpdatedAt,
                NID, RegDate, MainCat, SubCat, EmsOwner, MsdOwner, MpSaving, Remark, NotesLink, CurrentStatus,
                SpecStart, SpecEnd, MsdConfirm, MsdStart, MsdEnd, UatStart, UatEnd,
-               SpecActualEnd, MsdConfirmActualEnd, MsdActualEnd, UatActualEnd
-        FROM dbo.Controltable WHERE Id = @Id AND IsDeleted = 0", conn, tx))
+               SpecActualEnd, MsdConfirmActualEnd, MsdActualEnd, UatActualEnd, " + LastHistIdSql + @"
+        FROM dbo.Controltable WITH (UPDLOCK, ROWLOCK) WHERE Id = @Id AND IsDeleted = 0", conn, tx))
     {
         oldCmd.Parameters.AddWithValue("@Id", id);
         using var r = await oldCmd.ExecuteReaderAsync();
@@ -2382,18 +2573,20 @@ app.MapPut("/api/requirements/{id}", async (int id, Requirement req) =>
                 uat  = new Phase { start = ReadDate(r, "UatStart"), end = ReadDate(r, "UatEnd"),
                                    actualEnd = ReadDate(r, "UatActualEnd") }
             };
-            beforeStamp = ReadStamp(r, "UpdatedAt");
+            beforeStamp = ReadVersionToken(r);
         }
     }
     if (before == null) return Results.NotFound(new { message = "找不到該筆需求（可能已被刪除）。" });
 
-    // ─── 樂觀鎖（2026-08-22 / 第 21 批）───
+    // ─── 樂觀鎖（2026-08-22 / 第 21 批；第 226 批 token 接上最後一筆變更紀錄的 Id）───
     // PUT 是整列覆寫，兩個人同時開同一筆時後存的會把前者整批蓋掉，而前者的稽核列
     // 還留著、指向一個已經不存在的值。前端把 GET 拿到的 updatedAtToken 原樣帶回來，
     // 對不上就拒絕，讓使用者重新載入再改。
+    // ⚠️ 排在所有拿 before 比對的驗證之前（第 226 批）：舊畫面拿 before 比，會把「別人剛改的」當成「你這次改的」，
+    //    跳出「③ 結束日被修改了，必須填理由」這種對方根本沒動過的訊息。
     // ⚠️ 呼叫端**完全沒帶**這個屬性時（null）才跳過檢查 —— 那是直接打 API 的腳本。
     //    空字串是明確的「這筆從來沒被更新過」，仍然要比對。
-    if (req.updatedAtToken != null && req.updatedAtToken.Trim() != beforeStamp)
+    if (req.updatedAtToken != null && !VersionTokenMatches(req.updatedAtToken, beforeStamp))
         return Results.Conflict(new
         {
             message = "這筆需求在你開啟編輯視窗之後已經被其他人修改過了。\n\n"
@@ -2401,6 +2594,14 @@ app.MapPut("/api/requirements/{id}", async (int id, Requirement req) =>
             field = "updatedAtToken",
             conflict = true
         });
+
+    // 年份明顯不合理（第 224 批，健檢 A5）：只看這次被動到的日期
+    var oddDates = ImplausibleDates(req, before);
+    if (oddDates.Length > 0)
+        return Results.BadRequest(new { message = ImplausibleDatesMessage(oddDates), fields = oddDates.Select(b => b.Key).ToArray() });
+    // 規格文件有填就一定要是連結（第 227 批，健檢 C3）：只看這次有改到的
+    var linkIssue = NotesLinkIssue(req, before);
+    if (linkIssue != null) return Results.BadRequest(new { message = linkIssue, fields = new[] { "notesLink" } });
 
     var missing = MissingRequiredFields(req, before);
     if (missing.Length > 0)
@@ -2426,7 +2627,7 @@ app.MapPut("/api/requirements/{id}", async (int id, Requirement req) =>
     if (req.msd != null && req.msd.confirmNote == null) req.msd.confirmNote = before.msd?.confirmNote;
 
     // ─── 手動改 StatusID 一定要有理由（2026-08-22）───
-    // StatusID 正常是由「✓ 完成」與「🔄 規格回退」推進的，那兩條路都會寫稽核列並維護計數。
+    // StatusID 正常是由「✓ 完成」與「退回重做」推進的，那兩條路都會寫稽核列並維護計數。
     // 手動改是**繞過**那套機制，所以至少要留下「誰、為什麼」。前端也擋一次。
     // ⚠️ Status（OverallStatus）不在此限 —— 它是人工壓的旗標，
     //    每次暫緩都要寫一段理由太吵；它仍然會被記進稽核列，只是不強制說明。
@@ -2477,7 +2678,7 @@ app.MapPut("/api/requirements/{id}", async (int id, Requirement req) =>
             return Results.BadRequest(new
             {
                 message = $"目前階段不可以手動往回改（{StageText(before.stageCode)} → {StageText(req.stageCode)}）。\n\n"
-                        + "要退回前面的階段請用「🔄 退回重做」（規格變了或驗收沒過、要重做）；"
+                        + "要退回前面的階段請用「退回重做」（規格變了或驗收沒過、要重做）；"
                         + "若是誤按了「標記完成…」，請用該階段旁的「撤銷完成」。"
                         + "這兩條路都會把已走完階段的完成紀錄一併處理乾淨，直接改目前階段不會。",
                 fields = new[] { "stageCode" }
@@ -2509,6 +2710,31 @@ app.MapPut("/api/requirements/{id}", async (int id, Requirement req) =>
         var mismatch = StatusStageMismatch(req);
         if (mismatch != null)
             return Results.BadRequest(new { message = mismatch, fields = new[] { statusChanged ? "status" : "stageCode" } });
+    }
+
+    // ─── 負責人（第 220 批）───
+    // ①「被改動的」負責人要是同部門、在職的人（沒改的舊值不擋）
+    // ② 目前階段被改到 ≥ 2 時 MSD 負責人一定要是在職的 MSD —— 實測「手動 1 → 2」與「同一次存檔 1 → 2 並清空 MSD 負責人」都存得進去。
+    //    階段沒改、本來就 ≥ 2 而清空的那一種由 MissingRequiredFields（第 215 批）擋
+    {
+        var probs = new List<string>(); var fs = new List<string>();
+        if ((before.emsOwner ?? "").Trim() != (req.emsOwner ?? "").Trim())
+        {
+            var w = await OwnerIssueAsync(conn, "EMS", req.emsOwner, tx);
+            if (w != null) { probs.Add($"EMS 負責人：{w}"); fs.Add("emsOwner"); }
+        }
+        if ((before.msdOwner ?? "").Trim() != (req.msdOwner ?? "").Trim())
+        {
+            var w = await OwnerIssueAsync(conn, "MSD", req.msdOwner, tx);
+            if (w != null) { probs.Add($"MSD 負責人：{w}"); fs.Add("msdOwner"); }
+        }
+        if (probs.Count > 0)
+            return Results.BadRequest(new { message = "負責人要從指派人員名單裡選：\n" + string.Join("\n", probs.Select(p => "• " + p)), fields = fs });
+        if (stageChanged)
+        {
+            var ws = await StageNeedsMsdOwnerAsync(conn, req, tx);
+            if (ws != null) return Results.BadRequest(new { message = ws, fields = new[] { "msdOwner" } });
+        }
     }
 
     // gating 要跟舊值比對才知道哪些欄位是「這次新填的」，所以排在 before 讀出來之後
@@ -2618,7 +2844,7 @@ app.MapPut("/api/requirements/{id}", async (int id, Requirement req) =>
     }
     if (affected == 0) return Results.NotFound(new { message = "找不到該筆需求（可能已被刪除）。" });
 
-    var (actor, actorSrc) = ResolveActor(req);
+    var (actor, actorSrc) = ResolveActor(ctx);
     await WriteAuditAsync(conn, id, req, before, actor, actorSrc, tx, actualNotes);
 
     // ─── 手動調整 StatusID / Status 的稽核列（2026-08-22）───
@@ -2690,7 +2916,7 @@ app.MapPut("/api/requirements/{id}", async (int id, Requirement req) =>
 
     req.Id = id;
     return Results.Ok(req);
-});
+}).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
 
 // 軟刪除：資料列保留在 DB 供追溯，只是不再出現在查詢與匯出結果中。
 // ─── 一定要留稽核（2026-08-23 / 第 22 批，清單上的 A11）───
@@ -2708,9 +2934,11 @@ app.MapPut("/api/requirements/{id}", async (int id, Requirement req) =>
 //    不是執行到那一支才報錯，是連首頁都開不起來。
 //    EmptyBodyBehavior.Allow 則是讓「完全沒帶 body」的呼叫端進得到端點裡（body = null），
 //    由下面的必填檢查回一句看得懂的 400。
-app.MapDelete("/api/requirements/{id}", async (int id,
+app.MapDelete("/api/requirements/{id}", async (int id, HttpContext ctx,
     [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] DeleteRequest? body) =>
 {
+    if (IsCrossSiteRequest(ctx))   // 第 233 批：見撤銷完成那一支的說明
+        return Results.BadRequest(new { message = "偵測到跨站請求，已拒絕。請從系統本身的畫面操作。" });
     if (string.IsNullOrWhiteSpace(body?.note))
         return Results.BadRequest(new { message = "刪除需求必須填寫原因才能執行。" });
     // 長度（第 82 批）：這些說明最後會寫進 dbo.Controltable_History.Note（NVARCHAR(1000)），
@@ -2729,7 +2957,8 @@ app.MapDelete("/api/requirements/{id}", async (int id,
         // NID 要在標記刪除**之前**讀出來，稽核列存的是當下的快照
         string nid = "";
         using (var readCmd = new SqlCommand(
-            "SELECT NID FROM dbo.Controltable WHERE Id = @Id AND IsDeleted = 0", conn, tx))
+            // UPDLOCK（第 226 批，健檢 C1）：與存檔／完成同時到時排隊，不會刪到一半被別人改
+            "SELECT NID FROM dbo.Controltable WITH (UPDLOCK, ROWLOCK) WHERE Id = @Id AND IsDeleted = 0", conn, tx))
         {
             readCmd.Parameters.AddWithValue("@Id", id);
             using var r = await readCmd.ExecuteReaderAsync();
@@ -2750,7 +2979,7 @@ app.MapDelete("/api/requirements/{id}", async (int id,
 
         // Phase 是 NOT NULL 但刪除不屬於任何一個階段，沿用手動調整那套用 'stage'。
         // 日期欄全部留空 —— 刪除沒有「異動前後的日期」可記
-        var (actor, actorSrc) = ResolveActor(new Requirement { actorEmpId = body!.actorEmpId, actorSource = body.actorSource });
+        var (actor, actorSrc) = ResolveActor(ctx);
         var empty = ((string?)null, (string?)null, (string?)null);
         await InsertHistoryAsync(conn, id, nid, "stage", "刪除", null,
                                  "軟刪除需求（資料庫仍保留該列，此 NID 之後可以再被使用）：" + body.note!.Trim(),
@@ -2766,7 +2995,7 @@ app.MapDelete("/api/requirements/{id}", async (int id,
     }
 
     return Results.Ok(new { message = "Deleted" });
-});
+}).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
 
 // ─── 階段完成 (Done) ───
 // 每個階段的「Start」「End」欄、實際完成日欄、顯示名稱，以及按下 Done 之後應該到達的 StatusID。
@@ -2906,8 +3135,10 @@ static async Task<(bool Ok, string ChangeType, int Days, string CompletedStr)> A
 
 // 按下 Done：今天 ≤ 原訂 End → 提早完成（End 改成今天）；今天 > 原訂 End → 延期完成
 // （End **不動**，實際完成日寫進 ActualEnd）。兩者都會推進 StatusID 並寫稽核列。
-app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
+app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body, HttpContext ctx) =>
 {
+    if (IsCrossSiteRequest(ctx))   // 第 233 批：見撤銷完成那一支的說明
+        return Results.BadRequest(new { message = "偵測到跨站請求，已拒絕。請從系統本身的畫面操作。" });
     var phase = (body.phase ?? "").Trim();
     var cols = DoneColumnsOf(phase);
     if (cols.TargetStage == 0)
@@ -2927,11 +3158,14 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
     string curStage = "", curStatus = "", curNotesLink = "", curMsdOwner = "";
     DateTime? plannedEnd = null;
     // ⚠️ 四個 *ActualEnd 也要讀（第 68 批）：PrevPhaseEndOf() 拿它判「前一階段實際結束在哪一天」
+    // ⚠️⚠️ WITH (UPDLOCK, ROWLOCK)（第 226 批，健檢 C1）：鎖到 Commit 為止。沒有這道鎖時，同一瞬間到的兩個
+    //    「標記完成」都讀到舊狀態、都通過 PhaseAlreadyDoneAsync，實測寫出兩筆完成紀錄、延期／提早次數多算、
+    //    交棒信寄兩封。有了它，第二個會等第一個做完，再被「已經走過的階段」或重複檢查正確擋下。不可拿掉。
     using (var readCmd = new SqlCommand($@"
         SELECT NID, Status, StageCode, NotesLink, MsdOwner, SpecStart, SpecEnd, SpecActualEnd, MsdConfirm, MsdConfirmActualEnd,
                MsdStart, MsdEnd, MsdActualEnd, UatStart, UatEnd, UatActualEnd,
                {cols.EndCol} AS PlannedEnd
-        FROM dbo.Controltable WHERE Id = @Id AND IsDeleted = 0", conn, tx))
+        FROM dbo.Controltable WITH (UPDLOCK, ROWLOCK) WHERE Id = @Id AND IsDeleted = 0", conn, tx))
     {
         readCmd.Parameters.AddWithValue("@Id", id);
         using var r = await readCmd.ExecuteReaderAsync();
@@ -2967,7 +3201,7 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
     // 它小於目前的 StatusID 就代表這一關早就過了 —— 再按一次只會讓 DelayCount / EarlyCount
     // 多算一次，並寫出一筆與實際進度無關的完成紀錄。下方的重複檢查擋不到這種情況：
     // 那些階段可能從來沒被明確標記過完成（匯入來的資料、或手動把 StatusID 往前調過）。
-    // 真的要重做請走「🔄 規格回退」，那條路會把日期清掉並留下紀錄。
+    // 真的要重做請走「退回重做」，那條路會把日期清掉並留下紀錄。
     // ⚠️ StatusID 為空的舊資料 curStageNum = 0，一律放行 —— 無從判斷就不要擋。
     var curStageNum = int.TryParse(NormStage(curStage), out var csn) ? csn : 0;
     // ⚠️ StatusID 空、但 Status 已經是 Done 的舊資料一律視為第 5 階（2026-08-23 / 第 23 批）。
@@ -3068,16 +3302,22 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
     //    （自動寄信「交棒」也不知道要寄給誰）。完成視窗裡有同一格下拉（鏡像），當場選、同一個交易寫進去。
     // ⚠️ 只看 ① 自己被按完成；**事後補記不套**（記錄已經發生的事，第 14 批那條界線）；
     //    一併記錄（alsoComplete）裡的 ① 不套 —— 那是按 ② 以後的人（多半是 MSD 自己）。
-    // ⚠️ 已經有 MSD 負責人時不看 body.msdOwner（這條路不負責換人，換人走編輯視窗）。
+    // ⚠️ 已經有**在職的** MSD 負責人時不看 body.msdOwner（這條路不負責換人，換人走編輯視窗）。
+    // ⚠️ 第 215 批：「有人」＝在指派人員名單裡找得到、而且在職的 MSD（MsdOwnerIssueAsync，前端 msdOwnerIssue() 是鏡像）。
+    //    名字對不上或已停用的，交棒信一樣寄不出去 —— 這是這條路**唯一**會換人的情況，舊值記進欄位異動的 OldValue。
     // ⚠️ 只收 dbo.Assignee 裡在職的 MSD（負責人下拉的唯一來源），姓名照主檔寫入
     var msdOwnerIn = "";
-    if (phase == "spec" && !backfill && curMsdOwner == "")
+    // ⚠️ 第 220 批：條件從「按的是 ①」改成「**目前階段還在 ①**」—— 目前階段在 ① 時按任何一關的完成（含按 ② 並一併記錄 ①）
+    //    都會把需求推過 ①，原本只看 phase == "spec" 的寫法讓「按 ② 一併記錄 ①」繞過了這道檢查（實測進到 ③、MSD 負責人空白）
+    var ownerIssue = !backfill && curStageNum == 1 ? await MsdOwnerIssueAsync(conn, curMsdOwner, tx) : null;
+    if (ownerIssue != null)
     {
         var want = (body.msdOwner ?? "").Trim();
         if (want == "")
             return Results.BadRequest(new
             {
-                message = $"「{cols.Label}」完成後就輪到 MSD 確認，但這筆需求還沒指定 MSD 負責人。\n\n"
+                message = $"這次完成後需求就離開「① EMS規格確認」、輪到 MSD 確認，但這筆需求"
+                        + (curMsdOwner == "" ? "還沒指定 MSD 負責人。\n\n" : $"的 MSD 負責人要重新指定（{ownerIssue}）。\n\n")
                         +"請先在完成視窗選好 MSD 負責人，再按「確認完成」。",
                 fields = new[] { "msdOwner" }
             });
@@ -3377,7 +3617,7 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
         });
     }
 
-    var (actor, actorSrc) = ResolveActor(new Requirement { actorEmpId = body.actorEmpId, actorSource = body.actorSource });
+    var (actor, actorSrc) = ResolveActor(ctx);
 
     // ─── 連同這次完成一起更新 Notes Link（第 104 批）───
     // ⚠️⚠️ 寫在**同一個交易**裡：完成紀錄與它的 SPEC 連結是同一件事，分兩次寫就會做出
@@ -3412,7 +3652,7 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
         var noneTriple = ((string?)null, (string?)null, (string?)null);
         await InsertHistoryAsync(conn, id, cur.nid, "field", "欄位異動", null,
                                  null, actor, actorSrc, noneTriple, noneTriple, tx,
-                                 "msdOwner", "", msdOwnerIn);
+                                 "msdOwner", curMsdOwner, msdOwnerIn);
     }
     // ─── 留空完成 ① → 「無連結確認」（第 115 批）───
     // ⚠️ 與 PUT 的 confirmNoNotesLink 寫的是**同一種列**（ChangeType／Phase 一字不差），
@@ -3498,7 +3738,7 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
                     : "")
                 // 第 115 批：留空自動記成「無 Notes Link」，成功訊息也要講（視窗上講過的事，結果要對得上）
                 + (autoNoLink ? "；規格文件記為「不另附」（之後貼上連結就會取代）" : "")
-                + (msdOwnerIn != "" ? $"；MSD 負責人指定為 {msdOwnerIn}" : ""),
+                + (msdOwnerIn != "" ? (curMsdOwner == "" ? $"；MSD 負責人指定為 {msdOwnerIn}" : $"；MSD 負責人由 {curMsdOwner} 改為 {msdOwnerIn}") : ""),
         changeType = main.ChangeType,
         days = main.Days,
         actualEnd = main.CompletedStr,
@@ -3520,7 +3760,7 @@ app.MapPost("/api/requirements/{id}/done", async (int id, DoneRequest body) =>
         try { tx.Rollback(); } catch { /* 連線已斷，交易由 SQL Server 自行回捲 */ }
         throw;
     }
-});
+}).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
 
 // ─── 規格回退 (Rollback) ───
 // StatusID ↔ 該階段的日期欄位。回退會清空「**≥ 目標 StatusID** 的全部日期，含目標階段本身」——
@@ -3535,8 +3775,10 @@ static (string Phase, string Label, string[] DateCols) StageDatesOf(int stage) =
     _ => ("", "", Array.Empty<string>())
 };
 
-app.MapPost("/api/requirements/{id}/rollback", async (int id, RollbackRequest body) =>
+app.MapPost("/api/requirements/{id}/rollback", async (int id, RollbackRequest body, HttpContext ctx) =>
 {
+    if (IsCrossSiteRequest(ctx))   // 第 233 批：見撤銷完成那一支的說明
+        return Results.BadRequest(new { message = "偵測到跨站請求，已拒絕。請從系統本身的畫面操作。" });
     var target = body.targetStage;
     if (target < 1 || target > 4)
         return Results.BadRequest(new { message = "退回目標必須是 1~4 的階段。" });
@@ -3562,11 +3804,13 @@ app.MapPost("/api/requirements/{id}/rollback", async (int id, RollbackRequest bo
     //    但稽核列的快照只有 Start／End／Confirm —— 延期完成過的階段被回退後，資料列的 ⏰N 還在（計數是既成事實）、
     //    「→ 實際 X」那行卻消失了，而回退那張卡只寫「結束 X → 未填」。同一件事走 PUT 改 End 那條路是有講的
     //    （第 21 批「先前記錄的實際完成日 X 已一併清除」），只有這條路沒留話
+    // ⚠️⚠️ WITH (UPDLOCK, ROWLOCK)（第 226 批，健檢 C1）：同一瞬間兩個退回，實測 RollbackCount 1 → 3、快照與退回信各兩份
+    //    （兩個都讀到舊的目前階段，fromStage 比對也都過）。鎖住之後第二個會讀到退回後的狀態再被擋下。不可拿掉。
     using (var readCmd = new SqlCommand(@"
         SELECT NID, Status, StageCode,
                SpecStart, SpecEnd, SpecActualEnd, MsdConfirm, MsdConfirmActualEnd,
                MsdStart, MsdEnd, MsdActualEnd, UatStart, UatEnd, UatActualEnd
-        FROM dbo.Controltable WHERE Id = @Id AND IsDeleted = 0", conn, tx))
+        FROM dbo.Controltable WITH (UPDLOCK, ROWLOCK) WHERE Id = @Id AND IsDeleted = 0", conn, tx))
     {
         readCmd.Parameters.AddWithValue("@Id", id);
         using var r = await readCmd.ExecuteReaderAsync();
@@ -3613,7 +3857,7 @@ app.MapPost("/api/requirements/{id}/rollback", async (int id, RollbackRequest bo
         });
 
     // ── 先把快照寫進稽核表，再清空。順序不能反，清掉就拿不回來了 ──
-    var (actor, actorSrc) = ResolveActor(new Requirement { actorEmpId = body.actorEmpId, actorSource = body.actorSource });
+    var (actor, actorSrc) = ResolveActor(ctx);
     var curLabel = curStage == 5 ? "⑤ 結案" : StageDatesOf(curStage).Label;
     // 目標＝目前階段時不可以印「由 X 回退至 X」（同一個名字寫兩次讀起來像壞掉，第 59 批那條）
     var note = target == curStage
@@ -3694,7 +3938,7 @@ app.MapPost("/api/requirements/{id}/rollback", async (int id, RollbackRequest bo
         try { tx.Rollback(); } catch { /* 連線已斷，交易由 SQL Server 自行回捲 */ }
         throw;
     }
-});
+}).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
 
 // ─── 撤銷上一次標記完成（2026-09-11 / 第 66 批，使用者要求）───
 // 誤按「標記完成…」在此之前只有兩條路，兩條都不對：手動把 StatusID 改回去（第 66 批 H2 起
@@ -3716,9 +3960,16 @@ app.MapPost("/api/requirements/{id}/rollback", async (int id, RollbackRequest bo
 // ⚠️ 稽核列一筆都不刪：寫一筆 `撤銷完成`，Old = 撤銷前、New = 還原後。之後那筆完成紀錄
 //    就不再「有效」（PhaseAlreadyDoneAsync 的基準線含 `撤銷完成`），可以重新標記完成。
 // ⚠️ 計數欄用 CASE 夾住不小於 0：匯入來的資料計數欄與稽核表本來就可能對不上。
-app.MapPost("/api/requirements/{id}/undo-done", async (int id,
+app.MapPost("/api/requirements/{id}/undo-done", async (int id, HttpContext ctx,
     [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)] UndoDoneRequest? body) =>
 {
+    // ⚠️⚠️ 跨站防護（第 233 批，2026-10-17 安全檢查第 1 項，使用者：「改第1項」）：這支的 body 可以是空的，
+    //    而 body 空著時 .NET 不檢查 Content-Type —— 實測「沒有 Content-Type、內容是空的」POST 帶 Sec-Fetch-Site: cross-site
+    //    照樣進得來（JSON 那幾支同樣的請求是 415）。瀏覽器的 fetch(no-cors)／sendBeacon 就送得出這種請求，
+    //    Windows 驗證會自動補上 → 別的網頁可以替登入中的同事撤銷完成、紀錄記成他。
+    //    新增／存檔／刪除／完成／退回重做目前靠 JSON 格式與 preflight 擋得住，但同樣補上這一行，不靠那個巧合。不可拿掉。
+    if (IsCrossSiteRequest(ctx))
+        return Results.BadRequest(new { message = "偵測到跨站請求，已拒絕。請從系統本身的畫面操作。" });
     // 長度（第 82 批）：撤銷說明是選填，但填了就會進 History.Note，一樣要先擋
     var badUndoNote = NoteTooLong(body?.note, "撤銷說明");
     if (badUndoNote != null) return Results.BadRequest(new { message = badUndoNote });
@@ -3730,11 +3981,14 @@ app.MapPost("/api/requirements/{id}/undo-done", async (int id,
     {
     Requirement? cur = null;
     string curStageRaw = "", curStatus = "";
+    // ⚠️⚠️ WITH (UPDLOCK, ROWLOCK)（第 226 批，健檢 C1）：同一瞬間兩個撤銷，實測兩個都挑到同一筆完成紀錄、
+    //    EarlyCount 被減兩次（2 → 0，連前一階段的提早也被扣掉）。鎖住之後第二個會看到「撤銷完成」那一筆，
+    //    historyId 對不上而 409。不可拿掉。
     using (var readCmd = new SqlCommand(@"
         SELECT NID, Status, StageCode,
                SpecStart, SpecEnd, SpecActualEnd, MsdConfirm, MsdConfirmActualEnd,
                MsdStart, MsdEnd, MsdActualEnd, UatStart, UatEnd, UatActualEnd
-        FROM dbo.Controltable WHERE Id = @Id AND IsDeleted = 0", conn, tx))
+        FROM dbo.Controltable WITH (UPDLOCK, ROWLOCK) WHERE Id = @Id AND IsDeleted = 0", conn, tx))
     {
         readCmd.Parameters.AddWithValue("@Id", id);
         using var r = await readCmd.ExecuteReaderAsync();
@@ -3889,7 +4143,7 @@ app.MapPost("/api/requirements/{id}/undo-done", async (int id,
                             + $"但下一階段「{nextLabel}」的日期已經壓在 {nextEnd}，還原後會變成「後面的階段比前面早」，"
                             + "之後那兩欄連改都改不動。\n\n"
                             + $"請先把「{nextLabel}」的日期改到 {restoredEnd} 之後（或先清掉）再撤銷；"
-                            + $"若「{cols.Label}」真的要重做，請改用「🔄 退回重做」。",
+                            + $"若「{cols.Label}」真的要重做，請改用「退回重做」。",
                     fields = new[] { nextLabel }
                 });
         }
@@ -3917,7 +4171,7 @@ app.MapPost("/api/requirements/{id}/undo-done", async (int id,
         : wasBackfill ? $"目前階段維持 {StageText(curStage.ToString())}（那筆是事後補記，沒有推進過目前階段）"
                       : $"目前階段維持 {StageText(curStage.ToString())}");
 
-    var (actor, actorSrc) = ResolveActor(new Requirement { actorEmpId = body?.actorEmpId, actorSource = body?.actorSource });
+    var (actor, actorSrc) = ResolveActor(ctx);
     var userNote = (body?.note ?? "").Trim();
     var note = $"撤銷「{cols.Label}」的{changeType}紀錄（稽核 #{hid}，{changedAt}，完成日 {completedH}）"
              + (userNote.Length > 0 ? $"：{userNote}" : "")
@@ -3961,7 +4215,7 @@ app.MapPost("/api/requirements/{id}/undo-done", async (int id,
         try { tx.Rollback(); } catch { /* 連線已斷，交易由 SQL Server 自行回捲 */ }
         throw;
     }
-});
+}).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
 
 // ─── 「已到階段卻沒壓日期」的後端判定（2026-08-31 / 第 39 批）───
 // ⚠️ 這是 app.jsx 的 **unsetDuePhase() + isPhasePassed() 的鏡像**（第 33 / 23 批），
@@ -4058,7 +4312,8 @@ static async Task<string> AssigneeEmailAsync(SqlConnection conn, string dept, st
 //（與 dbmail 的 Queued 同一個語意，端點兩邊共用同一組變數與同一種措辭）。
 // ⚠️ 用內建的 System.Net.Mail，刻意不引入 MailKit —— 這個專案不加未經同意的 NuGet 套件，
 //    而內網 Domino relay 用得上的功能（匿名或帳密、選配 SSL）它都有。
-// selfCcEmail：按按鈕的本人要收的那份副本（第 62 批），空字串 = 不加。
+// selfCcEmail：按按鈕的本人要收的那份副本（第 62 批）。⚠️ 第 184／185 批起**沒有任何呼叫端在用**（一律傳空字串）：
+//    單筆 ✉ 不給按的人副本、批次提醒要收就把自己加進固定名單。參數保留，空字串 = 不加。
 async Task<(string? Error, bool Uncertain, string Detail)> SendNotifyMailAsync(
     string fromEmail, string fromName, string toEmail, string ccEmail, string selfCcEmail,
     string subject, string body, string htmlBody,
@@ -4185,6 +4440,21 @@ static bool IsLinkValue(string? s) =>
     !string.IsNullOrWhiteSpace(s) &&
     Regex.IsMatch(s.Trim(), @"^(https?|notes|file|ftp)://\S", RegexOptions.IgnoreCase);   // 第 130 批：`://` 後至少一個字（前端 isLinkVal 鏡像）
 
+// ─── 規格文件有填就一定要是連結（第 227 批，健檢 C3）───
+// /done 的完成視窗與我的待辦的「貼上」本來就只收連結，只有 POST／PUT 照單全收 → 同一欄兩套規則：
+// 實測 PUT 存得進「abc」「javascript:…」，需求列表那格留白像沒有文件、① 完成時被記成「不另附」，欄位卻還留著那段字。
+// ⚠️ 只看這次有改到的（before 為 null＝新增，整筆都算新填）：既有的舊值不擋，否則那幾筆連改個現況描述都存不了。
+//    清空照舊可以（回到「尚未登錄」；要記成不另附走 confirmNoNotesLink）。前端 validateEdit 是鏡像。
+static string? NotesLinkIssue(Requirement req, Requirement? before)
+{
+    var v = (req.notesLink ?? "").Trim();
+    if (v == "" || IsLinkValue(v)) return null;
+    if (before != null && v == (before.notesLink ?? "").Trim()) return null;
+    var shown = v.Length > 40 ? v[..40] + "…" : v;
+    return $"規格文件填的是「{shown}」，它不是一個開得起來的連結 —— 必須是 Notes://、https://、http://、file:// 或 ftp:// 開頭。\n\n"
+         + "沒有規格文件的話請把那一格清空再存檔。";
+}
+
 // ─── 「這筆已經確認過沒有連結可貼」（第 105 批，2026-10-04）───
 // ⚠️⚠️ 狀態存在**稽核表**，不是欄位 —— 所以這一批沒有任何 SQL 腳本（`ChangeType` 是
 //    NVARCHAR(20) 且無 CHECK）。作法與第 69 批 PhasesWithEndEverSetAsync()、第 43 批
@@ -4255,7 +4525,7 @@ string MailFailureHint(System.Net.Sockets.SocketException? sock, bool selfTimeou
 //    所以這裡拿 `@mailitem_id` 回來輪詢 `sysmail_allitems` 的 `sent_status`。
 //
 // 回傳：Error != null → 確定失敗；Queued == true → 還在佇列裡，**狀態未確認**（不可當成成功講）
-// body 是 HTML（第 62 批起，@body_format = 'HTML'）；selfCcEmail 是本人副本，空字串 = 不加。
+// body 是 HTML（第 62 批起，@body_format = 'HTML'）；selfCcEmail 是本人副本（目前沒有呼叫端在用，一律空字串）。
 async Task<(string? Error, bool Queued, int MailItemId, string Detail)> SendViaDbMailAsync(
     SqlConnection conn, string fromEmail, string fromName, string toEmail, string ccEmail, string selfCcEmail,
     string subject, string body,
@@ -4273,7 +4543,7 @@ async Task<(string? Error, bool Queued, int MailItemId, string Detail)> SendViaD
     {
         // ⚠️ @profile_name 傳 NULL 時 SQL Server 會用預設設定檔，所以設定檔名稱留空是合法的。
         // ⚠️ @from_address 被 relay 拒絕的話可以用 Mail:DbMailOverrideFrom 關掉，
-        //    但 @reply_to 一律帶 —— 「收件者可以直接回信給按按鈕的人」是這個功能的重點之一。
+        //    @reply_to 一律帶 Mail:From（第 184 批起是系統信箱，不再是按按鈕的人；信尾寫明請勿直接回覆）。
         using var cmd = new SqlCommand(@"
             DECLARE @Id INT;
             EXEC msdb.dbo.sp_send_dbmail
@@ -4493,7 +4763,7 @@ app.MapPost("/api/requirements/{id}/notify-unset", async (int id, NotifyRequest?
     // 使用者看過示意圖後改成一律用系統信箱寄、**不另加按按鈕的人的副本**：副本本來就是另一邊的負責人
     // ＝上一階段做完、在等這一棒的人（③ 例外：上一棒 ② 也是 MSD 本人，副本仍給 EMS 提需求的人），
     // 而按 ✉ 的人多半就是他。actor 仍要解析 —— 稽核列記「誰按的」。
-    var (actor, actorSrc) = ResolveActor(new Requirement { actorEmpId = body?.actorEmpId, actorSource = body?.actorSource });
+    var (actor, actorSrc) = ResolveActor(ctx);
     var fromEmail = mailFrom; var fromName = mailFromName;
     if (fromEmail == "")
         return Results.BadRequest(new
@@ -4509,8 +4779,33 @@ app.MapPost("/api/requirements/{id}/notify-unset", async (int id, NotifyRequest?
             message = $"寄件者信箱的格式不正確（{fromEmail}），無法寄出通知。\n\n"
                     + "這個值來自 appsettings.json 的 Mail:From，請管理者修正後重新啟動服務。"
         });
-    // SendNotifyMailAsync／SendViaDbMailAsync 的 selfCc 參數保留（批次提醒還在用），這一支一律不加
+    // SendNotifyMailAsync／SendViaDbMailAsync 的 selfCc 參數保留，但目前沒有任何呼叫端在用（批次提醒也不加本人副本）；這一支一律不加
     var selfCcEmail = "";
+
+    // ── 3c. 試寄改道（第 211 批，2026-10-16 使用者看過示意圖：「照這版改」）──
+    // ⚠️⚠️ **模擬帳號按的一律寄到試寄收件人**（任何模式）；**自動寄信是「試寄」時，真實帳號按的也寄到試寄收件人**。
+    //    其餘（真實帳號＋關閉／開啟）與改之前**完全相同**。使用者：「若不真的寄，我不能一直叫其他使用者來測試吧?」——
+    //    寄給同事收不回來，擋下來又測不到；寄到試寄收件人（使用者自己的信箱）兩邊都顧到。
+    //    試寄信：主旨加 [試寄]、信最上面一個試寄框（與自動信同一個 TestBannerHtml）、只寄試寄收件人、沒有副本、
+    //    **不寫 Controltable_History**（否則 phaseNotifiedEntry 會以為今天寄過）。試寄收件人沒設好 → 400，一封都不寄。
+    //    收件者／副本／信件內容照樣全部算完（上面那幾道檢查照擋）：試寄要測的就是「正式時會不會寄、寄給誰、長什麼樣子」
+    // ⚠️⚠️ 第 221 批（2026-10-17 使用者：「模擬帳號的部分是想要完全模擬操作者用 windows 帳號操作的流程」→ 全改）：
+    //    **拿掉「模擬帳號一律改道」**，改道只看自動寄信模式（試寄＝改道，關閉／開啟＝寄給負責人），模擬與真實帳號完全相同。
+    //    模擬帳號只在測試區（Auth:AllowSimulation=true）存在，測試區平常維持「試寄」；要讓同事真的收到信才切「開啟」。
+    var testRoute = false;
+    var testTo = "";
+    {
+        var ns = await ReadAutoNotifySettingsAsync(conn);
+        testRoute = ns.Mode == "test";
+        testTo = ns.TestTo;
+    }
+    if (testRoute && (testTo == "" || !IsValidMailAddress(testTo)))
+        return Results.BadRequest(new
+        {
+            message = "還沒設定試寄收件人（或格式不正確），這封沒有寄出。\n\n"
+                    + "自動寄信是「試寄」時，提醒只會寄到試寄收件人。"
+                    + "請管理者到 🔐 管理設定 →「信件通知」的自動寄信填好試寄收件人再按。"
+        });
 
     // ── 4. 組信 ──
     var who = string.Join(" / ", new[] { cur.nid == "" ? null : $"NID {cur.nid}", cur.mainCat, cur.subCat }
@@ -4522,75 +4817,114 @@ app.MapPost("/api/requirements/{id}/notify-unset", async (int id, NotifyRequest?
     var subject = isOverdue
         ? $"[需求管控表] 「{SubjectStageName(phaseLabel)}」已逾期 {overDays} 天：{who}"
         : $"[需求管控表] 請壓定「{SubjectStageName(phaseLabel)}」日期：{who}";
-    var lines = new List<string>
+    // ⚠️⚠️ 第 235 批（2026-10-18 使用者看過示意圖：「照你建議的改，推薦的 7 項都做、單筆寄信也做」，明確同意動這條受保護路徑）：
+    //    內文改成友善版（RenderNoticeMail，與自動信同一支）—— 純文字與 HTML 都換了；**主旨、收件者、副本、寄信、稽核一個字沒動**。
+    //    未壓：色條「○○ 提醒你」（按的人不是收件者本人時）＋快速壓日期的小技巧；
+    //    逾期（E5）：色條橘「進度確認」、不責備的語氣、兩顆按鈕「已經做完了 → 標記完成」「還需要時間 → 改日期」。
+    //    回 IIS 要重測未壓／逾期兩種（試寄中、開啟中）
+    var clickName = actor == null ? "" : await AssigneeNameByEmpAsync(conn, actor);
+    var clickOk = clickName != "" && clickName != toName;
+    var curStage = int.TryParse(NormStage(cur.stageCode), out var csn) ? csn : 0;
+    var nm = new NoticeMail
     {
-        $"{toName} 您好：",
-        "",
-        isOverdue
-            ? $"需求「{who}」目前在「{phaseLabel}」階段，原訂 {dueDate} 完成，已逾期 {overDays} 天。"
-            : $"需求「{who}」目前已進入「{phaseLabel}」階段，但這個階段還沒有壓定日期。",
-        isOverdue
-            ? "如果已經做完，請進入需求管控表標記完成；如果需要延後，請更新日期並填寫原因。"
-            : "請撥空進入需求管控表填寫，以利後續進度追蹤。",
-        "",
-        "──────────────────────────────",
-        $"NID        ：{(cur.nid == "" ? "（未填）" : cur.nid)}",
-        $"分類        ：{cur.mainCat} / {cur.subCat}",
-        $"目前階段：{StageText(cur.stageCode)}",
-        isOverdue
-            ? $"逾期階段    ：{phaseLabel}（{side} 負責），原訂 {dueDate}"
-            : $"待壓定階段  ：{phaseLabel}（{side} 負責）",
-        $"EMS 負責人  ：{(string.IsNullOrWhiteSpace(cur.emsOwner) ? "（未指派）" : cur.emsOwner)}",
-        $"MSD 負責人  ：{(string.IsNullOrWhiteSpace(cur.msdOwner) ? "（未指派）" : cur.msdOwner)}",
-        "──────────────────────────────"
+        Greeting = $"{toName} 您好，",
+        CardTitle = string.Join(" / ", new[] { cur.mainCat, cur.subCat }.Where(s => !string.IsNullOrWhiteSpace(s)).Select(s => s!.Trim())) is { Length: > 0 } ct ? ct : "（未填分類）",
+        CardNid = cur.nid == "" ? "（未填）" : cur.nid!,
+        Steps = MailStepsOf(cur, DateTime.Today),
+        Status = cur.currentStatus,
+        Url = AppLink(mailAppUrl, "view=mytodo"),        // 第 189 批：直接開到收件者自己的「我的待辦」
+        ManualUrl = ManualLink(mailAppUrl),
+        Contact = ccName != "" ? $"{ccDept} 負責人 {ccName}" : "",
     };
-    if (!string.IsNullOrWhiteSpace(cur.currentStatus))
+    var phaseColor = curStage is >= 1 and <= 4 ? MailColor.Stage(curStage).Color : MailColor.Brand;
+    if (isOverdue)
     {
-        lines.Add("");
-        lines.Add("現況描述：");
-        lines.Add(cur.currentStatus!.Trim());
+        var dueMd = DateTime.TryParse(dueDate, out var dd) ? dd.ToString("MM/dd") : dueDate;
+        nm.Tone = "warn"; nm.Label = "進度確認"; nm.Time = "大約 1 分鐘";
+        nm.Headline = $"「{phaseLabel}」原訂 {dueMd}，已經過了 {overDays} 天";
+        if (clickOk) nm.Paras.Add($"{clickName} 想確認這一關的進度。");
+        nm.Paras.Add("這筆需求可能已經有進展、只是系統還沒更新。");
+        nm.Paras.Add("麻煩幫忙在下面選一個：已經做完了就標記完成，還需要時間就改日期。");
+        nm.Rows.Add(("現在這關", $"{phaseLabel}（{side} 負責），原訂 {dueDate.Replace('-', '/')}", phaseColor));
+        AddOwnerRows(nm, cur, side);
+        nm.Buttons.Add(("已經做完了 → 標記完成", true));
+        nm.Buttons.Add(("還需要時間 → 改日期", false));
+        nm.Tip = "改日期時要選一個原因並寫一句說明，主管看變更軌跡時就知道為什麼。";
     }
-    // 第 189 批（使用者看過示意圖）：連結直接開到收件者自己的「我的待辦」—— 收件者一定是負責人。
-    //    ⚠️ 只換這一行網址與下面 HTML 那一行的比對字，寄信本身一個字沒動
-    var todoUrl = AppLink(mailAppUrl, "view=mytodo");
-    if (todoUrl != "")
+    else
     {
-        lines.Add("");
-        lines.Add($"到「我的待辦」處理：{todoUrl}");
+        nm.Tone = "brand"; nm.Label = clickOk ? $"{clickName} 提醒你" : "提醒"; nm.Time = "大約 1 分鐘";
+        nm.Headline = $"請幫「{phaseLabel}」壓一個預計完成日";
+        if (curStage >= 2)
+        {
+            var md = MailDoneMd(cur, curStage - 1);
+            nm.Paras.Add($"「{StageDatesOf(curStage - 1).Label}」{(md != "" ? $"已在 {md} " : "已經")}完成，現在輪到「{phaseLabel}」。");
+        }
+        else nm.Paras.Add($"這筆需求已經登記，第一步是「{phaseLabel}」。");
+        nm.Paras.Add(clickOk ? $"{clickName} 想確認大概排在哪一天，麻煩幫忙壓一下日期。"
+                             : "麻煩幫忙壓一下預計哪天完成，後面的進度就能接著排。");
+        nm.Rows.Add(("現在輪到", $"{phaseLabel}（{side} 負責）", phaseColor));
+        AddOwnerRows(nm, cur, side);
+        nm.Buttons.Add(("到「我的待辦」壓日期 →", true));
+        nm.Tip = MailColor.TipQuickDate;
     }
-    lines.Add("");
-    lines.Add("（本信由需求管控表系統自動發出，請勿直接回覆本信箱。）");
-    var mailBody = string.Join("\r\n", lines);
-    // ── 4b. 同一封信的 HTML 版（2026-09-11 / 第 62 批，使用者要求「點擊網址就可以開啟」）──
-    // 純文字信裡的網址在 Notes 客戶端**不會自動變成超連結**（使用者實際回報），
-    // 所以另外做一份 HTML：內容與純文字版**一字不差**（同一個 lines 轉出來的），
-    // 只把網址那一行包成 <a href>。smtp 兩種格式都附（multipart/alternative，
-    // 客戶端挑得動 HTML 就用 HTML），dbmail 只能擇一、送 HTML。
-    // ⚠️ 每一行都要先 HtmlEncode：現況描述是使用者自由輸入的文字，直接塞進 HTML 會被當標記解讀。
-    var mailHtml = "<div style=\"font-family:Segoe UI,Microsoft JhengHei,sans-serif;font-size:14px;line-height:1.6\">"
-                 + string.Join("<br>", lines.Select(l =>
-                       todoUrl != "" && l.StartsWith("到「我的待辦」處理：", StringComparison.Ordinal)
-                           ? $"到「我的待辦」處理：<a href=\"{System.Net.WebUtility.HtmlEncode(todoUrl)}\">{System.Net.WebUtility.HtmlEncode(todoUrl)}</a>"
-                           : System.Net.WebUtility.HtmlEncode(l)))
-                 + "</div>";
+    var mailBody = RenderNoticeMail(nm, "").Text;
+    // 第 211 批：試寄改道時，主旨加 [試寄]、內文最上面加試寄框（純文字與 HTML 各一份，內容相同）
+    var testBanner = Array.Empty<string>();
+    if (testRoute)
+    {
+        subject = subject.Replace("[需求管控表] ", "[需求管控表] [試寄] ");
+        var byName = clickName;
+        testBanner = new[]
+        {
+            "【試寄】這封是測試信，正式寄送時的對象如下",
+            "種類：單筆提醒（" + phaseLabel + (isOverdue ? $" 已逾期 {overDays} 天" : " 未壓日期") + "）",
+            $"收件者：{toName} <{toEmail}>（{side} 負責人）",
+            "副本：" + (ccEmail != "" ? $"{ccName} <{ccEmail}>（{ccDept} 負責人）"
+                      : ccMissing ? "無（" + ccName + (ccBadFormat ? " 的 EMAIL 格式不正確" : " 沒有填 EMAIL") + "）"
+                      : $"無（{ccDept} 負責人還沒指派）"),
+            "誰按的：" + (actor == null ? "（無法辨識）" : byName != "" ? $"{byName}（{actor}）" : actor)
+                     + (actorSrc == "simulated" ? " · 模擬帳號" : " · 真實帳號") + "　" + DateTime.Now.ToString("yyyy/MM/dd HH:mm"),
+            "負責人收不到這封；以下是正式信件的原文。"
+        };
+        mailBody = string.Join("\r\n", testBanner) + "\r\n\r\n" + MailColor.TestDivider + "\r\n\r\n" + mailBody;
+    }
+    // ── 4b. 同一封信的 HTML 版（第 62 批：Notes 不會把純文字裡的網址變成連結）──
+    // smtp 兩種格式都附（Body 純文字、AlternateViews HTML，順序不可反），dbmail 只能擇一、送 HTML。
+    // 第 235 批起純文字與 HTML 都由 RenderNoticeMail(nm) 畫（內容一致，HTML 多色條、進度條、按鈕）；
+    // 試寄框放在 HTML 最上面（純文字版在上面 testRoute 那段已經接好）。使用者打的字一律在 RenderNoticeMail 裡 HtmlEncode
+    var mailHtml = RenderNoticeMail(nm, TestBannerHtml(testBanner, "test", true)).Html;
 
     // ── 5. 寄出（兩種傳輸方式，內容完全一樣）──
     var queued = false; var queuedNote = ""; var mailItemId = 0;
     string? sendError;
     if (useDbMail)
     {
-        var r = await SendViaDbMailAsync(conn, fromEmail, fromName, toEmail, ccEmail, selfCcEmail, subject, mailHtml);
+        var r = await SendViaDbMailAsync(conn, fromEmail, fromName, testRoute ? testTo : toEmail, testRoute ? "" : ccEmail, selfCcEmail, subject, mailHtml);
         sendError = r.Error; queued = r.Queued; queuedNote = r.Detail; mailItemId = r.MailItemId;
     }
     else
     {
         // ⚠️ smtp 也會回「未確認送出」（第 44 批）：對話逾時是被我們自己切斷的，
         //    信可能已經送出去了 —— 與 dbmail 的佇列狀態共用同一組變數與同一種措辭
-        var r = await SendNotifyMailAsync(fromEmail, fromName, toEmail, ccEmail, selfCcEmail, subject, mailBody, mailHtml);
+        var r = await SendNotifyMailAsync(fromEmail, fromName, testRoute ? testTo : toEmail, testRoute ? "" : ccEmail, selfCcEmail, subject, mailBody, mailHtml);
         sendError = r.Error; queued = r.Uncertain; queuedNote = r.Detail;
     }
     if (sendError != null)
         return Results.Json(new { message = "寄信失敗：" + sendError }, statusCode: 502);
+
+    // 第 211 批：試寄改道 → 不寫稽核列，直接回（訊息講清楚寄到哪、正式時會寄給誰）
+    if (testRoute)
+        return Results.Ok(new
+        {
+            test = true, testWhy = "試寄中",
+            message = (queued ? $"試寄信已交給郵件系統，但尚未確認送出（{testTo}）" : $"試寄信已寄到 {testTo}")
+                    + $"（試寄中；正式時會寄給 {toName}" + (ccEmail != "" ? $"，副本 {ccName}" : "") + "）",
+            phase = phaseKey, phaseLabel, kind = isOverdue ? "overdue" : "unset",
+            to = testTo, toName, cc = "", ccName, ccMissing, ccReason, subject,
+            from = fromEmail, fromName,
+            transport = useDbMail ? "dbmail" : "smtp", queued, mailItemId, queuedNote
+        });
 
     // ── 6. 留稽核 ──
     // ⚠️ 寄出之後才寫。順序不能反 —— 先寫紀錄再寄，寄失敗就會留下一筆「已通知」的假紀錄，
@@ -4640,7 +4974,7 @@ app.MapPost("/api/requirements/{id}/notify-unset", async (int id, NotifyRequest?
         from = fromEmail, fromName,
         transport = useDbMail ? "dbmail" : "smtp", queued, mailItemId, queuedNote
     });
-});
+}).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
 
 // ─── 「需關注」批次提醒（第 125 批，2026-10-06 使用者要求）───
 // 需求列表「需關注 N」左邊那顆 ✉ 提醒：把需關注的那 N 筆（逾期／7 日內到期／未壓日期）寄出去。
@@ -4689,6 +5023,116 @@ static (int Stage, string Phase, string Label, string Side, string Level, int? D
     if (days > 7) return null;
     return (pick.Value.Stage, StageDatesOf(pick.Value.Stage).Phase, Lbl(pick.Value.Stage), pick.Value.Side,
             days < 0 ? "overdue" : "soon", days, pick.Value.Date);
+}
+// 「下週到期」（第 206 批，2026-10-16 使用者看過示意圖）：不在需關注裡、而且 AttentionOf 會挑的那一個
+// （沒走完、有日期的階段裡最早到期的）剩 8～14 天。只用在批次提醒信與寄送視窗 —— 畫面上的「需關注 N」不算它。
+// 名稱叫「下週到期」（使用者不要「8～14 天」、「近兩週」會被讀成包含 7 日內），正確範圍只寫在 tooltip
+static (int Stage, string Label, string Side, int Days, string Date)? NextWeekOf(Requirement r, DateTime today)
+{
+    if (AttentionOf(r, today) != null) return null;
+    if (StatusIs(r.status, "Done") || NormStage(r.stageCode) == "5") return null;
+    (int Stage, string Side, string Date)? pick = null;
+    for (var st = 1; st <= 4; st++)
+    {
+        var (side, end, _) = StageSideOf(r, st);
+        var d = NormDate(end);
+        if (d == "" || StagePassed(r, st)) continue;
+        if (pick == null || string.CompareOrdinal(d, pick.Value.Date) < 0) pick = (st, side, d);
+    }
+    if (pick == null || !DateTime.TryParse(pick.Value.Date, out var due)) return null;
+    var days = (int)(due.Date - today).TotalDays;
+    if (days < 8 || days > 14) return null;
+    return (pick.Value.Stage, StageDatesOf(pick.Value.Stage).Label.Replace("_", ". "), pick.Value.Side, days, pick.Value.Date);
+}
+// ─── 「最近 7 天的變化」（第 228 批，健檢 P1，使用者看過示意圖：「都照你推薦的改」）───
+// 批次提醒信信尾給主管看的一段：寄信當天往前 7 天（含今天）裡的 新增／結案／新逾期／日期延後／退回重做。
+// ⚠️ 只在信裡（畫面不動）；**不寫變更軌跡、不算進需關注**（寫了單筆 ✉ 會以為今天寄過）。
+// 五類的定義（示意圖上的說明卡）：
+//   新增＝這 7 天的 `建立`；結案＝這 7 天 ④ 的完成紀錄、而且現在仍是 ⑤；
+//   新逾期＝AttentionOf() 判成 overdue、原訂日落在這 7 天內（更早就逾期的已經在上面的需關注裡）；
+//   日期延後＝這 7 天的 `日期異動`，同一關合成一筆、最初舊值 → 最後新值**往後**才算（改早不算 —— 與統計報表「本月到期達成」的日期延後同一條，第 209 批）；
+//   退回重做＝這 7 天按過退回重做的需求（一筆需求一行，寫最後一次退回到哪一關）。
+// 每一類最多列 5 筆，超過寫「另有 N 筆」。`only`（批次提醒的 ids）照樣縮小範圍。
+static async Task<(DateTime From, List<(string Kind, int Count, List<(string Text, string Html)> Lines)> Kinds)> WeeklyChangesAsync(
+    SqlConnection conn, List<Requirement> rows, DateTime today, HashSet<int>? only)
+{
+    var from = today.Date.AddDays(-6);
+    var byId = rows.Where(r => only == null || only.Contains(r.Id)).ToDictionary(r => r.Id);
+    var hist = new List<(int Id, int ReqId, string Type, string Phase, string OldD, string NewD, DateTime At)>();
+    using (var cmd = new SqlCommand(@"
+        SELECT Id, RequirementId, ChangeType, Phase,
+               COALESCE(OldEnd, OldConfirm) AS OldD, COALESCE(NewEnd, NewConfirm) AS NewD, ChangedAt
+        FROM dbo.Controltable_History
+        WHERE ChangedAt >= @From
+          AND ChangeType IN (N'建立', N'提早完成', N'延期完成', N'日期異動', N'規格回退')
+        ORDER BY Id", conn))
+    {
+        cmd.Parameters.AddWithValue("@From", from);
+        using var r = await cmd.ExecuteReaderAsync();
+        while (await r.ReadAsync())
+        {
+            var reqId = r.GetInt32(1);
+            if (!byId.ContainsKey(reqId)) continue;                        // 已刪除或不在 ids 範圍
+            hist.Add((r.GetInt32(0), reqId, r.GetString(2), r.GetString(3),
+                      r.IsDBNull(4) ? "" : r.GetDateTime(4).ToString("yyyy-MM-dd"),
+                      r.IsDBNull(5) ? "" : r.GetDateTime(5).ToString("yyyy-MM-dd"),
+                      r.GetDateTime(6)));
+        }
+    }
+    static string Enc(string s) => System.Net.WebUtility.HtmlEncode(s);
+    static int StageOfPhase(string p) => p switch { "spec" => 1, "confirm" => 2, "msd" => 3, "uat" => 4, _ => 0 };
+    string Who(Requirement q) => string.Join(" / ", new[] { q.mainCat, q.subCat }.Where(s => !string.IsNullOrWhiteSpace(s)));
+    string Nid(Requirement q) => $"NID {(string.IsNullOrWhiteSpace(q.nid) ? "（未填）" : q.nid)}";
+    string Owner(Requirement q, int stage) { var o = ((stage == 2 || stage == 3) ? q.msdOwner : q.emsOwner)?.Trim() ?? ""; return o == "" ? "（未指派）" : o; }
+    // 一行＝「  類別　NID x　分類 / 子分類　細節」；HTML 版類別粗體（新逾期紅字）、NID 與細節灰字，內容與純文字一字不差
+    (string, string) Line(string kind, Requirement q, string detail, string? detailHtml = null)
+    {
+        var kindHtml = kind == "新逾期" ? $"<b style=\"color:{MailColor.Red}\">{kind}</b>" : $"<b>{kind}</b>";
+        return ($"  {kind}　{Nid(q)}　{Who(q)}　{detail}",
+                $"&nbsp;&nbsp;{kindHtml}　<span style=\"color:#666666\">{Enc(Nid(q))}</span>　{Enc(Who(q))}　{detailHtml ?? $"<span style=\"color:#666666\">{Enc(detail)}</span>"}");
+    }
+
+    var kinds = new List<(string Kind, int Count, List<(string Text, string Html)> Lines)>();
+    void Add(string kind, List<(int Sort, (string, string) L)> found)
+    {
+        var lines = found.OrderBy(x => x.Sort).Select(x => x.L).Take(5).ToList();
+        if (found.Count > 5) lines.Add(($"  {kind}　另有 {found.Count - 5} 筆", $"&nbsp;&nbsp;<span style=\"color:#666666\">{kind}　另有 {found.Count - 5} 筆</span>"));
+        kinds.Add((kind, found.Count, lines));
+    }
+
+    // 新增
+    Add("新增", hist.Where(h => h.Type == "建立").GroupBy(h => h.ReqId).Select(g => g.Last())
+        .Select(h => { var q = byId[h.ReqId]; return (h.Id, Line("新增", q, $"EMS {(string.IsNullOrWhiteSpace(q.emsOwner) ? "（未指派）" : q.emsOwner!.Trim())}　{h.At:MM/dd} 建立")); }).ToList());
+    // 結案：④ 的完成紀錄、現在仍是 ⑤（之後被撤銷或退回的不算）
+    Add("結案", hist.Where(h => (h.Type == "提早完成" || h.Type == "延期完成") && h.Phase == "uat")
+        .GroupBy(h => h.ReqId).Select(g => g.Last())
+        .Where(h => NormStage(byId[h.ReqId].stageCode) == "5" || StatusIs(byId[h.ReqId].status, "Done"))
+        .Select(h => (h.Id, Line("結案", byId[h.ReqId], $"{h.At:MM/dd} ④ EMS驗收完成"))).ToList());
+    // 新逾期：原訂日在這 7 天內、到今天還沒完成（與需關注同一支 AttentionOf）
+    var fromIso = from.ToString("yyyy-MM-dd");
+    Add("新逾期", byId.Values.Select(q => (q, At: AttentionOf(q, today)))
+        .Where(x => x.At is { Level: "overdue" } && string.CompareOrdinal(x.At.Value.Date, fromIso) >= 0)
+        .Select(x => (x.At!.Value.Days ?? 0, Line("新逾期", x.q, $"{x.At!.Value.Label} · {Owner(x.q, x.At.Value.Stage)}　原訂 {x.At.Value.Date}"))).ToList());
+    // 日期延後：同一關合成一筆，最初舊值 → 最後新值往後才算
+    Add("日期延後", hist.Where(h => h.Type == "日期異動").GroupBy(h => (h.ReqId, h.Phase))
+        .Select(g => (g.Key, First: g.First(), Last: g.Last(), N: g.Count()))
+        .Where(x => x.First.OldD != "" && x.Last.NewD != "" && string.CompareOrdinal(x.Last.NewD, x.First.OldD) > 0)
+        .Select(x =>
+        {
+            var q = byId[x.Key.ReqId]; var st = StageOfPhase(x.Key.Phase);
+            var late = (DateTime.Parse(x.Last.NewD) - DateTime.Parse(x.First.OldD)).Days;
+            var note = x.N > 1 ? $"（晚 {late} 天，這 7 天改了 {x.N} 次）" : $"（晚 {late} 天）";
+            var head = $"{StageDatesOf(st).Label} · {Owner(q, st)}　{x.First.OldD} → {x.Last.NewD}";
+            return (x.Last.Id, Line("日期延後", q, head + note,
+                $"{Enc(StageDatesOf(st).Label)} · {Enc(Owner(q, st))}　{x.First.OldD} → {x.Last.NewD}<span style=\"color:#666666\">{note}</span>"));
+        }).ToList());
+    // 退回重做：一次退回會寫好幾列快照（每個被清的階段一列、同一秒），目標＝那一批裡最小的階段
+    Add("退回重做", hist.Where(h => h.Type == "規格回退")
+        .GroupBy(h => (h.ReqId, At: h.At.ToString("yyyy-MM-dd HH:mm:ss")))
+        .Select(g => (g.Key.ReqId, Id: g.Max(h => h.Id), At: g.First().At, Target: g.Min(h => StageOfPhase(h.Phase))))
+        .GroupBy(x => x.ReqId).Select(g => g.OrderBy(x => x.Id).Last())
+        .Select(x => (x.Id, Line("退回重做", byId[x.ReqId], $"{x.At:MM/dd} 退回到「{StageDatesOf(x.Target).Label}」"))).ToList());
+    return (from, kinds);
 }
 static string AttentionText(string level, int? days, string date) => level switch
 {
@@ -4747,6 +5191,12 @@ app.MapPost("/api/notify-attention", async (NotifyAttentionRequest? body, HttpCo
         var items = rows.Select(x => (Req: x, At: AttentionOf(x, today)))
                         .Where(x => x.At != null && (only == null || only.Contains(x.Req.Id)))
                         .Select(x => (x.Req, At: x.At!.Value)).ToList();
+        // 第 206 批：下週到期（依到期日、NID 排）。只列在信尾與視窗，不寫變更軌跡（那不是催人，記進去會讓單筆 ✉ 以為今天寄過）
+        var nextWeek = rows.Select(x => (Req: x, Nw: NextWeekOf(x, today)))
+                           .Where(x => x.Nw != null && (only == null || only.Contains(x.Req.Id)))
+                           .Select(x => (x.Req, Nw: x.Nw!.Value,
+                                         Owner: ((x.Nw!.Value.Side == "MSD" ? x.Req.msdOwner : x.Req.emsOwner) ?? "").Trim()))
+                           .OrderBy(x => x.Nw.Date, StringComparer.Ordinal).ThenBy(x => x.Req.Id).ToList();
 
         // ── 2. 今天已經提醒過的（任何一種「通知寄送」都算）—— 只用來在確認視窗上標出來，不擋 ──
         var notifiedToday = new Dictionary<int, string>();
@@ -4789,12 +5239,22 @@ app.MapPost("/api/notify-attention", async (NotifyAttentionRequest? body, HttpCo
                 AppDiag.Error("notify-attention", "讀不到信件通知收件名單（dbo.NotifyRecipients）", ex, me);
                 recipientsError = "讀不到管理設定裡的收件名單（22_add_notify_recipients.sql 可能還沒執行），寄不出去。請管理者確認資料表已建立。";
             }
+            // 第 223 批：試寄中要在寄送視窗先講（只會寄到試寄收件人）
+            var pns = await ReadAutoNotifySettingsAsync(conn);
             return Results.Ok(new
             {
                 mailReady, fromEmail, fromName, fromOk,
+                test = pns.Mode == "test", testTo = pns.TestTo,
                 total = items.Count, overdue = nOver, unset = nUnset, soon = nSoon,
                 notifiedToday = items.Count(x => notifiedToday.ContainsKey(x.Req.Id)),
                 recipients, recipientsError,
+                next = nextWeek.Count,
+                nextItems = nextWeek.Select(x => new
+                {
+                    id = x.Req.Id, nid = x.Req.nid,
+                    title = string.Join(" / ", new[] { x.Req.mainCat, x.Req.subCat }.Where(s => !string.IsNullOrWhiteSpace(s))),
+                    side = x.Nw.Side, name = x.Owner, phaseLabel = x.Nw.Label, days = x.Nw.Days, date = x.Nw.Date
+                }),
                 groups = groups.Select(g => new
                 {
                     side = g.Side, name = g.Name,
@@ -4817,8 +5277,7 @@ app.MapPost("/api/notify-attention", async (NotifyAttentionRequest? body, HttpCo
             return Results.BadRequest(new { message = fromEmail == ""
                 ? "還沒有設定寄件的系統信箱，無法寄出提醒。\n\n請管理者在 appsettings.json 的 Mail:From 填入系統信箱（例如 Controltable@umc.com）後重新啟動服務。"
                 : $"寄件者信箱的格式不正確（{fromEmail}），無法寄出提醒。\n\n這個值來自 appsettings.json 的 Mail:From，請管理者修正後重新啟動服務。" });
-        if (items.Count == 0)
-            return Results.BadRequest(new { message = "沒有要提醒的需求（可能已經被處理掉了，請重新整理後再看一次）。" });
+        // 第 206 批：需關注 0 筆也照寄（「目前沒有需關注」＋下週到期；兩邊都 0 也寄，使用者選 a）
         // 第 186 批：收件者／副本**由後端自己讀固定名單**（視窗改成只顯示、不能改 —— 使用者選的），
         // 不再收前端送的清單。逐一驗格式（寫入時驗過，這裡再驗一次）、去重，同一個信箱同時在兩邊時只留收件者
         List<(int Id, string Kind, string Email, string Label, string Dept, string CreatedBy, string CreatedAt)> saved;
@@ -4843,57 +5302,170 @@ app.MapPost("/api/notify-attention", async (NotifyAttentionRequest? body, HttpCo
         if (toList.Count + ccList.Count > 100)
             return Results.BadRequest(new { message = $"收件者加副本最多 100 個信箱（目前 {toList.Count + ccList.Count} 個）。" });
 
+        // ── 5b. 試寄（第 223 批，2026-10-17 健檢 A7，使用者：「改A7」）──
+        // 推翻第 185 批起的「批次提醒不受試寄影響」：測試區開放給大家用模擬帳號測（第 221 批），單筆 ✉ 與自動信在試寄時
+        // 都只寄試寄收件人，批次提醒成了唯一會真的寄給同事的信。改成同一條：**AutoMode=test 時只寄到 AutoTestTo**、
+        // 沒有副本、主旨加 [試寄]、最上面試寄框（正式時的收件者／副本、誰按的）、**不寫 History**（否則「今天已提醒」會被試寄算進去）。
+        // 上面的名單檢查照擋（試寄要測的就是正式時寄不寄得出去）。試寄收件人沒設好 → 400，一封都不寄。
+        var (byActor, bySrc) = ResolveActor(ctx);
+        var ns = await ReadAutoNotifySettingsAsync(conn);
+        var test = ns.Mode == "test";
+        if (test && (ns.TestTo == "" || !IsValidMailAddress(ns.TestTo)))
+            return Results.BadRequest(new { message = "還沒設定試寄收件人（或格式不正確），信沒有寄出。\n\n自動寄信是「試寄」時，批次提醒只會寄到試寄收件人。"
+                                                     + "請管理者到 🔐 管理設定 →「信件通知」的自動寄信填好試寄收件人再按。" });
+
         var parts = new List<string>();
         if (nOver > 0) parts.Add($"逾期 {nOver}");
         if (nUnset > 0) parts.Add($"未壓日期 {nUnset}");
         if (nSoon > 0) parts.Add($"7 日內到期 {nSoon}");
-        var subject = $"[需求管控表] 需關注提醒：{items.Count} 筆需求請回控表確認（{string.Join("／", parts)}）";
-        // 純文字（lines）與 HTML（html）一行對一行同時組：內容一字不差，HTML 版只多顏色與粗體（第 186 批，使用者要求「可以有顏色嗎」）。
+        var nNext = nextWeek.Count;
+        // 第 206 批：需關注 0 筆也可以寄（使用者：「可以提醒大家 7 日內快到期是 0 筆」，兩邊都 0 也寄＝選 a）；信尾多「下週到期」
+        var subject = items.Count > 0
+            ? $"[需求管控表] 需關注提醒：{items.Count} 筆需求請回控表確認（{string.Join("／", parts)}）" + (nNext > 0 ? $"；下週到期 {nNext} 筆" : "")
+            : $"[需求管控表] 需關注提醒：目前 0 筆；" + (nNext > 0 ? $"下週到期 {nNext} 筆" : "下週也沒有到期");
+        // 純文字（lines）與 HTML（html）一行對一行同時組：內容一字不差，HTML 版只多顏色、粗體與段落標題條（第 186／206 批）。
         // ⚠️ 顏色寫死 hex、不用 CSS 變數：信是在 Notes 的白底裡看，沒有深色模式。紅＝逾期／未壓日期、橘＝7 日內（與畫面同一組意思）。
-        // ⚠️ 每一段使用者資料都先 HtmlEncode（分類、子分類是自由輸入）；只有我們自己的 <b>／<span>／<a> 是標記。
+        // 第 206 批（使用者看過三版示意圖選「淡底色標題條」）：需關注＝淡紅條、下週到期＝淡灰藍條、一切正常＝淡綠條；
+        //   開頭一行四個數字的摘要；下週到期的日期用深灰藍字（不用亮藍：會被當成連結）。
+        // ⚠️ 每一段使用者資料都先 HtmlEncode（分類、子分類是自由輸入）；只有我們自己的 <b>／<span>／<div>／<a> 是標記。
         var lines = new List<string>();
         var html = new List<string>();
         static string Enc(string s) => System.Net.WebUtility.HtmlEncode(s).Replace("  ", "&nbsp;&nbsp;");
         void L(string text, string? h = null) { lines.Add(text); html.Add(h ?? Enc(text)); }
-        L("Dear all：");
-        L("");
-        L($"以下 {items.Count} 筆需求目前需要關注（{string.Join("／", parts)}），");
-        L("請各負責人進入需求管控表確認：做完了就標記完成、還沒壓日期就壓上日期、需要延後就更新日期並填寫原因。");
-        L("");
-        foreach (var g in groups)
+        // 段落標題條：純文字版是【…】一行；HTML 是一條 div（block，後面不再接 <br>，見下面的 join）
+        void Band(string text, string fg, string bg, string bar) =>
+            L($"【{text}】", $"<div style=\"background:{bg};border-left:4px solid {bar};padding:4px 10px;margin:4px 0;color:{fg};font-weight:bold\">{Enc(text)}</div>");
+        const string NextFg = "#34495E";
+        // ── 第 235 批 E1（使用者：「推薦的 7 項都做」）：最上面一條色條講這封要大家做什麼。E7（批次信整個改版）沒選，下面的內容不動 ──
+        // ⚠️ 色條後面的空行只進純文字版：HTML 的色條是 <div>（區塊、自帶下邊距），再接一個空行會多一段空白
+        var stripLabel = $"需關注提醒 · {today:MM/dd}";
+        if (items.Count > 0)
+            L($"【{stripLabel}】這次有 {items.Count} 筆需要大家幫忙看一下（每筆約 1 分鐘）",
+              MailStripHtml(MailColor.Red, "#FDF1EF", stripLabel, $"這次有 {items.Count} 筆需要大家幫忙看一下", "每筆約 1 分鐘"));
+        else
         {
-            L("──────────────────────────────", "<span style=\"color:#999999\">──────────────────────────────</span>");
-            var head = $"■ {g.Side} {(g.Name == "" ? "（未指派負責人）" : g.Name)}（{g.Items.Count} 筆）";
-            L(head, $"<b>{Enc(head)}</b>");
-            foreach (var x in g.Items)
+            var okText = nNext > 0 ? "目前沒有需關注的需求（逾期、未壓日期、7 日內到期都是 0），謝謝大家" : "目前沒有需關注的需求，下週也沒有到期的需求";
+            L($"【{stripLabel}】{okText}", MailStripHtml(MailColor.Teal, MailColor.TealBg, stripLabel, okText, "不用處理"));
+        }
+        lines.Add("");
+        L("Dear all：");
+        if (items.Count > 0) L("");   // 0 筆時下面每一段自己會先空一行（第 235 批拿掉綠色標題條後，這裡不能再多空一行）
+        if (items.Count > 0)
+        {
+            var sum = $"逾期 {nOver}　·　未壓日期 {nUnset}　·　7 日內到期 {nSoon}　·　下週到期 {nNext}";
+            L(sum, "<span style=\"background:#F4F6F8;border:1px solid #E1E5EA;border-radius:4px;padding:3px 10px;display:inline-block\">"
+                 + $"<b style=\"color:{MailColor.Red}\">逾期 {nOver}</b>　·　<b style=\"color:{MailColor.Red}\">未壓日期 {nUnset}</b>"
+                 + $"　·　<b style=\"color:#B9770E\">7 日內到期 {nSoon}</b>　·　<b style=\"color:{NextFg}\">下週到期 {nNext}</b></span>");
+            L("");
+            L("請各負責人進入需求管控表確認：做完了就標記完成、還沒壓日期就壓上日期、需要延後就更新日期並填寫原因。");
+            L("");
+            Band($"需關注（{items.Count} 筆，請處理）", MailColor.Red, MailColor.RedBg, MailColor.Red);
+            foreach (var g in groups)
+            {
+                var head = $"■ {g.Side} {(g.Name == "" ? "（未指派負責人）" : g.Name)}（{g.Items.Count} 筆）";
+                L(head, $"<b>{Enc(head)}</b>");
+                foreach (var x in g.Items)
+                {
+                    var who = string.Join(" / ", new[] { x.Req.mainCat, x.Req.subCat }.Where(s => !string.IsNullOrWhiteSpace(s)));
+                    var nid = $"NID {(x.Req.nid == "" ? "（未填）" : x.Req.nid)}";
+                    L($"  {nid}　{who}", $"&nbsp;&nbsp;<span style=\"color:#666666\">{Enc(nid)}</span>　{Enc(who)}");
+                    var state = AttentionText(x.At.Level, x.At.Days, x.At.Date);
+                    var color = x.At.Level == "soon" ? "#B9770E" : MailColor.Red;
+                    L($"      {x.At.Label}　{state}",
+                      $"&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{Enc(x.At.Label)}　<b style=\"color:{color}\">{Enc(state)}</b>");
+                }
+            }
+        }
+        // 需關注 0 筆：第 206 批的綠色「✓ 目前沒有需關注」標題條，第 235 批起由最上面的色條講（同一句話不講兩次）
+        if (nNext > 0)
+        {
+            L("");
+            Band($"下週到期（{nNext} 筆，可提早準備，不用回覆）", NextFg, "#EEF1F5", "#5D6D7E");
+            foreach (var x in nextWeek)
             {
                 var who = string.Join(" / ", new[] { x.Req.mainCat, x.Req.subCat }.Where(s => !string.IsNullOrWhiteSpace(s)));
                 var nid = $"NID {(x.Req.nid == "" ? "（未填）" : x.Req.nid)}";
-                L($"  {nid}　{who}", $"&nbsp;&nbsp;<span style=\"color:#666666\">{Enc(nid)}</span>　{Enc(who)}");
-                var state = AttentionText(x.At.Level, x.At.Days, x.At.Date);
-                var color = x.At.Level == "soon" ? "#B9770E" : "#C0392B";
-                L($"      {x.At.Label}　{state}",
-                  $"&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{Enc(x.At.Label)}　<b style=\"color:{color}\">{Enc(state)}</b>");
+                var owner = x.Owner == "" ? "（未指派）" : x.Owner;
+                var due = $"{x.Nw.Date} 到期（剩 {x.Nw.Days} 天）";
+                L($"  {nid}　{who}　{x.Nw.Label} · {owner}　{due}",
+                  $"&nbsp;&nbsp;<span style=\"color:#666666\">{Enc(nid)}</span>　{Enc(who)}　{Enc(x.Nw.Label)} · {Enc(owner)}　<span style=\"color:{NextFg}\">{Enc(due)}</span>");
             }
         }
-        L("──────────────────────────────", "<span style=\"color:#999999\">──────────────────────────────</span>");
-        // 第 189 批：收件者可能是群組信箱或主管（沒有「我的待辦」），所以開需求列表並篩好「需關注」—— 與信裡列的同一批
-        var attnUrl = AppLink(mailAppUrl, "due=attention");
+        // 第 228 批（健檢 P1）：最近 7 天的變化 —— 給主管看，放在下週到期下面（負責人先看到的是需關注）。
+        // 標題條淡灰底＋深灰字，與需關注（淡紅）、下週到期（淡灰藍）分得開；只有「新逾期」用紅字。
+        // 讀不到也不擋寄信：這一段只是附帶的資訊，少了它比整封信寄不出去好（記一筆 AppDiag）
+        try
+        {
+            var wk = await WeeklyChangesAsync(conn, rows, today, only);
+            L("");
+            Band($"最近 7 天的變化（{wk.From:MM/dd}～{today:MM/dd}，給主管參考，不用回覆）", "#2C3E50", "#F4F6F8", "#7F8C8D");
+            if (wk.Kinds.All(k => k.Count == 0))
+                L("最近 7 天沒有新增、結案、新逾期或改日期。");
+            else
+            {
+                L(string.Join("　·　", wk.Kinds.Select(k => $"{k.Kind} {k.Count}")),
+                  string.Join("　·　", wk.Kinds.Select(k => k.Kind == "新逾期" && k.Count > 0
+                      ? $"{k.Kind} <b style=\"color:{MailColor.Red}\">{k.Count}</b>" : $"{k.Kind} <b>{k.Count}</b>")));
+                foreach (var k in wk.Kinds)
+                    foreach (var (text, h) in k.Lines) L(text, h);
+            }
+        }
+        catch (Exception ex)
+        {
+            AppDiag.Error("notify-attention", "批次提醒信的「最近 7 天的變化」組不出來，這封信不含那一段", ex, me);
+        }
+        // 第 189 批：收件者可能是群組信箱或主管（沒有「我的待辦」），所以開需求列表並篩好「需關注」—— 與信裡列的同一批。
+        // 第 206 批：需關注 0 筆時改開需求列表（篩需關注會是空畫面）
+        // 第 208 批：一定要帶 view=table —— 沒帶的話 EMS／MSD 的人會被預設頁帶去「我的待辦」（使用者回報），需關注篩選藏在看不到的那一頁
+        var attnUrl = items.Count > 0 ? AppLink(mailAppUrl, "view=table&due=attention") : AppLink(mailAppUrl, "view=table");
+        var attnHead = items.Count > 0 ? "看全部需關注：" : "看全部需求：";
         if (attnUrl != "")
         {
-            L("");
-            L($"看全部需關注：{attnUrl}",
-              $"看全部需關注：<a href=\"{System.Net.WebUtility.HtmlEncode(attnUrl)}\">{System.Net.WebUtility.HtmlEncode(attnUrl)}</a>");
+            L("", "<div style=\"height:12px\"></div>");   // HTML 版用一塊 12px 的空白（按鈕前面不會黏著上一行）
+            // 第 235 批 E2：HTML 版改成按鈕（網址留一行小字）；純文字版照舊「看全部需關注：網址」
+            L($"{attnHead}{attnUrl}",
+              MailButtonsHtml(new() { ((items.Count > 0 ? "看全部需關注" : "看全部需求") + " →", true) }, attnUrl,
+                              items.Count > 0 ? MailColor.Red : MailColor.Brand));
         }
         L("");
-        L("（本信由需求管控表系統自動發出，請勿直接回覆本信箱。）", "<span style=\"color:#888888\">（本信由需求管控表系統自動發出，請勿直接回覆本信箱。）</span>");
+        // 第 235 批 E9：頁尾給出路（找誰、手冊連結）。純文字可能兩行、HTML 一個區塊 → 分開加
+        lines.AddRange(MailFooterText("各需求的負責人", ManualLink(mailAppUrl)));
+        html.Add(MailFooterHtml("各需求的負責人", ManualLink(mailAppUrl)));
         var mailBody = string.Join("\r\n", lines);
+        // 標題條是 block（<div>），後面再接 <br> 會多一個空行 —— 只在兩個行內元素之間接 <br>
+        var sbHtml = new System.Text.StringBuilder();
+        for (var i = 0; i < html.Count; i++)
+        {
+            sbHtml.Append(html[i]);
+            if (i < html.Count - 1 && !html[i].StartsWith("<div", StringComparison.Ordinal)
+                                   && !html[i + 1].StartsWith("<div", StringComparison.Ordinal)) sbHtml.Append("<br>");
+        }
+        // 第 223 批：試寄框（與單筆 ✉／自動信同一個 TestBannerHtml），純文字版同內容
+        var bannerHtml = "";
+        if (test)
+        {
+            subject = subject.Replace("[需求管控表] ", "[需求管控表] [試寄] ");
+            var byName = byActor == null ? "" : await AssigneeNameByEmpAsync(conn, byActor);
+            var banner = new[]
+            {
+                "【試寄】這封是測試信，正式寄送時的對象如下",
+                "種類：需關注批次提醒",
+                "收件者：" + string.Join("、", toList),
+                "副本：" + (ccList.Count > 0 ? string.Join("、", ccList) : "無"),
+                "誰按的：" + (byActor == null ? "（無法辨識）" : byName != "" ? $"{byName}（{byActor}）" : byActor)
+                         + (bySrc == "simulated" ? " · 模擬帳號" : " · 真實帳號") + "　" + DateTime.Now.ToString("yyyy/MM/dd HH:mm"),
+                "固定名單收不到這封；以下是正式信件的原文。"
+            };
+            mailBody = string.Join("\r\n", banner) + "\r\n\r\n" + MailColor.TestDivider + "\r\n\r\n" + mailBody;
+            bannerHtml = TestBannerHtml(banner, "test", true);
+        }
         var mailHtml = "<div style=\"font-family:Segoe UI,Microsoft JhengHei,sans-serif;font-size:14px;line-height:1.6\">"
-                     + string.Join("<br>", html)
+                     + bannerHtml
+                     + sbHtml
                      + "</div>";
 
-        var firstTo = toList[0]; var moreTo = toList.Skip(1).ToList();
-        var firstCc = ccList.Count > 0 ? ccList[0] : ""; var moreCc = ccList.Skip(1).ToList();
+        var firstTo = test ? ns.TestTo : toList[0]; var moreTo = test ? new List<string>() : toList.Skip(1).ToList();
+        var firstCc = !test && ccList.Count > 0 ? ccList[0] : ""; var moreCc = test ? new List<string>() : ccList.Skip(1).ToList();
         var queued = false; var mailItemId = 0; string? err;
         if (useDbMail)
         {
@@ -4907,6 +5479,15 @@ app.MapPost("/api/notify-attention", async (NotifyAttentionRequest? body, HttpCo
         }
         if (err != null)
             return Results.Json(new { message = "寄信失敗：" + err }, statusCode: 502);
+
+        // 第 223 批：試寄 → 不寫稽核列，直接回（訊息講寄到哪、正式時會寄給誰）
+        if (test)
+            return Results.Ok(new
+            {
+                status = queued ? "uncertain" : "sent", test = true, testTo = ns.TestTo, count = items.Count, to = toList, cc = ccList,
+                message = (queued ? $"試寄信已交給郵件系統，但尚未確認送出（{ns.TestTo}）" : $"試寄信已寄到 {ns.TestTo}")
+                        + $"（試寄中；正式時會寄給收件者 {toList.Count} 個、副本 {ccList.Count} 個）。"
+            });
 
         // ⚠️ 寄出之後才寫稽核，一筆需求一列（與 /notify-unset 同一個順序與理由）。
         // ⚠️ Note 開頭「…→ 收件者 …」的格式沿用：前端 NOTIFY_TO_RE 抓「收件者」後第一個 <…>，
@@ -4925,7 +5506,8 @@ app.MapPost("/api/notify-attention", async (NotifyAttentionRequest? body, HttpCo
                                             : $"；⚠ SMTP 對話在 {mailTimeout / 1000} 秒內未完成，未確認送出") : "");
             try
             {
-                await InsertHistoryAsync(conn, x.Req.Id, x.Req.nid, x.At.Phase, "通知寄送", null, note, me, "windows", empty, empty);
+                // 第 223 批：來源改由 ResolveActor 判斷（測試區模擬中記 simulated；原本寫死 windows）
+                await InsertHistoryAsync(conn, x.Req.Id, x.Req.nid, x.At.Phase, "通知寄送", null, note, byActor, bySrc, empty, empty);
             }
             catch (Exception ex)
             {
@@ -4936,7 +5518,9 @@ app.MapPost("/api/notify-attention", async (NotifyAttentionRequest? body, HttpCo
         {
             status = queued ? "uncertain" : "sent", count = items.Count, to = toList, cc = ccList,
             message = (queued ? "已交給郵件系統，但尚未確認送出" : "已寄出")
-                    + $"：收件者 {toList.Count} 個、副本 {ccList.Count} 個，信裡列了 {items.Count} 筆需求。"
+                    + $"：收件者 {toList.Count} 個、副本 {ccList.Count} 個，"
+                    + (items.Count > 0 ? $"信裡列了 {items.Count} 筆需關注" : "信裡寫「目前沒有需關注的需求」")
+                    + (nextWeek.Count > 0 ? $"、{nextWeek.Count} 筆下週到期。" : "。")
         });
     }
     catch (Exception ex)
@@ -5004,12 +5588,15 @@ var exportColumns = new (string Header, string Column)[]
 //    代價：App 剛好在寄的那幾秒被回收，那一封就沒了 —— 使用者接受（不做待寄表）。
 // ⚠️ 收件者、階段一律在背景**重新讀 DB 再算**（UnsetPhaseOf），不信任端點當下的值：
 //    幾毫秒內別人已經把日期壓上去，就不該再請他壓。
-// ⚠️ 不寄：模擬帳號、收件者已停用（IsActive=0，也不記錄）、補記／撤銷／匯入（那幾支根本不呼叫這裡）。
+// ⚠️ 不寄：模擬帳號（**試寄時例外**，第 203 批）、收件者已停用（IsActive=0；第 217 批起記一筆 skipped，不亮紅點）、補記／撤銷／匯入（那幾支根本不呼叫這裡）。
 // ⚠️⚠️ 第 197 批（2026-10-15 使用者）：**收件者就是按的本人照樣寄**（推翻第 188 批的「本人不寄」）——
 //    「每次通知都是會通知EMS跟MSD負責人，即使是本人點選完成，也是不影響原本的規則」。
 //    本人不寄的話副本那一位（另一邊的負責人）也一起收不到。三種（交棒／退回／結案）都一樣。
 // ⚠️ 試寄：所有自動信只寄給 AutoTestTo、沒有副本；不寫 Controltable_History（否則手動 ✉ 會以為
 //    「今天已寄過」）。試寄收件人沒設好 → 一封都不寄（fail-closed）、記一筆失敗。
+//    第 203 批（2026-10-16 使用者看過示意圖）：試寄時**模擬帳號按的也寄**；信的最上面一個框寫種類、
+//    正式時的收件者／副本、誰按的（真實／模擬帳號），再接正式信件原文。收件者有問題（正式時寄不出去）
+//    或已停用（正式時不會寄）**試寄照樣寄**，主旨多「[正式時寄不出去]」／「[正式時不會寄]」、框改紅／灰。
 // ⚠️ 正式寄出寫 `通知寄送`，Note 與單筆 ✉「尚未壓定日期」那一種**同一個格式**（NOTIFY_TO_RE、
 //    「未確認送出」）—— phaseNotifiedEntry() 因此認得它，之後按 ✉ 會看到「今天已寄過一次」。
 //    尾巴多「；自動寄送（…）」，前端靠「自動寄送」四個字分自動／手動（改字兩邊一起改）。
@@ -5068,13 +5655,25 @@ static async Task<(bool Found, string Email, string Empo, bool Active)> Assignee
             r.IsDBNull(2) || r.GetBoolean(2));
 }
 
+// 試寄框「誰按的」那一行用（第 203 批）。查不到回空字串（照印工號）；不濾 IsActive
+static async Task<string> AssigneeNameByEmpAsync(SqlConnection conn, string empId)
+{
+    try
+    {
+        using var cmd = new SqlCommand("SELECT TOP 1 NAME FROM dbo.Assignee WHERE LTRIM(RTRIM(EMPO)) = @E ORDER BY IsActive DESC", conn);
+        cmd.Parameters.AddWithValue("@E", empId.Trim());
+        return (await cmd.ExecuteScalarAsync()) is string n ? n.Trim() : "";
+    }
+    catch { return ""; }
+}
+
 static async Task<Requirement?> ReadReqForMailAsync(SqlConnection conn, int id)
 {
     using var cmd = new SqlCommand(@"
         SELECT NID, Status, StageCode, MainCat, SubCat, EmsOwner, MsdOwner, CurrentStatus,
                SpecStart, SpecEnd, SpecActualEnd,
                MsdConfirm, MsdConfirmActualEnd, MsdStart, MsdEnd, MsdActualEnd,
-               UatStart, UatEnd, UatActualEnd
+               UatStart, UatEnd, UatActualEnd, RegDate, DelayCount, RollbackCount   -- 第 235 批：結案信的「註冊到結案幾天、延期、退回」
         FROM dbo.Controltable WHERE Id = @Id AND IsDeleted = 0", conn);
     cmd.Parameters.AddWithValue("@Id", id);
     using var r = await cmd.ExecuteReaderAsync();
@@ -5086,6 +5685,7 @@ static async Task<Requirement?> ReadReqForMailAsync(SqlConnection conn, int id)
         mainCat = ReadString(r, "MainCat"), subCat = ReadString(r, "SubCat"),
         emsOwner = ReadString(r, "EmsOwner"), msdOwner = ReadString(r, "MsdOwner"),
         currentStatus = ReadString(r, "CurrentStatus"),
+        regDate = ReadDate(r, "RegDate"), delayCount = ReadInt(r, "DelayCount"), rollbackCount = ReadInt(r, "RollbackCount"),
         spec = new Phase { start = ReadDate(r, "SpecStart"), end = ReadDate(r, "SpecEnd"), actualEnd = ReadDate(r, "SpecActualEnd") },
         msd  = new MsdPhase {
             confirm = ReadDate(r, "MsdConfirm"), confirmActualEnd = ReadDate(r, "MsdConfirmActualEnd"),
@@ -5120,66 +5720,336 @@ static async Task InsertNotifyLogAsync(SqlConnection conn, int? reqId, string? n
     catch (Exception ex) { AppDiag.Error("auto-notify", "寄送紀錄寫不進 dbo.NotifyLog（23_add_auto_notify.sql 跑了嗎？）", ex, by, reqId); }
 }
 
-// 組信。內容版型與單筆 ✉ 那封一樣（表格、現況描述、連結、落款），只換主旨與開頭幾句。
-// ⚠️ 刻意另寫、不抽 /notify-unset 的組信：那支是受保護路徑，未經指示不動
+// ─── 通知信的友善版（第 235 批，2026-10-18 使用者看過示意圖 https://claude.ai/artifact/7151u2L7oKXMQEbYvswbH3：
+//     「照你建議的改，推薦的 7 項都做、單筆寄信也做」——明確同意動單筆 ✉ 這條受保護路徑）───
+// 取代第 205 批的 NoticeMailHtml()。單筆 ✉（未壓／逾期）與三種自動信（交棒／退回重做／結案）共用：
+//   E1 最上面一條色條（標籤＋一句「這封要你做什麼」＋大約幾分鐘）　E2 按鈕式連結（網址留一行小字給按不開的人）
+//   E3 ①②③④ 進度條（做完 ✓、現在這關實心、還沒到空心，底下日期 YYYY/MM/DD，與「我的待辦」卡片同一套）
+//   E4 交棒寫出誰在哪天完成上一關　E5 逾期不責備＋兩個選項　E6 結案摘要（幾天、延期、退回）與感謝　E9 頁尾給出路（找誰、手冊）
+//   E7（批次信改版）、E8（主旨動作在前）使用者**沒選** → 主旨一個字不動；批次信只加 E1／E2／E9。
+// ⚠️ 純文字與 HTML 由同一個 NoticeMail 各畫一份，內容一致（純文字版的按鈕＝「按鈕字：網址」、進度條＝「①✓ ②● ③○ ④○」一行）。
+// ⚠️ Notes 限制（使用者看過）：不用 emoji、不放圖片（主旨的「②」就被畫成方框過）；色塊一律 table／td 的底色或框線
+//    （div 底色在 Notes 沒實測過）；寬度 ≤ 600px（手機的 Notes Traveler 不橫捲）；顏色寫死 hex（Notes 白底、沒有深色模式）。
+// ⚠️ 使用者打的字（分類、子分類、現況描述、退回原因、姓名）一律 HtmlEncode；收件者、副本、主旨、寄送、稽核都不在這裡。
+static (string Text, string Html) RenderNoticeMail(NoticeMail m, string bannerHtml)
+{
+    static string Enc(string s) => System.Net.WebUtility.HtmlEncode(s ?? "");
+    var (toneFg, toneBg) = m.Tone switch
+    {
+        "warn"   => (MailColor.Warn, MailColor.WarnBg),
+        "violet" => (MailColor.Violet, MailColor.VioletBg),
+        "teal"   => (MailColor.Teal, MailColor.TealBg),
+        _        => (MailColor.Brand, MailColor.BrandBg),
+    };
+    // ── 純文字 ──
+    var t = new List<string> { m.Greeting, "", $"【{m.Label}】{m.Headline}" + (m.Time != "" ? $"（{m.Time}）" : ""), "" };
+    t.AddRange(m.Paras);
+    if (!string.IsNullOrWhiteSpace(m.QuoteText)) { t.Add(""); t.Add($"{m.QuoteLabel}：{m.QuoteText!.Trim()}"); }
+    if (m.Steps.Count > 0)
+    {
+        t.Add("");
+        t.Add("進度：" + string.Join("　", m.Steps.Select(s =>
+            s.Circ + (s.State == "done" ? "✓" : s.State == "now" ? "●" : "○") + (s.Date != "" ? " " + s.Date : ""))));
+    }
+    if (m.Stats.Count > 0) { t.Add(""); t.Add(string.Join("　·　", m.Stats.Select(s => $"{s.Label} {s.Value}"))); }
+    t.Add("");
+    t.Add("──────────────────────────────");
+    t.Add($"{m.CardTitle}（NID {m.CardNid}）");
+    foreach (var r in m.Rows) t.Add($"{r.Label}：{r.Value}");
+    t.Add("──────────────────────────────");
+    if (!string.IsNullOrWhiteSpace(m.Status)) { t.Add(""); t.Add("現況描述："); t.Add(m.Status!.Trim()); }
+    if (m.Url != "" && m.Buttons.Count > 0) { t.Add(""); t.Add(string.Join("／", m.Buttons.Select(b => b.Text.TrimEnd(' ', '→'))) + "：" + m.Url); }
+    if (!string.IsNullOrWhiteSpace(m.Tip)) { t.Add(""); t.Add(m.Tip!); }
+    t.Add("");
+    t.AddRange(MailFooterText(m.Contact, m.ManualUrl));
+
+    // ── HTML ──
+    var h = new System.Text.StringBuilder();
+    h.Append("<div style=\"font-family:Segoe UI,Microsoft JhengHei,sans-serif;font-size:14px;line-height:1.6;color:#222222;max-width:600px\">");
+    h.Append(bannerHtml);
+    h.Append(MailStripHtml(toneFg, toneBg, m.Label, m.Headline, m.Time));
+    h.Append(Enc(m.Greeting)).Append("<br><br>");
+    h.Append(string.Join("<br>", m.Paras.Select(Enc))).Append("<br><br>");
+    if (!string.IsNullOrWhiteSpace(m.QuoteText))
+        h.Append("<table cellpadding=\"0\" cellspacing=\"0\" width=\"100%\" style=\"border-collapse:collapse;margin:0 0 16px\"><tr>")
+         .Append($"<td width=\"4\" style=\"background:{MailColor.Violet}\"></td>")
+         .Append($"<td style=\"background:{MailColor.VioletSoft};padding:10px 14px\"><div style=\"font-size:12px;color:{MailColor.Violet};font-weight:bold\">{Enc(m.QuoteLabel ?? "")}</div>")
+         .Append($"<div style=\"color:#1D2330\">{string.Join("<br>", m.QuoteText!.Trim().Replace("\r\n", "\n").Split('\n').Select(Enc))}</div></td></tr></table>");
+    if (m.Steps.Count > 0)
+    {
+        // 每一關一格：上緣色條（做完＝青綠、現在＝階段色、還沒到＝淺灰）＋圓點＋名稱＋日期。
+        // 用 border-top 畫線、不用負 margin 疊圖（Notes 不一定吃）；圓角在 Notes 變方角也看得懂
+        h.Append("<table cellpadding=\"0\" cellspacing=\"4\" width=\"100%\" style=\"border-collapse:separate;margin:0 0 12px;table-layout:fixed\"><tr>");
+        foreach (var s in m.Steps)
+        {
+            var bar = s.State == "done" ? MailColor.Teal : s.State == "now" ? s.Color : "#E3E7ED";
+            var dot = s.State == "done"
+                ? $"<span style=\"display:inline-block;width:22px;height:22px;line-height:22px;border-radius:11px;background:{MailColor.Teal};color:#FFFFFF;font-size:13px;font-weight:bold\">✓</span>"
+                : s.State == "now"
+                ? $"<span style=\"display:inline-block;width:22px;height:22px;line-height:22px;border-radius:11px;background:{s.Color};color:#FFFFFF;font-size:12px;font-weight:bold\">{Enc(s.Circ)}</span>"
+                : $"<span style=\"display:inline-block;width:20px;height:20px;line-height:20px;border-radius:10px;border:1px solid #C5CBD5;color:#9AA3B0;font-size:12px\">{Enc(s.Circ)}</span>";
+            var nameColor = s.State == "now" ? "#1D2330;font-weight:bold" : s.State == "done" ? MailColor.Teal : "#8A93A0";
+            h.Append($"<td style=\"border-top:4px solid {bar};padding:8px 2px 0;text-align:center;vertical-align:top\">{dot}")
+             .Append($"<div style=\"font-size:12px;margin-top:4px;color:{nameColor}\">{Enc(s.Name)}</div>")
+             .Append($"<div style=\"font-size:12px;color:{(s.Red ? MailColor.Red + ";font-weight:bold" : "#666666")}\">{(s.Date == "" ? "&nbsp;" : Enc(s.Date))}</div></td>");
+        }
+        h.Append("</tr></table>");
+    }
+    if (m.Stats.Count > 0)
+    {
+        h.Append("<table cellpadding=\"0\" cellspacing=\"6\" width=\"100%\" style=\"border-collapse:separate;margin:0 0 12px;table-layout:fixed\"><tr>");
+        foreach (var s in m.Stats)
+            h.Append($"<td style=\"background:#F6F7FA;padding:10px 6px;text-align:center\"><div style=\"font-size:18px;font-weight:bold;color:{MailColor.Teal}\">{Enc(s.Value)}</div>")
+             .Append($"<div style=\"font-size:12px;color:#666666\">{Enc(s.Label)}</div></td>");
+        h.Append("</tr></table>");
+    }
+    // 需求卡：抬頭＝分類 / 子分類（大字）＋ NID（灰字），下面兩欄
+    h.Append("<table cellpadding=\"0\" cellspacing=\"0\" width=\"100%\" style=\"border-collapse:collapse;border:1px solid #E3E7ED;margin:0 0 16px\">")
+     .Append($"<tr><td colspan=\"2\" style=\"background:#F6F7FA;padding:10px 14px;border-bottom:1px solid #E3E7ED\"><span style=\"font-size:16px;font-weight:bold;color:#1D2330\">{Enc(m.CardTitle)}</span>")
+     .Append($"<span style=\"color:#8A93A0;font-size:12px\">　NID {Enc(m.CardNid)}</span></td></tr>");
+    foreach (var r in m.Rows)
+    {
+        var vs = r.Style == "me" ? "font-weight:bold" : r.Style.StartsWith('#') ? $"font-weight:bold;color:{r.Style}" : "";
+        h.Append($"<tr><td style=\"padding:6px 14px;color:#666666;white-space:nowrap;vertical-align:top;width:92px;font-size:13px\">{Enc(r.Label)}</td>")
+         .Append($"<td style=\"padding:6px 14px 6px 0;{vs}\">{Enc(r.Value)}</td></tr>");
+    }
+    h.Append("</table>");
+    if (!string.IsNullOrWhiteSpace(m.Status))
+        h.Append("<div style=\"font-size:12px;color:#666666\">現況描述</div>")
+         .Append("<div style=\"margin:2px 0 16px\">" + string.Join("<br>", m.Status!.Trim().Replace("\r\n", "\n").Split('\n').Select(Enc)) + "</div>");
+    if (m.Url != "" && m.Buttons.Count > 0)
+        h.Append(MailButtonsHtml(m.Buttons, m.Url, m.Tone == "teal" ? MailColor.Teal : MailColor.Brand));
+    if (!string.IsNullOrWhiteSpace(m.Tip))
+        h.Append($"<table cellpadding=\"0\" cellspacing=\"0\" width=\"100%\" style=\"border-collapse:collapse;margin:0 0 16px\"><tr><td style=\"background:#F6F7FA;padding:8px 12px;font-size:13px;color:#555555\">{Enc(m.Tip!)}</td></tr></table>");
+    h.Append(MailFooterHtml(m.Contact, m.ManualUrl));
+    h.Append("</div>");
+    return (string.Join("\r\n", t), h.ToString());
+}
+
+// E1 色條（批次信也用）。⚠️ 開頭是 <div>：批次信的 HTML 行串接靠「<div 開頭＝區塊」決定要不要接 <br>
+static string MailStripHtml(string fg, string bg, string label, string headline, string time)
+{
+    static string Enc(string s) => System.Net.WebUtility.HtmlEncode(s ?? "");
+    return "<div><table cellpadding=\"0\" cellspacing=\"0\" width=\"100%\" style=\"border-collapse:collapse;margin:0 0 16px\"><tr>"
+         + $"<td width=\"6\" style=\"background:{fg}\"></td><td style=\"background:{bg};padding:12px 16px\">"
+         + $"<span style=\"background:{fg};color:#FFFFFF;font-size:12px;font-weight:bold;padding:1px 10px;border-radius:10px\">{Enc(label)}</span>"
+         + (time != "" ? $"<span style=\"color:#666666;font-size:12px\">　{Enc(time)}</span>" : "")
+         + $"<div style=\"font-size:17px;font-weight:bold;color:#1D2330;margin-top:6px;line-height:1.45\">{Enc(headline)}</div></td></tr></table></div>";
+}
+
+// E2 按鈕（第一顆實心、其餘外框）＋ 按不開時的網址小字。⚠️ 開頭是 <div>（理由同上）
+static string MailButtonsHtml(List<(string Text, bool Primary)> buttons, string url, string color)
+{
+    static string Enc(string s) => System.Net.WebUtility.HtmlEncode(s ?? "");
+    var u = Enc(url);
+    var sb = new System.Text.StringBuilder("<div><table cellpadding=\"0\" cellspacing=\"0\" style=\"border-collapse:collapse;margin:0 0 4px\"><tr>");
+    for (var i = 0; i < buttons.Count; i++)
+    {
+        var (text, primary) = buttons[i];
+        if (i > 0) sb.Append("<td width=\"10\"></td>");
+        sb.Append(primary
+            ? $"<td style=\"background:{color};border:1px solid {color};border-radius:6px;padding:10px 20px\"><a href=\"{u}\" style=\"color:#FFFFFF;font-weight:bold;text-decoration:none;font-size:15px\">{Enc(text)}</a></td>"
+            : $"<td style=\"border:1px solid {color};border-radius:6px;padding:10px 18px\"><a href=\"{u}\" style=\"color:{color};font-weight:bold;text-decoration:none;font-size:15px\">{Enc(text)}</a></td>");
+    }
+    sb.Append("</tr></table>");
+    sb.Append($"<div style=\"color:#8A93A0;font-size:12px;margin:2px 0 18px\">按鈕打不開時，複製這個網址：<a href=\"{u}\" style=\"color:#8A93A0\">{u}</a></div></div>");
+    return sb.ToString();
+}
+
+// E9 頁尾。contact＝「MSD 負責人 玉婷」這種（空＝不寫找誰）；manualUrl 空＝不附手冊連結（Mail:AppUrl 沒填）。
+// ⚠️ 「請勿直接回覆本信箱」這句保留（第 184 批的落款規則）
+static List<string> MailFooterText(string contact, string manualUrl)
+{
+    var l = new List<string>();
+    if (contact != "" || manualUrl != "")
+        l.Add(contact != "" ? $"有問題可以直接找 {contact}" + (manualUrl != "" ? $"，或看使用者手冊：{manualUrl}" : "。")
+                            : $"操作上有問題可以看使用者手冊：{manualUrl}");
+    l.Add("這封是需求管控表自動寄出的，請勿直接回覆本信箱（回覆不會有人收到）。");
+    return l;
+}
+static string MailFooterHtml(string contact, string manualUrl)
+{
+    static string Enc(string s) => System.Net.WebUtility.HtmlEncode(s ?? "");
+    var sb = new System.Text.StringBuilder("<div style=\"border-top:1px solid #E3E7ED;padding-top:12px;color:#777777;font-size:12.5px;line-height:1.7\">");
+    if (contact != "" || manualUrl != "")
+        sb.Append(contact != "" ? $"有問題可以直接找 {Enc(contact)}" + (manualUrl != "" ? "，或看" : "。") : "操作上有問題可以看")
+          .Append(manualUrl != "" ? $"<a href=\"{Enc(manualUrl)}\" style=\"color:{MailColor.Brand}\">使用者手冊</a>。" : "")
+          .Append("<br>");
+    sb.Append("這封是需求管控表自動寄出的，請勿直接回覆本信箱（回覆不會有人收到）。</div>");
+    return sb.ToString();
+}
+
+// 手冊網址：Mail:AppUrl 的路徑＋ /manual（去掉查詢字串）；AppUrl 沒填回空
+static string ManualLink(string baseUrl)
+{
+    var b = (baseUrl ?? "").Trim();
+    if (b == "") return "";
+    var q = b.IndexOf('?');
+    if (q >= 0) b = b[..q];
+    return b.TrimEnd('/') + "/manual";
+}
+
+// E3 進度條的四格。走完了沒照 StagePassed()（只看目前階段與實際完成日，第 66 批）；
+// 做完的日期＝實際完成日優先、否則結束日（提早／準時完成會把結束日蓋成完成日）；
+// 現在這關：沒日期＝「還沒壓日期」紅、過期＝「原訂 …」紅、其餘「預計 …」；還沒到的關有日期就印「預計 …」
+static List<MailStep> MailStepsOf(Requirement r, DateTime today)
+{
+    static string Ymd(string iso) => iso.Replace('-', '/');
+    var code = NormStage(r.stageCode);
+    var cs = int.TryParse(code, out var n) ? n : 0;
+    var allDone = StatusIs(r.status, "Done") || cs == 5;
+    var list = new List<MailStep>();
+    for (var st = 1; st <= 4; st++)
+    {
+        var (_, end, actual) = StageSideOf(r, st);
+        var e = NormDate(end); var a = NormDate(actual);
+        var (circ, name, color) = MailColor.Stage(st);
+        if (allDone || StagePassed(r, st)) list.Add(new MailStep(circ, name, color, "done", Ymd(a != "" ? a : e), false));
+        else if (st == cs)
+        {
+            if (e == "") list.Add(new MailStep(circ, name, color, "now", "還沒壓日期", true));
+            else
+            {
+                var late = DateTime.TryParse(e, out var due) && due.Date < today.Date;
+                list.Add(new MailStep(circ, name, color, "now", (late ? "原訂 " : "預計 ") + Ymd(e), late));
+            }
+        }
+        else list.Add(new MailStep(circ, name, color, "next", e == "" ? "" : "預計 " + Ymd(e), false));
+    }
+    return list;
+}
+
+// 某一關做完的日期（MM/DD），交棒／結案信那一句「○○ 在 10/18 完成了 …」用；查不到回空
+static string MailDoneMd(Requirement r, int stage)
+{
+    var (_, end, actual) = StageSideOf(r, stage);
+    var d = NormDate(actual) != "" ? NormDate(actual) : NormDate(end);
+    return DateTime.TryParse(d, out var x) ? x.ToString("MM/dd") : "";
+}
+
+// 需求卡的負責人兩列：收件者那一邊加粗、接「（你）」
+static void AddOwnerRows(NoticeMail m, Requirement r, string recvSide)
+{
+    string N(string? s) => string.IsNullOrWhiteSpace(s) ? "（未指派）" : s!.Trim();
+    m.Rows.Add(("EMS 負責人", N(r.emsOwner) + (recvSide == "EMS" && !string.IsNullOrWhiteSpace(r.emsOwner) ? "（你）" : ""), recvSide == "EMS" ? "me" : ""));
+    m.Rows.Add(("MSD 負責人", N(r.msdOwner) + (recvSide == "MSD" && !string.IsNullOrWhiteSpace(r.msdOwner) ? "（你）" : ""), recvSide == "MSD" ? "me" : ""));
+}
+
+// 試寄框的 HTML（第 211 批從 ComposeAutoMail 抽出來，單筆 ✉ 的試寄也用它）。tone：test 黃／fail 紅／skip 灰／sample 黃
+static string TestBannerHtml(string[] banner, string tone, bool withDivider)
+{
+    if (banner.Length == 0) return "";
+    static string Enc(string s) => System.Net.WebUtility.HtmlEncode(s);
+    var (bg, bd, fg) = tone switch
+    {
+        "fail" => ("#FDEDEC", "#E6B0AA", "#922B21"),
+        "skip" => ("#F2F3F4", "#CCD1D1", "#424949"),
+        _      => ("#FEF5E7", "#F0B27A", "#7E5109"),
+    };
+    var h = $"<div style=\"background:{bg};border:1px solid {bd};color:{fg};border-radius:6px;padding:10px 12px;margin-bottom:12px\">"
+          + $"<b>{Enc(banner[0])}</b>"
+          + string.Concat(banner.Skip(1).Select(l => "<br>" + Enc(l)))
+          + "</div>";
+    if (withDivider) h += $"<div style=\"color:#888;font-size:12px;margin:0 0 12px\">{Enc(MailColor.TestDivider)}</div>";
+    return h;
+}
+
+// 第 203 批：banner 改成多行（第一行是標題），bannerTone＝"test"（黃）／"fail"（紅：正式時寄不出去）／
+// "skip"（灰：正式時不會寄）／"sample"（黃、沒有「以下為正式信件內容」那條線）。tags＝主旨的 [..] 標籤
 static (string Subject, string Text, string Html) ComposeAutoMail(Requirement cur, string trigger, string phaseLabel, string side,
-    string toName, string prevLabel, string reason, string banner, string tag, string appUrl)
+    string toName, string prevLabel, string reason, string[] banner, string bannerTone, string[] tags, string appUrl,
+    string actorName, DateTime today)
 {
     var who = string.Join(" / ", new[] { cur.nid == "" ? null : $"NID {cur.nid}", cur.mainCat, cur.subCat }
                                  .Where(s => !string.IsNullOrWhiteSpace(s)));
     var stageName = SubjectStageName(phaseLabel);
     var close = trigger == "close";
-    var subject = "[需求管控表] " + (tag == "" ? "" : $"[{tag}] ")
+    // ⚠️ 主旨一個字沒動（第 235 批 E8「主旨動作在前」使用者沒選）
+    var subject = "[需求管控表] " + string.Concat(tags.Where(t => t != "").Select(t => $"[{t}] "))
                 + (close ? $"需求已結案：{who}"
                    : trigger == "rollback" ? $"退回重做，請重新壓定「{stageName}」日期：{who}"
                                            : $"請壓定「{stageName}」日期：{who}");
-    var lines = new List<string>();
-    if (banner != "") { lines.Add(banner); lines.Add(""); }
-    lines.Add($"{toName} 您好：");
-    lines.Add("");
+    const string divider = MailColor.TestDivider;
+    var withDivider = banner.Length > 0 && bannerTone != "sample";
+
+    // ── 第 235 批：內文改成友善版（RenderNoticeMail），三種各自的色條、開頭幾句與按鈕 ──
+    var title = string.Join(" / ", new[] { cur.mainCat, cur.subCat }.Where(s => !string.IsNullOrWhiteSpace(s)).Select(s => s!.Trim()));
+    var stageNum = int.TryParse(NormStage(cur.stageCode), out var sn) ? sn : 0;
+    var ccDept = side == "MSD" ? "EMS" : "MSD";
+    var ccName = ((side == "MSD" ? cur.emsOwner : cur.msdOwner) ?? "").Trim();
+    var m = new NoticeMail
+    {
+        Greeting = $"{toName} 您好，",
+        CardTitle = title == "" ? "（未填分類）" : title,
+        CardNid = cur.nid == "" ? "（未填）" : cur.nid!,
+        Steps = MailStepsOf(cur, today),
+        Status = cur.currentStatus,
+        Url = AppLink(appUrl, "view=mytodo"),           // 第 189 批：直接開到收件者自己的「我的待辦」（結案也是：我的全部裡有已結案）
+        ManualUrl = ManualLink(appUrl),
+        Contact = ccName != "" ? $"{ccDept} 負責人 {ccName}" : "",
+    };
+    var stageColor = stageNum is >= 1 and <= 4 ? MailColor.Stage(stageNum).Color : MailColor.Brand;
     if (close)
     {
-        // 第 195 批：結案只是知會，沒有要對方做的事
-        lines.Add($"需求「{who}」的「{prevLabel}」已經標記完成，這筆需求已結案。");
-        lines.Add("此信僅為知會，不需要再做任何處理。");
+        // 第 195 批：結案只是知會。E6：這筆走了多久＋感謝；收件者 MSD、副本 EMS（頁尾不寫找誰，只留手冊）
+        var md = MailDoneMd(cur, 4);
+        m.Tone = "teal"; m.Label = "結案"; m.Time = "不用處理";
+        m.Headline = $"「{m.CardTitle}」四關全部完成了";
+        m.Paras.Add((actorName != "" ? $"{actorName}{(md != "" ? $" 在 {md}" : "")} 完成了「{prevLabel}」"
+                                     : $"「{prevLabel}」{(md != "" ? $"已在 {md} " : "已經")}完成") + "，這筆需求正式結案。");
+        var names = new[] { cur.emsOwner, cur.msdOwner }.Where(s => !string.IsNullOrWhiteSpace(s)).Select(s => s!.Trim()).Distinct().ToList();
+        if (names.Count > 0) m.Paras.Add($"謝謝 {string.Join("、", names)} 一路接力完成！");
+        m.Paras.Add("這封只是通知，不需要回覆或處理。");
+        var (_, uatEnd, uatActual) = StageSideOf(cur, 4);
+        var closeIso = NormDate(uatActual) != "" ? NormDate(uatActual) : NormDate(uatEnd);
+        var regIso = NormDate(cur.regDate);
+        if (DateTime.TryParse(regIso, out var reg) && DateTime.TryParse(closeIso, out var cd) && cd >= reg)
+            m.Stats.Add(($"{(cd - reg).Days} 天", "註冊到結案"));
+        m.Stats.Add(($"{cur.delayCount} 次", "延期"));
+        m.Stats.Add(($"{cur.rollbackCount} 次", "退回重做"));
+        m.Rows.Add(("註冊日期", regIso == "" ? "（未填）" : regIso.Replace('-', '/'), ""));
+        if (closeIso != "") m.Rows.Add(("結案日期", closeIso.Replace('-', '/'), ""));
+        AddOwnerRows(m, cur, "MSD");
+        m.Buttons.Add(("到「我的待辦」查看 →", false));
+        m.Contact = "";
     }
     else if (trigger == "rollback")
     {
-        lines.Add($"需求「{who}」已退回重做至「{phaseLabel}」，這個階段（含之後）的日期已經清空。");
-        lines.Add("請進入需求管控表重新壓定日期。");
-        if (!string.IsNullOrWhiteSpace(reason)) lines.Add($"退回原因：{reason.Trim()}");
+        m.Tone = "violet"; m.Label = "退回重做"; m.Time = "大約 2 分鐘";
+        m.Headline = $"「{phaseLabel}」要重做，請重新壓一個完成日";
+        m.Paras.Add(actorName != "" ? $"{actorName} 在 {today:MM/dd} 把這筆需求退回到「{phaseLabel}」。"
+                                    : $"這筆需求在 {today:MM/dd} 退回到「{phaseLabel}」。");
+        m.Paras.Add("從這一關開始的日期已經清空，其他資料都還在，麻煩重新壓一個預計完成日。");
+        if (!string.IsNullOrWhiteSpace(reason)) { m.QuoteLabel = "退回原因"; m.QuoteText = reason.Trim(); }
+        m.Rows.Add(("現在輪到", $"{phaseLabel}（{side} 負責）", stageColor));
+        AddOwnerRows(m, cur, side);
+        m.Buttons.Add(("到「我的待辦」重新壓日期 →", true));
+        m.Tip = MailColor.TipQuickDate;
     }
     else
     {
-        lines.Add($"需求「{who}」的「{prevLabel}」已經標記完成，現在進入「{phaseLabel}」階段，但這個階段還沒有壓定日期。");
-        lines.Add("請撥空進入需求管控表填寫，以利後續進度追蹤。");
+        // E4：交棒寫出誰在哪天完成上一關（查不到人名就不寫人名）
+        var prevStage = stageNum - 1;
+        var md = prevStage >= 1 ? MailDoneMd(cur, prevStage) : "";
+        var prevSide = prevStage >= 1 ? StageSideOf(cur, prevStage).Side : side;
+        m.Tone = "brand"; m.Label = "輪到你了"; m.Time = "大約 1 分鐘";
+        m.Headline = $"請幫「{phaseLabel}」壓一個預計完成日";
+        var first = prevLabel == "" ? "上一關已經完成"
+                  : actorName != "" ? $"{actorName}{(md != "" ? $" 在 {md}" : "")} 完成了「{prevLabel}」"
+                  : $"「{prevLabel}」{(md != "" ? $"已在 {md} " : "已經")}完成";
+        m.Paras.Add(first + (prevSide != side ? $"，這筆需求交棒到 {side} 了。" : $"，接下來輪到「{phaseLabel}」。"));
+        m.Paras.Add($"麻煩幫忙壓一下「{phaseLabel}」預計哪天完成，" + (stageNum >= 4 ? "結案時間就能先估出來。" : "後面的進度就能接著排。"));
+        m.Rows.Add(("現在輪到", $"{phaseLabel}（{side} 負責）", stageColor));
+        AddOwnerRows(m, cur, side);
+        m.Buttons.Add(("到「我的待辦」壓日期 →", true));
+        m.Tip = MailColor.TipQuickDate;
     }
-    lines.Add("");
-    lines.Add("──────────────────────────────");
-    lines.Add($"NID        ：{(cur.nid == "" ? "（未填）" : cur.nid)}");
-    lines.Add($"分類        ：{cur.mainCat} / {cur.subCat}");
-    lines.Add($"目前階段：{StageText(cur.stageCode)}");
-    if (!close) lines.Add($"待壓定階段  ：{phaseLabel}（{side} 負責）");   // 結案沒有要壓日期的階段
-    lines.Add($"EMS 負責人  ：{(string.IsNullOrWhiteSpace(cur.emsOwner) ? "（未指派）" : cur.emsOwner)}");
-    lines.Add($"MSD 負責人  ：{(string.IsNullOrWhiteSpace(cur.msdOwner) ? "（未指派）" : cur.msdOwner)}");
-    lines.Add("──────────────────────────────");
-    if (!string.IsNullOrWhiteSpace(cur.currentStatus)) { lines.Add(""); lines.Add("現況描述："); lines.Add(cur.currentStatus!.Trim()); }
-    // 第 189 批：與單筆 ✉ 同一行 —— 直接開到收件者自己的「我的待辦」
-    // 第 195 批：結案沒有要處理的事 → 「查看」（我的待辦有「已結案」那一區）。HTML 那一行用同一組開頭字比對
-    var todoUrl = AppLink(appUrl, "view=mytodo");
-    var linkHead = close ? "到「我的待辦」查看：" : "到「我的待辦」處理：";
-    if (todoUrl != "") { lines.Add(""); lines.Add(linkHead + todoUrl); }
-    lines.Add("");
-    lines.Add("（本信由需求管控表系統自動發出，請勿直接回覆本信箱。）");
-    var text = string.Join("\r\n", lines);
-    // ⚠️ 每一行先 HtmlEncode（現況描述、退回原因是使用者打的字），只把網址包 <a>
-    var html = "<div style=\"font-family:Segoe UI,Microsoft JhengHei,sans-serif;font-size:14px;line-height:1.6\">"
-             + string.Join("<br>", lines.Select(l =>
-                   todoUrl != "" && l.StartsWith(linkHead, StringComparison.Ordinal)
-                       ? $"{linkHead}<a href=\"{System.Net.WebUtility.HtmlEncode(todoUrl)}\">{System.Net.WebUtility.HtmlEncode(todoUrl)}</a>"
-                       : System.Net.WebUtility.HtmlEncode(l)))
-             + "</div>";
-    return (subject, text, html);
+    var body = RenderNoticeMail(m, TestBannerHtml(banner, bannerTone, withDivider));
+    // 純文字版：試寄框原樣幾行 → 分隔線 → 正式信件
+    var head = new List<string>();
+    if (banner.Length > 0) { head.AddRange(banner); head.Add(""); if (withDivider) { head.Add(divider); head.Add(""); } }
+    var text = string.Join("\r\n", head) + body.Text;
+    return (subject, text, body.Html);
 }
 
 // 寄一封（兩種傳輸方式），回傳 (失敗原因, 未確認送出, 稽核用的「未確認」那一句)
@@ -5200,12 +6070,24 @@ async Task RunAutoNotifyAsync(int id, string trigger, string? actor, string acto
     await conn.OpenAsync();
     var s = await ReadAutoNotifySettingsAsync(conn);
     if (s.Mode == "off") return;
+    // 第 203 批（2026-10-16 使用者）：**試寄時模擬帳號按的也寄**（只寄到試寄收件人、沒有副本）——
+    // 「我目前一個人測試都需要用模擬帳號，若只有自己真實帳號下才會生效，很難測到全貌」。
+    // ⚠️⚠️ 第 218 批（使用者：「照你說的改」）：**開啟時模擬帳號按的也改寄試寄收件人**（原本直接 return、不寄也不記）——
+    //    與單筆 ✉ 第 211 批同一條規則：模擬帳號一律走試寄。公司桌機與 IIS 共用 DB（同一份 NotifySettings），
+    //    IIS 一開啟，桌機上用模擬帳號測就一封自動信都看不到。
+    // ⚠️⚠️ 第 221 批（2026-10-17 使用者：模擬帳號要完全等同 Windows 帳號登入的流程 → 全改）：**推翻第 218 批**，
+    //    改道只看模式（試寄＝改道、開啟＝寄給負責人），模擬與真實帳號完全相同。前提變了：測試區與正式區是不同資料庫
+    //    （不再共用 NotifySettings），模擬帳號只在測試區開，測試區平常維持「試寄」；要讓同事真的收到才切「開啟」
+    var test = s.Mode == "test";
+    // NotifyLog 的 Mode：改道到試寄收件人的一律記 test（「最近 5 封」才會寫「已寄出（試寄）」）
+    var logMode = test ? "test" : s.Mode;
     var close = trigger == "close";
     if (close ? !s.Close : trigger == "handoff" ? !s.Handoff : !s.Rollback) return;
 
     var cur = await ReadReqForMailAsync(conn, id);
     if (cur == null) return;
     string phaseKey, phaseLabel, side;
+    string? hasDate = null;   // 第 204 批：試寄時「下一階段已經有日期」那一種（正式時不寄）
     if (close)
     {
         // 第 195 批：結案通知 → 收件者 MSD 負責人、副本 EMS 負責人（使用者選的；按 ④ 完成的多半是 EMS 本人）。
@@ -5216,8 +6098,22 @@ async Task RunAutoNotifyAsync(int id, string trigger, string? actor, string acto
     else
     {
         var target = UnsetPhaseOf(cur);
-        if (target == null) return;          // 下一階段已經有日期 → 沒有要請誰壓日期
-        (phaseKey, phaseLabel, side) = target.Value;
+        if (target != null) (phaseKey, phaseLabel, side) = target.Value;
+        else
+        {
+            // 下一階段已經有日期 → 正式時沒有要請誰壓日期，不寄。
+            // 第 204 批（2026-10-16 使用者）：試寄時照樣寄一封灰框「[正式時不會寄]」—— 否則測的人信箱什麼都沒有，
+            // 會以為信不見了。只認「目前階段有 End」這一種；其他回 null 的情況（已結案、階段代號壞掉）照舊靜靜不寄
+            var code = NormStage(cur.stageCode);
+            if (!test || code.Length != 1 || code[0] < '1' || code[0] > '4' || StatusIs(cur.status, "Done")) return;
+            var st = code[0] - '0';
+            var (stSide, stEnd, _) = StageSideOf(cur, st);
+            var stEndIso = NormDate(stEnd);
+            if (stEndIso == "") return;
+            (phaseKey, phaseLabel, _) = StageDatesOf(st);
+            side = stSide;
+            hasDate = $"「{phaseLabel}」已經壓了日期（{stEndIso}），正式時不寄（不用請人壓日期）";
+        }
     }
     var stageNum = int.TryParse(NormStage(cur.stageCode), out var sn) ? sn : 0;
     var prevLabel = stageNum >= 2 ? StageDatesOf(stageNum - 1).Label : "";
@@ -5225,49 +6121,124 @@ async Task RunAutoNotifyAsync(int id, string trigger, string? actor, string acto
     var toName = ((side == "MSD" ? cur.msdOwner : cur.emsOwner) ?? "").Trim();
     var ccDept = side == "MSD" ? "EMS" : "MSD";
     var ccName = ((side == "MSD" ? cur.emsOwner : cur.msdOwner) ?? "").Trim();
-    Task Fail(string detail) => InsertNotifyLogAsync(conn, id, cur.nid, trigger, s.Mode, phaseKey, toName, "", "", "failed", detail, actor);
+    Task Fail(string detail) => InsertNotifyLogAsync(conn, id, cur.nid, trigger, logMode, phaseKey, toName, "", "", "failed", detail, actor);
 
-    if (toName == "") { await Fail(close ? $"MSD 負責人還沒指派，結案通知不知道要寄給誰" : $"「{phaseLabel}」的負責人（{side}）還沒指派，不知道要寄給誰"); return; }
-    var to = await AssigneeInfoAsync(conn, side, toName);
-    if (to.Found && !to.Active) return;      // 已停用（離職／轉調）→ 不寄也不記（使用者 10/09 定的）
-    // ⚠️ 第 197 批：收件者是按的本人也照寄（不可加回「本人不寄」，見本段開頭）
-    // 「名字對不上」與「沒填信箱」要分開講：一個是去改負責人欄位、一個是去 SSMS 補信箱
-    if (!to.Found) { await Fail($"指派人員主檔裡找不到「{toName}／{side}」（負責人欄位的名字對不上），不知道信箱"); return; }
-    if (to.Email == "") { await Fail($"指派人員主檔裡「{toName}／{side}」沒有填 EMAIL（請在 SSMS 的 dbo.Assignee 補上）"); return; }
-    if (!IsValidMailAddress(to.Email)) { await Fail($"指派人員主檔裡「{toName}／{side}」的 EMAIL 格式不正確：{to.Email}"); return; }
+    // 收件者有問題時：正式＝記一筆失敗、不寄；試寄＝照樣寄到試寄收件人，信的最上面講正式時會怎樣（第 203 批，
+    // 使用者：「我需要知道能確切掌握那些信件是會被寄出的」）。problem＝正式時寄不出去、skip＝正式時不會寄
+    string? problem = null, skip = hasDate;
+    var toEmail = "";
+    if (toName == "") problem = close ? "MSD 負責人還沒指派，結案通知不知道要寄給誰" : $"「{phaseLabel}」的負責人（{side}）還沒指派，不知道要寄給誰";
+    else
+    {
+        var to = await AssigneeInfoAsync(conn, side, toName);
+        toEmail = to.Email;
+        // 已停用（離職／轉調）→ 正式時不寄。
+        // ⚠️ 第 217 批（使用者同意，推翻 10/09 的「也不記」）：正式時**記一筆 skipped**（🔐「最近 5 封」灰字「略過」），
+        //    不然交棒信就這樣無聲消失、誰也查不到。skipped **不算未寄出**（failWhere 只數 failed）→ 不亮紅點
+        if (to.Found && !to.Active)
+        {
+            if (!test)
+            {
+                await InsertNotifyLogAsync(conn, id, cur.nid, trigger, s.Mode, phaseKey, toName, "", "", "skipped",
+                                           $"{toName}（{side} 負責人）在指派人員主檔裡已停用，沒有寄；請改負責人", actor);
+                return;
+            }
+            skip = $"{toName}（{side} 負責人）在指派人員主檔裡已停用，正式時不寄（「最近 5 封」記一筆略過）";
+        }
+        // ⚠️ 第 197 批：收件者是按的本人也照寄（不可加回「本人不寄」，見本段開頭）
+        // 「名字對不上」與「沒填信箱」要分開講：一個是去改負責人欄位、一個是去 SSMS 補信箱
+        else if (!to.Found) problem = $"指派人員主檔裡找不到「{toName}／{side}」（負責人欄位的名字對不上），不知道信箱";
+        else if (to.Email == "") problem = $"指派人員主檔裡「{toName}／{side}」沒有填 EMAIL（請在 SSMS 的 dbo.Assignee 補上）";
+        else if (!IsValidMailAddress(to.Email)) problem = $"指派人員主檔裡「{toName}／{side}」的 EMAIL 格式不正確：{to.Email}";
+    }
+    if (problem != null && !test) { await Fail(problem); return; }
+    // 第 204 批：下一階段已經有日期＝正式時根本不會走到收件者檢查，那一種優先（收件者有沒有問題都不影響）
+    if (hasDate != null) { problem = null; skip = hasDate; }
 
-    // 副本：另一位負責人。查不到、停用、格式壞、與收件者同一個信箱 → 沒有副本照寄
+    // 副本：另一位負責人。查不到、停用、格式壞、與收件者同一個信箱 → 沒有副本照寄（ccWhy 只給試寄框用）
     var ccEmail = "";
-    if (ccName != "")
+    var ccWhy = "";
+    if (ccName == "") ccWhy = $"{ccDept} 負責人還沒指派";
+    else
     {
         var cc = await AssigneeInfoAsync(conn, ccDept, ccName);
-        if (cc.Found && cc.Active && IsValidMailAddress(cc.Email) && !cc.Email.Equals(to.Email, StringComparison.OrdinalIgnoreCase))
-            ccEmail = cc.Email;
+        if (!cc.Found) ccWhy = $"指派人員主檔裡找不到「{ccName}／{ccDept}」";
+        else if (!cc.Active) ccWhy = $"{ccName} 已停用";
+        else if (cc.Email == "") ccWhy = $"{ccName} 沒有填 EMAIL";
+        else if (!IsValidMailAddress(cc.Email)) ccWhy = $"{ccName} 的 EMAIL 格式不正確";
+        else if (cc.Email.Equals(toEmail, StringComparison.OrdinalIgnoreCase)) ccWhy = "與收件者同一個信箱";
+        else ccEmail = cc.Email;
     }
 
     if (!mailReady) { await Fail("郵件伺服器還沒設定（appsettings.json 的 Mail:Host）"); return; }
     if (mailFrom == "" || !IsValidMailAddress(mailFrom)) { await Fail("寄件的系統信箱（appsettings.json 的 Mail:From）沒設定或格式不正確"); return; }
 
-    var test = s.Mode == "test";
     if (test && (s.TestTo == "" || !IsValidMailAddress(s.TestTo)))
-    { await Fail("試寄收件人還沒設定或格式不正確，這一封沒有寄出（試寄期間不會寄給負責人）"); return; }
-    var origin = $"{toName} <{to.Email}>" + (ccEmail != "" ? $"，副本 {ccName} <{ccEmail}>" : "");
-    var banner = test ? $"【試寄】這封原本要寄給 {origin}。試寄期間只寄到試寄收件人，負責人收不到。" : "";
-    var mail = ComposeAutoMail(cur, trigger, phaseLabel, side, toName, prevLabel, reason, banner, test ? "試寄" : "", mailAppUrl);
-    var realTo = test ? s.TestTo : to.Email;
+    {
+        await Fail("試寄收件人還沒設定或格式不正確，這一封沒有寄出（試寄期間不會寄給負責人）");
+        return;
+    }
+
+    var origin = $"{toName} <{toEmail}>" + (ccEmail != "" ? $"，副本 {ccName} <{ccEmail}>" : "");
+    // 第 235 批 E4：交棒／退回／結案信寫出「誰」完成或退回的（查不到名字＝空，信裡改成不寫人名）
+    var actorName = actor == null ? "" : await AssigneeNameByEmpAsync(conn, actor);
+    // 試寄框（第 203 批，使用者看過示意圖）：種類／原因／收件者／副本／誰按的，接著是正式信件原文
+    var banner = Array.Empty<string>();
+    var tone = "test";
+    var tags = new List<string>();
+    if (test)
+    {
+        tone = problem != null ? "fail" : skip != null ? "skip" : "test";
+        tags.Add("試寄");
+        if (problem != null) tags.Add("正式時寄不出去");
+        else if (skip != null) tags.Add("正式時不會寄");
+        var kindText = close ? $"結案（「{prevLabel}」標記完成）"
+                     : trigger == "rollback" ? $"退回重做（退回至「{phaseLabel}」）"
+                     : $"交棒（「{prevLabel}」標記完成）";
+        var toText = toName == "" ? $"（{side} 負責人還沒指派）"
+                   : problem == null && toEmail != "" ? $"{toName} <{toEmail}>（{side} 負責人）"
+                   : $"{toName}（{side} 負責人）";
+        var ccText = ccEmail != "" ? $"{ccName} <{ccEmail}>（{ccDept} 負責人）" : $"無（{ccWhy}）";
+        var byText = (actor == null ? "（無法辨識）" : actorName != "" ? $"{actorName}（{actor}）" : actor)
+                   + (actorSrc == "simulated" ? " · 模擬帳號" : " · 真實帳號")
+                   + "　" + DateTime.Now.ToString("yyyy/MM/dd HH:mm");
+        var b = new List<string>
+        {
+            problem != null ? "【試寄】正式寄送時這封會寄不出去"
+            : skip != null ? "【試寄】正式時不會寄這封"
+            : "【試寄】這封是測試信，正式寄送時的對象如下",
+            $"種類：{kindText}",
+        };
+        if (problem != null) b.Add($"原因：{problem}");
+        if (skip != null) b.Add($"原因：{skip}");
+        b.Add($"收件者：{toText}");
+        b.Add($"副本：{ccText}");
+        b.Add($"誰按的：{byText}");
+        b.Add(problem != null ? "以下是信件原文，補好資料後正式寄出的就是這封。"
+            : skip != null ? (skip == hasDate ? "以下是這一關還沒壓日期時會寄出的信件原文（正式時不會寄出）。" : "以下是信件原文（正式時不會寄出）。")
+            : "試寄期間負責人收不到這封；以下是正式信件的原文。");
+        banner = b.ToArray();
+    }
+    var mail = ComposeAutoMail(cur, trigger, phaseLabel, side, toName == "" ? $"{side} 負責人" : toName, prevLabel, reason,
+                               banner, tone, tags.ToArray(), mailAppUrl, actorName, DateTime.Today);
+    var realTo = test ? s.TestTo : toEmail;
     var realCc = test ? "" : ccEmail;
 
     var sent = await SendAutoMailAsync(conn, realTo, realCc, mail.Subject, mail.Text, mail.Html);
-    await InsertNotifyLogAsync(conn, id, cur.nid, trigger, s.Mode, phaseKey, toName, realTo, realCc,
+    await InsertNotifyLogAsync(conn, id, cur.nid, trigger, logMode, phaseKey, toName, realTo, realCc,
         sent.Error != null ? "failed" : sent.Uncertain ? "uncertain" : "sent",
-        sent.Error != null ? "寄信失敗：" + sent.Error : test ? "試寄，原本要寄給 " + origin : null, actor);
+        sent.Error != null ? "寄信失敗：" + sent.Error
+        : test ? "試寄，原本要寄給 " + origin
+                 + (problem != null ? "；正式時會寄不出去：" + problem : skip != null ? "；正式時不會寄：" + skip : "")
+                 + (actorSrc == "simulated" ? "；模擬帳號按的" : "")
+        : null, actor);
     if (sent.Error != null || test) return;
 
     // 正式寄出 → 變更軌跡留一列 `通知寄送`（格式見本段開頭）。寫失敗不重寄（信已經出去了）
     // 第 195 批：結案那一種換開頭句、尾巴「自動寄送（結案後）」—— 前端 phaseNotifiedEntry() 靠這幾個字排除它
     //（它不是「請壓日期」的通知），改字兩邊一起改。收件者／寄件者的格式不變（NOTIFY_TO_RE、notifyToOf 照樣解析）
     var note = (close ? $"通知需求已結案（「{prevLabel}」完成）" : $"通知「{phaseLabel}」尚未壓定日期")
-             + $" → 收件者 {toName} <{to.Email}>"
+             + $" → 收件者 {toName} <{toEmail}>"
              + (ccEmail != "" ? $"，副本 {ccName} <{ccEmail}>" : "")
              + $"；寄件者 {mailFromName} <{mailFrom}>（系統信箱）"
              + sent.UncertainNote
@@ -5278,9 +6249,9 @@ async Task RunAutoNotifyAsync(int id, string trigger, string? actor, string acto
 }
 
 // 端點 Commit 之後呼叫。⚠️ 不 await、不丟例外：回應不等寄信（使用者選的「不等，直接寄」）
+// ⚠️ 模擬帳號不在這裡擋（第 203 批）：要先讀模式才知道 —— 試寄、開啟都改寄試寄收件人（第 218 批），見 RunAutoNotifyAsync 開頭
 void QueueAutoNotify(int id, string trigger, string? actor, string actorSrc, string reason = "")
 {
-    if (actorSrc == "simulated") return;     // 模擬帳號是測試主機上看畫面用的，不寄給真的同事
     _ = Task.Run(async () =>
     {
         try { await RunAutoNotifyAsync(id, trigger, actor, actorSrc, reason); }
@@ -5452,12 +6423,16 @@ app.MapPost("/api/auto-notify/sample", async (HttpContext ctx) =>
             return Results.BadRequest(new { message = "請先填好試寄收件人，樣本會寄到那裡" });
         var fake = new Requirement
         {
-            nid = "0000", mainCat = "類型分類", subCat = "子分類（樣本）", stageCode = "2",
-            emsOwner = "EMS 負責人", msdOwner = "MSD 負責人", currentStatus = "（這是樣本信，資料是假的）"
+            nid = "0000", mainCat = "類型分類", subCat = "子分類（樣本）", stageCode = "2", status = "Ongoing",
+            emsOwner = "EMS 負責人", msdOwner = "MSD 負責人", currentStatus = "（這是樣本信，資料是假的）",
+            // 第 235 批：給進度條一個「① 今天完成」的樣子
+            spec = new Phase { end = DateTime.Today.ToString("yyyy-MM-dd") }, msd = new MsdPhase(), uat = new Phase()
         };
         var mail = ComposeAutoMail(fake, "handoff", StageDatesOf(2).Label, "MSD", "MSD 負責人", StageDatesOf(1).Label, "",
-                                   "【樣本】這是自動寄信「交棒」那一種的樣子，資料是假的。退回重做、結案那兩種只差主旨與開頭兩句（退回重做多一行退回原因）。",
-                                   "樣本", mailAppUrl);
+                                   new[] { "【樣本】這是自動寄信「交棒」那一種的樣子，資料是假的。",
+                                           "退回重做（紫色）、結案（綠色）那兩種是色條、開頭幾句與按鈕不同；退回重做多一個退回原因框，結案多一排統計。",
+                                           "試寄期間真的觸發的信，這個框會寫正式時的收件者、副本與誰按的。" },
+                                   "sample", new[] { "樣本" }, mailAppUrl, "EMS 負責人", DateTime.Today);
         var sent = await SendAutoMailAsync(conn, s.TestTo, "", mail.Subject, mail.Text, mail.Html);
         await InsertNotifyLogAsync(conn, null, null, "sample", s.Mode == "off" ? "test" : s.Mode, null, "（樣本）", s.TestTo, "",
             sent.Error != null ? "failed" : sent.Uncertain ? "uncertain" : "sent",
@@ -5536,6 +6511,104 @@ app.MapGet("/api/export", async () =>
         AppDiag.Error("export", "匯出 Excel 失敗", ex);
         return ServerError("匯出失敗：" + ex.Message
             + "（若訊息是 Invalid column name，代表 DB_table.md 裡的累加腳本還沒全部執行）");
+    }
+});
+
+// ─── 匯出「目前清單」：照畫面篩選的這 N 筆（第 228 批，健檢 P2，使用者看過示意圖：「都照你推薦的改」）───
+// 上面那支 /api/export 是「全部、原始欄位、可以匯回」，**一個字都不動**；這支是給人看、帶去開會的那一份。
+// ⚠️ 每一格的字與顏色由前端算好送來（狀況、✓ 完成日、逾期／未壓日期…）—— 用的就是畫面上那一套
+//    getDueEntry／isPhasePassed／getPhaseAlert，檔案才會跟畫面一模一樣。後端**不另寫一份規則**（寫兩份遲早只改到一邊），
+//    只負責照順序寫成 Excel、上色、凍結表頭、把合法的連結做成超連結。
+// ⚠️ 它只產生檔案、不讀也不寫 DB，所以與 /api/export 一樣匿名；跨站防護照擋（不讓別的網站拿它當產生器）。
+//    大小有上限，避免一個請求塞爆記憶體。
+app.MapPost("/api/export-view", (ExportViewRequest body, HttpContext ctx) =>
+{
+    if (IsCrossSiteRequest(ctx))
+        return Results.BadRequest(new { message = "偵測到跨站請求，已拒絕。請從系統本身的畫面操作。" });
+    var cols = body?.columns ?? new List<string>();
+    var rows = body?.rows ?? new List<List<ExportCell>>();
+    if (cols.Count == 0 || cols.Count > 40 || rows.Count > 5000)
+        return Results.BadRequest(new { message = "匯出的欄位或筆數不在範圍內（欄位 1～40、最多 5000 筆），沒有產生檔案。" });
+    try
+    {
+        static string Cut(string? s, int max) { s ??= ""; return s.Length > max ? s[..max] : s; }
+        using var wb = new XLWorkbook();
+        var ws = wb.Worksheets.Add("目前清單");
+        var now = DateTime.Now;
+        ws.Cell(1, 1).Value = $"需求管控表　目前清單（{now:yyyy-MM-dd HH:mm} 匯出，共 {rows.Count} 筆，全部 {Math.Max(body!.total, rows.Count)} 筆）";
+        ws.Cell(1, 1).Style.Font.Bold = true;
+        ws.Cell(1, 1).Style.Font.FontSize = 13;
+        var cond = Cut(body.conditions, 1000).Trim();
+        var sort = Cut(body.sort, 300).Trim();
+        ws.Cell(2, 1).Value = "條件：" + (cond == "" ? "沒有篩選（全部）" : cond) + (sort == "" ? "" : "　·　排序：" + sort);
+        ws.Cell(2, 1).Style.Font.FontColor = XLColor.FromHtml("#555555");
+
+        const int headRow = 4;
+        for (var c = 0; c < cols.Count; c++)
+        {
+            var h = ws.Cell(headRow, c + 1);
+            h.Value = Cut(cols[c], 100);
+            h.Style.Font.Bold = true;
+            h.Style.Fill.BackgroundColor = XLColor.FromHtml("#E7ECF3");
+            h.Style.Border.BottomBorder = XLBorderStyleValues.Thin;
+        }
+        for (var r = 0; r < rows.Count; r++)
+        {
+            var cells = rows[r] ?? new List<ExportCell>();
+            for (var c = 0; c < Math.Min(cells.Count, cols.Count); c++)
+            {
+                var x = cells[c]; if (x == null) continue;
+                var cell = ws.Cell(headRow + 1 + r, c + 1);
+                var text = Cut(x.t, 32000);
+                // 次數欄寫成數字（與 /api/export 第 152 批同一條：寫成文字就不能加總、排序會變成文字排序）；其餘一律文字
+                if (x.num && int.TryParse(text, out var n)) cell.Value = n;
+                else cell.Value = text;
+                switch (x.tone)
+                {
+                    case "red":    cell.Style.Font.FontColor = XLColor.FromHtml("#C0392B"); cell.Style.Font.Bold = true; break;
+                    case "orange": cell.Style.Font.FontColor = XLColor.FromHtml("#B9770E"); cell.Style.Font.Bold = true; break;
+                    case "good":   cell.Style.Font.FontColor = XLColor.FromHtml("#0F766E"); break;
+                    case "muted":  cell.Style.Font.FontColor = XLColor.FromHtml("#999999"); break;
+                }
+                // 只有通過 IsLinkValue() 的才做成超連結（與畫面的 isLinkVal 同一條，javascript: 這種一律不給）
+                if (IsLinkValue(x.link))
+                {
+                    try
+                    {
+                        cell.SetHyperlink(new XLHyperlink(x.link!.Trim()));
+                        cell.Style.Font.FontColor = XLColor.FromHtml("#1A56DB");
+                        cell.Style.Font.Underline = XLFontUnderlineValues.Single;
+                    }
+                    catch { /* 連結格式 Excel 不收就留文字，不讓整份檔案失敗 */ }
+                }
+            }
+        }
+        ws.SheetView.FreezeRows(headRow);
+        // 欄寬自己算：ClosedXML 的 AdjustToContents 把中文當半形量（實測「狀況」欄只給 6.9，「逾期 47 天」會擠在一起），
+        // 改成全形字算 2、半形算 1，上限 60（現況描述很長時不要把整張表撐成一欄，超過的自動換行）
+        static int DisplayLen(string s) => s.Sum(ch => ch >= 0x2E80 ? 2 : 1);
+        for (var c = 0; c < cols.Count; c++)
+        {
+            var w = DisplayLen(cols[c] ?? "");
+            foreach (var row in rows)
+                if (row != null && c < row.Count && row[c]?.t is string t)
+                    w = Math.Max(w, t.Split('\n').Max(DisplayLen));
+            var col = ws.Column(c + 1);
+            col.Width = Math.Min(60, w + 2);
+            if (w + 2 > 60) col.Style.Alignment.WrapText = true;
+        }
+        ws.Range(headRow + 1, 1, Math.Max(headRow + 1, headRow + rows.Count), cols.Count).Style.Alignment.Vertical = XLAlignmentVerticalValues.Top;
+
+        var stream = new MemoryStream();
+        wb.SaveAs(stream);
+        stream.Position = 0;
+        return Results.File(stream, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            $"需求管控表_目前清單_{now:yyyyMMdd_HHmm}.xlsx");
+    }
+    catch (Exception ex)
+    {
+        AppDiag.Error("export", "匯出目前清單失敗", ex);
+        return ServerError("匯出失敗：" + ex.Message);
     }
 });
 
@@ -6569,6 +7642,22 @@ public class AutoNotifyRequest
     public string? testTo { get; set; }
     public bool? ackFailures { get; set; }   // 第 189 批：「知道了」—— 之前的未寄出不再亮紅點
 }
+// 第 228 批：匯出「目前清單」（/api/export-view）。每一格的字與顏色由前端照畫面算好
+public class ExportViewRequest
+{
+    public List<string>? columns { get; set; }
+    public List<List<ExportCell>>? rows { get; set; }
+    public string? conditions { get; set; }
+    public string? sort { get; set; }
+    public int total { get; set; }
+}
+public class ExportCell
+{
+    public string? t { get; set; }       // 顯示的字
+    public string? tone { get; set; }    // red / orange / good / muted / 空
+    public string? link { get; set; }    // 規格文件：通過 IsLinkValue 才做成超連結
+    public bool num { get; set; }        // 次數欄寫成數字
+}
 public class NotifyRecipientRequest
 {
     public string? kind { get; set; }
@@ -6818,3 +7907,44 @@ public static class FieldLimits
     //    app.jsx 的 FIELD_LIMITS **是同一個數字，改了要一起改**。
     public const int NotesLinkMax = 500;
 }
+
+// 通知信 HTML 版的顏色（第 205 批起；第 235 批友善版補上色條／按鈕／進度條用的幾組，見 RenderNoticeMail）。
+// 放成類別常數：頂層區域常數在 /notify-unset 那裡還沒宣告。寫死 hex：信在 Notes 白底裡看，沒有深色模式
+static class MailColor
+{
+    public const string Red = "#C0392B", RedBg = "#FDEDEC", Violet = "#7C3AED", Teal = "#0F766E";
+    // 第 235 批：E1 色條（交棒／未壓＝品牌藍、逾期＝橘〔信的語氣不用到紅〕、退回＝紫、結案＝青綠）與按鈕
+    public const string Brand = "#4F46E5", BrandBg = "#EEF0FF", Warn = "#B45309", WarnBg = "#FFF6E5",
+                        VioletBg = "#F3EEFF", VioletSoft = "#F7F4FE", TealBg = "#E8F6F3";
+    // 進度條的四關：圈號、名稱、顏色（與 app.jsx STAGE_CODES 同一組；① 用深一階的琥珀，白底上才看得清楚）
+    public static (string Circ, string Name, string Color) Stage(int st) => st switch
+    {
+        1 => ("①", "EMS規格確認", "#D97706"),
+        2 => ("②", "MSD確認", Violet),
+        3 => ("③", "MSD開發", "#2563EB"),
+        _ => ("④", "EMS驗收", "#DB2777"),
+    };
+    public const string TipQuickDate = "小技巧：在「我的待辦」卡片上按「下週一」「兩週後」這類日期，再按「存檔」就好，不用自己翻日曆。";
+    // 試寄框下面那條分隔線（第 211 批：自動信與單筆 ✉ 的試寄共用）
+    public const string TestDivider = "──────── 以下為正式信件內容 ────────";
+}
+
+// 第 235 批：友善版通知信的內容（RenderNoticeMail 把它畫成純文字與 HTML 兩份）
+class NoticeMail
+{
+    public string Greeting = "";
+    public string Tone = "brand";                 // brand／warn／violet／teal
+    public string Label = "", Headline = "", Time = "";
+    public List<string> Paras = new();
+    public string? QuoteLabel, QuoteText;
+    public List<MailStep> Steps = new();
+    public List<(string Value, string Label)> Stats = new();
+    public string CardTitle = "", CardNid = "";
+    public List<(string Label, string Value, string Style)> Rows = new();   // Style：""／"me"（加粗）／"#hex"（加粗上色）
+    public string? Status;
+    public List<(string Text, bool Primary)> Buttons = new();
+    public string Url = "";
+    public string? Tip;
+    public string Contact = "", ManualUrl = "";
+}
+record MailStep(string Circ, string Name, string Color, string State, string Date, bool Red);

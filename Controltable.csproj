@@ -19,8 +19,9 @@
   <ItemGroup>
     <PackageReference Include="ClosedXML" Version="0.105.1" />
     <!-- Windows 驗證 (Negotiate/NTLM)，供稽核表的「異動人員」自動帶入登入者。
-         版本對齊 C:\Gantt 專案（同一台內網主機、同為 net9.0），⚠ 維持 9.0.x 不跳 10.x。 -->
-    <PackageReference Include="Microsoft.AspNetCore.Authentication.Negotiate" Version="9.0.18" />
+         版本對齊 C:\Gantt 專案（同一台內網主機、同為 net9.0），⚠ 維持 9.0.x 不跳 10.x。
+         2026-10-18 第 234 批：9.0.18 → 9.0.21（CVE-2026-70179，只在開 LDAP 查群組時成立、本專案沒開；升級是為了弱點掃描）。 -->
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.Negotiate" Version="9.0.21" />
     <PackageReference Include="Microsoft.Data.SqlClient" Version="7.0.2" />
   </ItemGroup>
 

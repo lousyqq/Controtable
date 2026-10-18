@@ -7,6 +7,39 @@ const { useState, useMemo, Fragment, useEffect } = React;
         const APP_BASE = (window.APP_BASE && window.APP_BASE.indexOf('__') !== 0) ? window.APP_BASE : '/';
         const api = p => APP_BASE + String(p).replace(/^\/+/, '');
 
+        // ─── 模擬帳號＝那個人用 Windows 帳號登入（第 221 批，2026-10-17）───
+        // 使用者：「模擬帳號的部分是想要完全模擬操作者用 windows 帳號操作的流程，若做了差異，我自己實測不是完全看不出
+        // 之後正式區帳號登入的效果」→ 全改。模擬帳號只在測試區（Auth:AllowSimulation=true）開，正式區不允許。
+        //   · 存在 localStorage：重新整理、從信裡的連結進來，仍是被模擬的人（原本是純 state，一重整就變回自己）。
+        //   · 每個打到本站的請求都帶 X-CT-Sim-EmpId：後端 WindowsEmpId() 在測試區改回傳被模擬的人 →
+        //     瀏覽權限閘門、管理者、批次提醒的權限全部跟著被模擬的人走。正式區後端不看這個標頭。
+        // ⚠️ 只包本站的請求（網址以 APP_BASE 開頭）；值用 encodeURIComponent（沒有工號時存的是姓名，中文不能直接放標頭）。
+        // ⚠️ SIM_EMP 是模組層的 let（與 EMP_NAME_MAP 同一種做法）：載入時 detectActor() 確認 allowSimulation 才採用，不開放就清掉。
+        // ─── 這台主機的名稱（第 229 批，健檢 K1）───
+        // 後端 /api/authinfo 的 envLabel ＝ 設定檔 Site:EnvLabel（使用者在每台主機自己寫：公司桌機「測試區」、開發機「開發機」，
+        // IIS 正式區不寫）。空字串＝不顯示任何東西 —— 正式區畫面完全不變。頁首、分頁標題、列印抬頭、🔐 管理設定都讀這一份。
+        // ⚠️ 不可以改成從 allowSimulation 推（正式區暫時開模擬時會被標成測試區）。模組層 let（與 SIM_EMP 同一種做法），
+        //    App 另有同名 state 讓畫面重畫；管理設定面板是 App 之後才打開的，直接讀這裡。
+        let ENV_LABEL = '';
+        const envIsTest = label => /測試/.test(label || '');   // 只有測試區用黃色（那是會跟正式區搞混的那一台），其他字灰色
+        const SIM_KEY = 'ct.simEmpId';
+        let SIM_EMP = (() => { try { return (localStorage.getItem(SIM_KEY) || '').trim(); } catch (e) { return ''; } })();
+        const setSimEmp = v => {
+            SIM_EMP = String(v || '').trim();
+            try { if (SIM_EMP) localStorage.setItem(SIM_KEY, SIM_EMP); else localStorage.removeItem(SIM_KEY); } catch (e) { /* 存不了就只在這一頁有效 */ }
+        };
+        (() => {
+            const nativeFetch = window.fetch.bind(window);
+            window.fetch = (input, init) => {
+                const url = typeof input === 'string' ? input : (input && input.url) || '';
+                const own = url.indexOf(APP_BASE) === 0 || url.indexOf(window.location.origin + APP_BASE) === 0;
+                if (!SIM_EMP || !own) return nativeFetch(input, init);
+                const headers = new Headers((init && init.headers) || (typeof input !== 'string' && input.headers) || undefined);
+                headers.set('X-CT-Sim-EmpId', encodeURIComponent(SIM_EMP));
+                return nativeFetch(input, { ...(init || {}), headers });
+            };
+        })();
+
         // ─── 網址狀態（第 28 批，2026-08-24）───
         // 篩選與排序寫進 query string，這樣「這份篩過的清單」才貼得給同事，F5 也不會全丟。
         // ⚠️ 只在**載入當下**讀一次（`app.js` 是一般 <script>，整份只跑一次）——
@@ -192,6 +225,40 @@ const { useState, useMemo, Fragment, useEffect } = React;
             if (lines.length > 1) return { latest:lines[lines.length-1], hidden:lines.length - 1 };
             return { latest:s, hidden:0 };
         };
+        // ─── 現況描述按「更新」時預先接好的那一段（第 232 批，使用者看過示意圖：「照你建議的改」）───
+        // 實測：框打開時游標在最前面 —— 直接打字，新的一則就黏在舊內容**前面**、而且沒有換行，
+        // 存完卡片上 latestStatusOf() 切出來的還是舊的那一則（或整段黏成一行），看起來像沒存到。
+        // 現在打開時先換好一行（原本是 1. 2. 連號就帶下一號），游標放最後（caretToEnd）。
+        // ⚠️ 連號的判定與 latestStatusOf() 同一個 regex、同一條「從 1 開始、連號、至少兩則」——
+        //    兩邊不一致就會做出「帶了 3. 卻切不出來」。改一邊要兩邊一起改。
+        // ⚠️ 沒打任何字就按儲存時，statusEditFinal() 把預先接的那段剝掉（不會存進一個空的「3. 」）。
+        const statusEditSeed = (text) => {
+            const s = String(text || '').trim();
+            if (!s) return '';
+            const ms = [...s.matchAll(/(^|[\s。．.;；,，])(\d{1,2})\s*([.、．)：:])/g)].map(m => ({ n:+m[2], sep:m[3] }));
+            const seq = ms.length >= 2 && ms[0].n === 1
+                     && ms.every((m, k) => k === 0 || m.n === ms[k-1].n + 1);
+            if (seq) { const last = ms[ms.length-1]; return `\n${last.n + 1}${last.sep}${/[.):]/.test(last.sep) ? ' ' : ''}`; }
+            return '\n';
+        };
+        const statusEditStart = (text) => {
+            const s = String(text || '').replace(/\s+$/, '');
+            const seed = statusEditSeed(s);
+            return { value: s + seed, seed };
+        };
+        const statusEditFinal = (value, seed) => {
+            const v = String(value || '');
+            return (seed && v.endsWith(seed)) ? v.slice(0, -seed.length) : v;
+        };
+        // textarea 的 ref：第一次掛上時游標移到最後、捲到最底（autoFocus 不動既有的選取範圍）。
+        // ⚠️ 只做一次（data-ct-caret）：ref 是 inline 函式，每次 render 都會被叫到，不擋的話打字時游標會一直被拉回最後。
+        const caretToEnd = (el) => {
+            if (!el || el.dataset.ctCaret) return;
+            el.dataset.ctCaret = '1';
+            const n = el.value.length;
+            try { el.setSelectionRange(n, n); } catch (e) { /* 舊瀏覽器 */ }
+            el.scrollTop = el.scrollHeight;
+        };
 
         // ─── 欄位長度上限（第 82 批，2026-09-25）──────────────────────────────
         // ⚠️⚠️ 這是 Program.cs 的 FieldLimits 的**鏡像，改了要兩邊一起改**；而那一份的數字
@@ -338,7 +405,12 @@ const { useState, useMemo, Fragment, useEffect } = React;
         //    **不可以另外發明「待排程」之類的第二種講法。**
         // ⚠️ **不可以加 aria-hidden**（StageDots 有，因為它純裝飾）—— 這一條帶的日期是
         //    卡片上別的地方看不到的資訊，藏起來等於讀螢幕的人看不到。
-        const PhaseTimeline = ({ cells }) => {
+        // 第 237 批 D（使用者看過示意圖：「A~D都做」）：
+        //    ① 還沒輪到、也沒有日期的關**什麼都不印**（原本印「—」，一張卡三個「—」是雜訊）；有排定日期的照印灰字。
+        //    ② curTag（只有我的待辦卡片傳）：現在這一關不印日期、改成「現在」小標籤 —— 日期與逾期／未壓日期
+        //       卡片左邊那句（「規格確認已逾期 10 天 原訂 …」）已經講過一次。檢視視窗沒有那一句，所以不傳、照舊印日期。
+        //       ⚠️ 還沒壓日期時**照舊印「未壓日期」**：卡片左邊那句只寫「輪到你確認」，進度條是這張卡唯一講「未壓日期」的地方。
+        const PhaseTimeline = ({ cells, curTag }) => {
             if (!cells) return null;
             // 連接線：前一關**走完了**才把那一段點亮（＝已經走過的路）。兩端那半截不畫
             const seg = (show, lit) => (
@@ -379,7 +451,10 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     ))}
                     {cells.map(c => (
                         <span key={'dt' + c.code} className="cursor-help" title={c.title} style={{textAlign:'center'}}>
-                            {c.date ? (<>
+                            {(curTag && c.state === 'current' && c.date) ? (
+                                <span className="text-[11px] font-bold rounded px-1.5"
+                                      style={{color:c.color, background:`color-mix(in srgb, ${c.color} 14%, transparent)`}}>現在</span>
+                            ) : c.date ? (<>
                                 <span className="font-mono text-[12px]"
                                       style={{color: c.overdue ? 'var(--tone-alert)'
                                                    : c.state === 'current' ? 'var(--text-primary)'
@@ -390,9 +465,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                 {c.check && <span className="text-[12px] ml-0.5" style={{color:'var(--tone-good)'}}>✓</span>}
                             </>) : c.state === 'current' ? (
                                 <span className="text-[12px] font-bold" style={{color:ALERT_STYLES.unset.color}}>未壓日期</span>
-                            ) : (
-                                <span className="font-mono text-[12px]" style={{color:'var(--text-muted)'}}>—</span>
-                            )}
+                            ) : null}
                         </span>
                     ))}
                 </span>
@@ -400,11 +473,15 @@ const { useState, useMemo, Fragment, useEffect } = React;
         };
         // 需求列表對「不能改資料的人」是唯讀的（第 119 批）—— 徽章點不動時要講去哪裡才點得動（第 57 批）
         const READONLY_LIST_HINT = '（需求列表對你是唯讀的，這顆點不動。要壓自己那一階段的日期，請到「我的待辦」）';
-        const UnsetDateBadge = ({ label, onSetDate, lockedHint }) => {
+        const UnsetDateBadge = ({ label, onSetDate, lockedHint, item }) => {
             const cls = "text-[10px] font-black px-1 py-0.5 rounded whitespace-nowrap";
             const sty = {color:ALERT_STYLES.unset.color, background:ALERT_STYLES.unset.bg,
                          border:`1px solid ${ALERT_STYLES.unset.border}`};
-            const tip = `目前已經走到「${label}」，但這一階段還沒壓日期。\n沒有到期日就不會有逾期提醒，所以列在「逾期優先」排序的最上面`;
+            // 第 225 批：已等幾天只放在滑鼠提示（畫面不加字，使用者選的收斂版）
+            const w = item ? unsetWaitOf(item) : null;
+            const tip = `目前已經走到「${label}」，但這一階段還沒壓日期。`
+                      + (w ? `\n${w.from}後就輪到這一關，已等 ${w.days} 天。` : '')
+                      + `\n沒有到期日就不會有逾期提醒，所以列在「逾期優先」排序的最上面`;
             // ⚠️ 沒給 onSetDate ＝ 精簡模式（唯讀的主管檢視）。tooltip 一定要講出
             //    「這裡點不動、以及去哪裡才點得動」—— 兩種模式的徽章長得**一模一樣**，
             //    使用者 2026-09-07 就是因此回報「之前修好的功能怎麼失效了」。
@@ -456,14 +533,14 @@ const { useState, useMemo, Fragment, useEffect } = React;
         //    沒有排程可看時那個數字指不到任何東西。⚠️ 只是不印、不是不算：稽核列一筆都沒少，
         //    明細的時間軸與「N 次」徽章、統計報表的「時程異動」照舊；日期重新壓上去之後
         //    這顆會跟著回來（那時它又指得到一個排程了）。
-        const scheduleCell = ({ val, alert, changes, label, br, actual, unset, onNotify, onSetDate, lockedHint }) => (
+        const scheduleCell = ({ val, alert, changes, label, br, actual, unset, onNotify, onSetDate, lockedHint, item }) => (
             <td className="px-2 py-2.5" style={{borderRight:br}}>
                 {!val && !unset
                     ? <span className="text-xs" style={{color:'var(--text-muted)'}}>-</span>
                     : <div className="flex flex-col gap-0.5 items-start">
                         <div className="flex items-center gap-1">
                             {(unset && !val)
-                                ? <UnsetDateBadge label={label} onSetDate={onSetDate} lockedHint={lockedHint} />
+                                ? <UnsetDateBadge label={label} onSetDate={onSetDate} lockedHint={lockedHint} item={item} />
                                 : <span className="text-xs whitespace-nowrap"
                                       style={{color: actual ? 'var(--text-muted)' : alert ? alert.color : 'var(--text-secondary)',
                                               fontWeight: (alert && !actual) ? 700 : 500}}>
@@ -529,7 +606,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                             在這裡放一個開編輯視窗的入口等於把它從後門加回來。
                             要改資料就是把精簡模式關掉，一般模式那顆徽章才是可點的 */}
                         {/* 第 119 批：不能改資料的人看到的是「去我的待辦」而不是「關掉精簡模式」—— 後者對他是假話 */}
-                        <UnsetDateBadge label={r.phase.label} lockedHint={lockedHint} />
+                        <UnsetDateBadge label={r.phase.label} lockedHint={lockedHint} item={item} />
                         {/* 與一般模式同一個理由：✉ 自己一行，不加寬欄位（見 scheduleCell 的說明） */}
                         <NotifyMailButton onNotify={onNotify} label={r.phase.label} />
                         {/* ⚠️ 這裡以前還印一行階段名（第 52 批移除，2026-09-05 使用者問「三列是不是太浪費」）。
@@ -660,10 +737,13 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // ⚠️ `verb` 是「我的待辦」把階段講成人話時用的那個詞（第 90 批）——
             //    「驗收已逾期 29 天」「確認日期還沒填」。**這是它唯一的定義**，
             //    不要在那一頁另寫一份對照表（第 50 批 renderChip 同一條）
-            { code:'1', key:'spec',    label:'① EMS規格確認', verb:'規格確認', color:'#f59e0b', getDate:i=>i.spec?.end,    getActual:i=>i.spec?.actualEnd,        owner:i=>i.emsOwner, side:'EMS' },
-            { code:'2', key:'confirm', label:'② MSD確認',     verb:'確認',     color:'var(--c-violet)', getDate:i=>i.msd?.confirm, getActual:i=>i.msd?.confirmActualEnd,  owner:i=>i.msdOwner, side:'MSD' },
-            { code:'3', key:'msd',     label:'③ MSD開發',     verb:'開發',     color:'var(--c-blue)', getDate:i=>i.msd?.end,     getActual:i=>i.msd?.actualEnd,         owner:i=>i.msdOwner, side:'MSD' },
-            { code:'4', key:'uat',     label:'④ EMS驗收',     verb:'驗收',     color:'var(--c-pink)', getDate:i=>i.uat?.end,     getActual:i=>i.uat?.actualEnd,         owner:i=>i.emsOwner, side:'EMS' }
+            // ⚠️ `ask` 是我的待辦卡片上「做完了／還沒，要改日期」左邊那一句（第 237 批，使用者看過示意圖：「A~D都做」）——
+            //    原本四關都是「做完了嗎？」，EMS 看不出「做完」是指做到哪裡。改成這一關實際要做的事，一樣是是非題
+            //    （右邊那顆「還沒，」回答的就是它）。改字時檢查 1280 寬那一排沒有被擠成兩行。
+            { code:'1', key:'spec',    label:'① EMS規格確認', verb:'規格確認', ask:'規格交給 MSD 了嗎？', color:'#f59e0b', getDate:i=>i.spec?.end,    getActual:i=>i.spec?.actualEnd,        owner:i=>i.emsOwner, side:'EMS' },
+            { code:'2', key:'confirm', label:'② MSD確認',     verb:'確認',     ask:'規格看過、確認可以做了嗎？', color:'var(--c-violet)', getDate:i=>i.msd?.confirm, getActual:i=>i.msd?.confirmActualEnd,  owner:i=>i.msdOwner, side:'MSD' },
+            { code:'3', key:'msd',     label:'③ MSD開發',     verb:'開發',     ask:'開發好、可以給 EMS 驗收了嗎？', color:'var(--c-blue)', getDate:i=>i.msd?.end,     getActual:i=>i.msd?.actualEnd,         owner:i=>i.msdOwner, side:'MSD' },
+            { code:'4', key:'uat',     label:'④ EMS驗收',     verb:'驗收',     ask:'測過了、沒問題了嗎？', color:'var(--c-pink)', getDate:i=>i.uat?.end,     getActual:i=>i.uat?.actualEnd,         owner:i=>i.emsOwner, side:'EMS' }
         ];
         // 最後一個已經壓了日期的階段。後面的階段既然還沒排程，現在該盯的就是這一個
         const lastFilledPhase = (item) => {
@@ -748,6 +828,24 @@ const { useState, useMemo, Fragment, useEffect } = React;
             //    （那正是使用者 2026-09-11 回報的那個 bug 的另一面）。這裡實際上只擋 ActualEnd。
             if (isPhasePassed(item, ph.key)) return null;
             return ph;
+        };
+
+        // ─── 未壓日期「已等幾天」（第 225 批，2026-10-17 健檢 M2 收斂版，使用者：「建議你做的收斂版就好」）───
+        // ＝上一關完成那天（實際完成日優先，否則結束日；② 看確認日）到今天；① 從註冊日期算。
+        // 只用在兩處：統計報表風險預警那一格（原本印「—」的空位）、需求列表「⚠ 未壓日期」的滑鼠提示。
+        // ⚠️ 使用者不要版面多字（「我不希望板面太多混亂資訊」）—— 不要再加到我的待辦卡片、追蹤中或資料列上（那幾處看過示意圖，沒選）。
+        // 算不出來（上一關沒有日期，例如匯入來的跳空資料）回 null，呼叫端退回原本的樣子
+        const unsetWaitOf = (item) => {
+            const code = normStageCode(item && item.stageCode);
+            const since = code === '1' ? item.regDate
+                        : code === '2' ? (item.spec?.actualEnd || item.spec?.end)
+                        : code === '3' ? (item.msd?.confirmActualEnd || item.msd?.confirm)
+                        : code === '4' ? (item.msd?.actualEnd || item.msd?.end) : '';
+            const iso = String(since || '').trim().split('/').join('-');
+            const days = isDateVal(iso) ? dayDiff(iso, TODAY_ISO) : null;
+            if (days === null || days < 0) return null;
+            const from = code === '1' ? `${iso} 註冊` : `「${STAGE_CODES[String(Number(code) - 1)]?.label || ''}」${iso} 完成`;
+            return { since: iso, days, from };
         };
 
         // ─── 單筆 ✉ 的第二種情況：目前這一階段「已逾期」（第 160 批，2026-10-09 使用者要求）───
@@ -911,50 +1009,22 @@ const { useState, useMemo, Fragment, useEffect } = React;
             uat:     { label:'④ EMS驗收',     obj:'uat',  fields:['start','end'], hist:'history',        color:'var(--c-pink)', timelineLabel:'④ EMS驗收',     gate:'msd',     endKey:'end',     actualKey:'actualEnd',        doneStage:5 }
         };
         const PHASE_KEYS = Object.keys(PHASES);
+        // 七個日期欄位（第 224 批，健檢 A5 的年份檢查用；與後端 ImplausibleDates 同一份清單）
+        const DATE_FIELD_LIST = PHASE_KEYS.flatMap(k => PHASES[k].fields.map(f => ({
+            obj: PHASES[k].obj, field: f,
+            label: PHASES[k].label + ' ' + (f === 'start' ? '開始日' : f === 'confirm' ? '確認日' : '結束日')
+        })));
+        // 這次被動到、而且在今天一年以後的日期（第 224 批）：不擋，存檔前多問一次「年份有沒有打錯？」
+        // 與我的待辦「🗓 自選」小視窗（第 138 批）同一條界線（> 365 天）
+        const farDateChanges = (rec, saved) => DATE_FIELD_LIST
+            .map(x => ({ ...x, now: ((rec || {})[x.obj] || {})[x.field] || '', was: ((saved || {})[x.obj] || {})[x.field] || '' }))
+            .filter(x => isDateVal(x.now) && (!saved || x.now !== x.was) && dayDiff(TODAY_ISO, x.now) > 365);
 
-        // ─── 快速日期選項（第 92 批，2026-10-03；第 107 批改成週一錨點）───
-        // 「我的待辦」上「還沒壓日期」那幾張卡、延後那一層，以及新增需求視窗的
-        // 「Spec 預計哪天給 MSD？」**共用這一支**。使用者的腦袋是「下週一」「月底」，
-        // 不是「2026-10-12」—— 給選項比讓他自己翻日曆快。
-        // ⚠️⚠️ **一定要是函式，不可以算成模組層常數** —— TODAY 是 let、跨午夜會重算（第 67 批）。
-        //    算死成常數就是把那個坑原封不動挖回來（分頁開一整天，選項全部停在昨天）。
-        // ─── 第 107 批（2026-10-05 使用者指定）：四顆，全部以「下一個週一」為錨點 ───
-        //   錨點 M ＝ **下一個週一，今天就是週一時也是 +7**（以週一為一週之始）。
-        //   ⚠️ 這與第 92 批「下週五」的慣例一字不差（它在週五那天同樣是 +7）—— 四顆因此
-        //      每一顆都是「未來的某一天」，不會在週一那天少掉一顆。
-        //   四顆 ＝ M（下週一）／M+7（兩週後）／M+14（三週後）／**M+14 那個月份的月底**。
-        //   ⚠️⚠️ 月底刻意是「M+14 所在月份」的月底、**不是當月月底**：當月月底在每個月的
-        //      最後幾天會早於前幾顆、甚至早於今天而整顆被濾掉（第 92 批就是這樣）。
-        //      跟著 M+14 走之後它永遠 ≥ M+14，不會再消失。
-        //   ⚠️ 月底落在週六／日**仍然往前挪到週五**（2026-10-31 是週六 → 10/30）：這是
-        //      「打算哪天交」的承諾日，壓在假日沒有意義。三顆週一永遠不必挪，所以
-        //      toWeekday 現在只有月底在用 —— **不要因此把它刪掉**。
-        const isoOfDate = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-        const quickDateChoices = () => {
-            const base = new Date(TODAY.getFullYear(), TODAY.getMonth(), TODAY.getDate());
-            const dow = base.getDay() === 0 ? 7 : base.getDay();   // 1=一 … 7=日
-            // 落在週六／日就往前挪到週五。⚠️ 第 107 批之後只有「月底」會用到它。
-            const toWeekday = d => {
-                if (d.getDay() === 6)      d.setDate(d.getDate() - 1);
-                else if (d.getDay() === 0) d.setDate(d.getDate() - 2);
-                return d;
-            };
-            const mon  = new Date(base.getFullYear(), base.getMonth(), base.getDate() + (8 - dow));
-            const mon2 = new Date(mon.getFullYear(),  mon.getMonth(),  mon.getDate() + 7);
-            const mon3 = new Date(mon.getFullYear(),  mon.getMonth(),  mon.getDate() + 14);
-            // new Date(y, m+1, 0) ＝ 第 m 月（0-based）的最後一天
-            const eom = toWeekday(new Date(mon3.getFullYear(), mon3.getMonth() + 1, 0));
-            const out = [];
-            // ⚠️ 「≤ 今天」與「與前一顆撞同一天」兩道過濾照舊 —— 一排晶片裡出現兩顆
-            //    同樣的日期比少一顆更難懂。M+14 剛好是月底時第四顆會被第二道濾掉。
-            [{label:'下週一', d:mon}, {label:'兩週後', d:mon2}, {label:'三週後', d:mon3}, {label:'月底', d:eom}].forEach(x => {
-                const iso = isoOfDate(x.d);
-                if (iso <= TODAY_ISO) return;
-                if (out.some(o => o.iso === iso)) return;
-                out.push({ label: x.label, iso });
-            });
-            return out;
-        };
+        // 第 239 批：原本這裡是 quickDateChoices()（下週一／兩週後／三週後／月底四顆快速日期，第 92／107 批）。
+        // 我的待辦兩處與新增視窗都改成日期框之後沒有人用了，整支拿掉；要做回快速日期先問使用者（他選了「不需要留那麼多按鈕」）。
+        // 「2026/10/26（一）」—— 我的待辦卡片上日期框旁的存檔鈕用（第 238 批：選好的日期寫在按鈕上，看得到才按）
+        const ymdWeek = iso => isDateVal(iso)
+            ? `${String(iso).slice(0, 10).replace(/-/g, '/')}（${'日一二三四五六'[new Date(String(iso).slice(0, 10) + 'T00:00:00').getDay()]}）` : '';
         // 這一階段的 End 不可以早於「鏈上前一階段」的 End（原訂值）。
         // ⚠️ DUE_PHASES 的 getDate 本身就是那條鏈（spec.end → msd.confirm → msd.end → uat.end），
         //    所以這裡**不另外寫一份對照表** —— validateEdit 的 orderChain 與後端
@@ -1025,7 +1095,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // 用回退的同一個紫色系（它是回退的下半場），但**不進 isDateChange**：
             // 沒有人改動任何既有日期，計進 ⚠N 會讓同一件事被數兩次
             '重新排程': { label:'重新排程', color:'var(--c-violet)',            bg:'rgba(139,92,246,0.12)' },
-            // 手動改目前階段 / Status（2026-08-22）。它繞過了「標記完成…」與「🔄 規格回退」，
+            // 手動改目前階段 / Status（2026-08-22）。它繞過了「標記完成…」與「退回重做」，
             // 所以一定要在軌跡上看得出來 —— 但**不算時程異動**（見 isDateChange），
             // 也不會動三個計數欄
             '手動調整': { label:'手動調整', color:'var(--tone-warn)',   bg:'var(--tone-warn-bg)' },
@@ -1140,7 +1210,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
         const isSystemNote = h => SYSTEM_NOTE_TYPES.has(h.changeType);
         // 一跳的 tooltip：時間 · 人 · 類型 · 前後值 · 分類：理由
         const hopTitleOf = h => {
-            const parts = [`${h.changedAt}${h.changedBy ? ` · ${whoOf(h.changedBy)}` : ''}${h.changedBySource === 'simulated' ? '（模擬）' : ''}`,
+            const parts = [`${h.changedAt}${h.changedBy ? ` · ${whoOf(h.changedBy)}` : ''}`,
                            entryLabelOf(h)];
             // 非日期欄位（第 84 批）：tooltip 印**完整**前後值（畫面上截的是顯示、不是紀錄）
             if (h.fieldKey) parts.push(`${fieldLabelOf(h.fieldKey)} ${h.oldValue || '未填'} → ${h.newValue || '未填'}`);
@@ -1370,11 +1440,11 @@ const { useState, useMemo, Fragment, useEffect } = React;
         //   · init     首次填寫 —— 本來就沒有值，不是修改
         //   · 提早完成 按下「標記完成…」而且準時／提早，End 被更新成填的那個完成日。那是好消息，
         //              掛上琥珀色 ⚠ 只會把真正落後的案子淹掉
-        //   · 延期完成 已經有專屬的 ⏰ 徽章（delayCount）
-        //   · 規格回退 已經有專屬的 🔄 徽章（rollbackCount）
+        //   · 延期完成 已經有專屬的延期次數徽章（DelayIcon，delayCount）
+        //   · 退回重做 已經有專屬的退回次數徽章（RollbackIcon，rollbackCount）
         // 後兩者若一併算進 ⚠N，同一件事會在同一列上被數兩次。
-        // 資料列的 ⚠N、明細的次數徽章、編輯視窗的異動紀錄、統計報表的「時程異動」KPI
-        // 與「有時程異動」篩選**一律走這支**，不可再各自寫 `changeType !== 'init'`。
+        // 資料列的 ⚠N、明細的次數徽章、編輯視窗的異動紀錄、統計報表「本月到期達成」的日期延後
+        // 與「有時程異動」篩選**一律走這支**（統計報表上方的「時程異動」KPI 卡第 210 批已拿掉），不可再各自寫 `changeType !== 'init'`。
         // 完成／回退的紀錄仍然完整列在展開明細的軌跡裡，只是不計入「異動次數」。
         const isDateChange = h => h.changeType === '日期異動';
 
@@ -1623,7 +1693,8 @@ const { useState, useMemo, Fragment, useEffect } = React;
         //    「延期 2 次以上轉紅」只有數字會變色。SVG 吃 currentColor，整組跟著規則變色。
         //    圖形取自 Tabler Icons（MIT 授權）的 refresh／alarm，內嵌在程式裡、不連外網。
         //    ⚠️ 下拉選單 <option> 與 tooltip／訊息畫不了 SVG —— 選單已拿掉 emoji 只留文字；
-        //    訊息裡「🔄 退回重做」是在講那顆按鈕的名字，維持原字。
+        //    第 240 批（使用者：「好，一起拿掉」）：編輯視窗「⚙ 進階」那顆按鈕與退回視窗標題也拿掉 🔄，
+        //    訊息、tooltip、後端訊息裡原本寫的「🔄＋退回重做」一起拿掉 emoji——全站這個功能只有一種寫法、不帶 emoji。
         const RollbackIcon = ({ size = 11 }) => (
             <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4"
                  strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{flexShrink:0}}>
@@ -1729,6 +1800,16 @@ const { useState, useMemo, Fragment, useEffect } = React;
         // 關掉之後畫面上沒有任何一格是紅的，使用者得自己回想剛剛那句話講的是哪一欄。
         // ⚠️ 這是**模組層**的元件（不是寫在 App 裡）：在 App 裡用 const 定義的元件
         // 每次 render 都是新的型別，React 會整棵重新掛載（見 renderYmRange 上方的說明）
+        // 第 229 批：頁首系統名稱右邊的環境小標（「測試區」黃色、其他灰色）。label 空＝不畫
+        const EnvPill = ({ label }) => label ? (
+            <span className="flex-shrink-0 text-[11px] font-bold px-2 py-px rounded-full border whitespace-nowrap"
+                  title={`這台網站的設定檔寫的是「${label}」。資料、寄信模式、收件名單都跟正式區分開。`}
+                  style={envIsTest(label)
+                      ? {background:'var(--tone-warn-bg)', color:'var(--tone-warn)', borderColor:'color-mix(in srgb, var(--tone-warn) 35%, transparent)'}
+                      : {background:'var(--bg-detail-card)', color:'var(--text-secondary)', borderColor:'var(--border-card)'}}>
+                {label}
+            </span>
+        ) : null;
         const FieldErrorHint = ({ msg }) => msg ? (
             <div className="text-[10px] mt-1 font-bold whitespace-pre-wrap" style={{color:'var(--tone-alert)'}}>⚠ {msg}</div>
         ) : null;
@@ -1769,7 +1850,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
             <span className="text-[11px] cursor-help" style={{color:'var(--text-muted)'}}
                   title={`目前階段已經是「${stageLabel}」，這個階段早就過了，但沒有任何完成紀錄（沒有 ✓、不計提早／延期）。\n`
                        + (blocked ? `無法補記：${blocked}` : '若它其實已經完成了，按旁邊的「補記完成…」填上實際完成日 —— 目前階段不會動，只補紀錄與次數。')
-                       + '\n若這個階段真的要重做（規格變了、驗收沒過），才用「🔄 退回重做」（會清掉日期、退回次數 +1）。'}>
+                       + '\n若這個階段真的要重做（規格變了、驗收沒過），才用「退回重做」（會清掉日期、退回次數 +1）。'}>
                 已略過此階段
             </span>
         );
@@ -1901,7 +1982,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                 填寫「{endLabel}」
                             </button>
                             <span style={{color:'var(--text-muted)'}}>
-                                空著的話這筆會一直標成「⚠ 未壓日期」；填好並儲存後這裡會出現「標記完成…」
+                                壓好日期並儲存後，就能標記完成
                             </span>
                         </>) : (<>
                             <span className="font-bold" style={{color:'var(--text-primary)'}}>完成了嗎？</span>
@@ -2053,17 +2134,28 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     </div>
                     <div className="flex-shrink-0 ml-auto flex items-baseline gap-2 tabular-nums">
                         <span className="text-xs font-semibold" style={{color:clr}}>{dueLabel(diffDays)}</span>
-                        {/* 未壓的那幾筆沒有日期可印，印 —（第 152 批） */}
-                        <span className="text-[11px] w-[74px] text-right" style={{color:'var(--text-muted)'}}>{date || '—'}</span>
+                        {/* 未壓的那幾筆沒有日期可印，印 —（第 152 批）。
+                            第 225 批（健檢 M2 收斂版）：改印「已等 N 天」（補原本的空位，不多佔一行）；算不出來才退回 — */}
+                        {(() => {
+                            const w = !date && level === 'unset' ? unsetWaitOf(item) : null;
+                            return (
+                                <span className="text-[11px] w-[74px] text-right" style={{color:'var(--text-muted)'}}
+                                      title={w ? `${w.from}後就輪到「${phase.label}」，到今天已等 ${w.days} 天還沒壓日期` : undefined}>
+                                    {date || (w ? `已等 ${w.days} 天` : '—')}
+                                </span>
+                            );
+                        })()}
                     </div>
                 </div>
             );
         };
 
         const ThemeToggle = ({ dark, onToggle }) => (
-            <button onClick={onToggle} className="ctl-sm flex-shrink-0"
-                title={dark ? '切換至淺色模式' : '切換至深色模式'}>
-                {dark ? '☀ 淺色' : '☾ 深色'}
+            // 第 214 批：圖示＝**現在**的模式（原本「☀ 淺色」分不出是現況還是按了會變的）
+            <button onClick={onToggle} className="ctl-sm flex-shrink-0 text-[13px]"
+                aria-label={dark ? '現在是深色，點一下切淺色' : '現在是淺色，點一下切深色'}
+                title={dark ? '現在是深色，點一下切淺色' : '現在是淺色，點一下切深色'}>
+                {dark ? '☾' : '☀'}
             </button>
         );
 
@@ -2184,6 +2276,14 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                  style={{background:'var(--tone-alert-bg)', borderColor:'var(--tone-alert-border)', color:'var(--tone-alert)'}}>{check.reason}</div>
                         )}
                         <p className="text-xs" style={{color:'var(--text-muted)'}}>若需要瀏覽權限，請聯絡系統管理員將您的部門或工號加入允許清單。</p>
+                        {/* 第 221 批：模擬中被擋＝那個人登入時看到的就是這一頁；測試的人要有路回到自己的帳號（只在模擬中出現） */}
+                        {SIM_EMP && (
+                            <button type="button" onClick={() => { setSimEmp(''); window.location.reload(); }}
+                                    className="mt-4 w-full px-4 py-2 rounded-lg text-sm font-bold border"
+                                    style={{background:'var(--bg-card)', borderColor:'var(--border-table)', color:'var(--text-secondary)'}}>
+                                這是模擬帳號 {SIM_EMP} 看到的畫面 · 還原真實帳號
+                            </button>
+                        )}
                     </div>
                 </div>
             );
@@ -2239,7 +2339,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
         // ⚠️ 這個元件在 AccessPanel 裡**一直掛著**（切到瀏覽權限分頁只是 hidden）：頂端狀態列的件數靠它回報。
         // 第 190 批：信件通知分頁裡「收件者／副本／試寄收件人」共用的欄位名稱寬度 —— 上下兩張卡片的內容從同一條線開始
         const MAIL_LABEL_W = '84px';
-        const MailSettingsPanel = ({ showToast, onError, onSummary, onAutoSummary }) => {
+        const MailSettingsPanel = ({ showToast, onError, onSummary, onAutoSummary, notice = null }) => {
             const [loaded, setLoaded] = useState(false);
             const [loadError, setLoadError] = useState('');
             const [items, setItems] = useState([]);
@@ -2343,6 +2443,8 @@ const { useState, useMemo, Fragment, useEffect } = React;
                             ⚠ {mailBlock}
                         </div>
                     )}
+                    {/* 第 219 批：負責人已停用的進行中需求（由 AccessPanel 算好傳進來） */}
+                    {notice}
                     <div id="ct-mail-batch" className="rounded-xl border overflow-hidden scroll-mt-2" style={{borderColor:'var(--border-table)'}}>
                         <div className="px-3.5 py-2.5 flex items-baseline gap-2 flex-wrap border-b" style={{borderColor:'var(--border-table)'}}>
                             <span className="text-[13px] font-bold">👥 需關注批次提醒</span>
@@ -2500,6 +2602,8 @@ const { useState, useMemo, Fragment, useEffect } = React;
             const resultTag = (x) => {
                 const st = x.result === 'sent' ? { t: x.mode === 'test' ? '已寄出（試寄）' : '已寄出', c:'var(--tone-good)' }
                          : x.result === 'uncertain' ? { t:'未確認送出', c:'var(--tone-warn)' }
+                         // 第 217 批：負責人已停用＝刻意不寄，灰字、不算未寄出（不亮紅點）
+                         : x.result === 'skipped' ? { t:'略過', c:'var(--text-muted)' }
                          : { t:'未寄出', c:'var(--tone-alert)' };
                 return <span className="shrink-0 text-[11px] font-bold" style={{color: st.c}}>{st.t}</span>;
             };
@@ -2554,7 +2658,8 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     {askOn ? (
                         <div className="px-3.5 py-2.5 flex items-center gap-2 flex-wrap border-b text-[12px]"
                              style={{borderColor:'var(--border-table)', background:'var(--tone-alert-bg)', color:'var(--tone-alert)'}}>
-                            <span className="font-bold">開啟之後，標記完成、退回重做（與有開的結案通知）會真的寄信給負責人。確定開啟？</span>
+                            {/* 第 229 批：前面接「這是「測試區」。」（正式區沒設定就沒有）；並補正：第 211／223 批起單筆 ✉ 與批次提醒也跟著模式走 */}
+                            <span className="font-bold">{ENV_LABEL ? `這是「${ENV_LABEL}」。` : ''}開啟之後，標記完成、退回重做（與有開的結案通知）會真的寄信給負責人，單筆 ✉ 與批次提醒也會照正式的名單寄。確定開啟？</span>
                             <span className="ml-auto flex gap-2">
                                 <button type="button" disabled={saving}
                                         onClick={async () => { if (await save({ mode:'on' }, '自動寄信已開啟')) setAskOn(false); }}
@@ -2570,8 +2675,8 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                      ...(cfg.mode === 'test' ? {background:'var(--tone-warn-bg)', color:'var(--tone-warn)'}
                                        : cfg.mode === 'on' ? {background:'var(--brand-soft)', color:'var(--brand)'}
                                        : {color:'var(--text-muted)'})}}>
-                            {cfg.mode === 'test' ? <>試寄中：所有自動信只寄給 <span className="font-mono font-bold break-all">{cfg.testTo}</span>，負責人收不到</>
-                             : cfg.mode === 'on' ? <>開啟中：會寄給負責人，副本另一位負責人</>
+                            {cfg.mode === 'test' ? <>試寄中：所有自動信與單筆提醒只寄給 <span className="font-mono font-bold break-all">{cfg.testTo}</span>，負責人收不到；信的最上面會寫正式時的收件者與副本</>
+                             : cfg.mode === 'on' ? <>開啟中：會寄給負責人，副本另一位負責人（模擬帳號按的也一樣會寄給負責人）</>
                              : <>關閉中：不會自動寄任何信。建議先切到「試寄」確認信件沒問題，再開啟</>}
                         </div>
                     )}
@@ -2632,6 +2737,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                             <span className="min-w-0 truncate">
                                 {x.triggerText}{x.nid ? ` · NID ${x.nid}` : ''}{x.toName ? ` → ${x.toName}` : ''}
                                 {x.result === 'failed' && x.detail && <span style={{color:'var(--tone-alert)'}}>：{x.detail}</span>}
+                                {x.result === 'skipped' && x.detail && <span style={{color:'var(--text-muted)'}}>：{x.detail}</span>}
                             </span>
                             <span className="ml-auto" />
                             {resultTag(x)}
@@ -2642,7 +2748,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
             );
         };
 
-        const AccessPanel = ({ myCheck, showToast, onError, onClose, onChanged }) => {
+        const AccessPanel = ({ myCheck, showToast, onError, onClose, onChanged, inactiveOwners = [], onShowOwner }) => {
             const [loading, setLoading] = useState(true);
             const [loadError, setLoadError] = useState('');
             const [enabled, setEnabled] = useState(false);
@@ -2666,6 +2772,27 @@ const { useState, useMemo, Fragment, useEffect } = React;
             const [mailSummary, setMailSummary] = useState(null);
             const [autoSummary, setAutoSummary] = useState(null);   // { mode } | { error:true }，由 AutoNotifyPanel 回報（第 188 批）   // { to, cc } | { error:true }，由 MailSettingsPanel 回報
             // 狀態列的藥丸：切分頁並捲到那一塊（第 190 批）。setTimeout 0 ＝ 等 hidden 拿掉、畫出來再捲
+            // 第 219 批：負責人已停用的進行中需求「筆數」（一筆兩邊都停用只算一次）
+            const inactiveReqCount = new Set(inactiveOwners.flatMap(o => o.ids)).size;
+            // 信件通知分頁裡那一塊：交給 MailSettingsPanel 畫在「寄件信箱／郵件主機沒設好」（第 190 批 mailBlock）**底下** ——
+            // 設定壞掉是兩種寄信全倒，要排在最上面
+            const inactiveNotice = inactiveOwners.length === 0 ? null : (
+                <div id="ct-mail-inactive" className="rounded-lg border px-3 py-2.5 text-[12px] scroll-mt-2"
+                     style={{background:'var(--tone-warn-bg)', borderColor:'var(--tone-warn-border)', color:'var(--tone-warn)'}}>
+                    <div className="font-bold">⚠ 有 {inactiveReqCount} 筆進行中需求的負責人在指派名單裡已停用，自動信不會寄給他們</div>
+                    <div className="mt-0.5" style={{color:'var(--text-secondary)'}}>請 MSD 把這幾筆的負責人換成別人（「最近 5 封」會記成灰字「略過」）。</div>
+                    <div className="mt-2 space-y-1">
+                        {inactiveOwners.map(o => (
+                            <div key={o.dept + o.name} className="flex items-baseline gap-2 flex-wrap" style={{color:'var(--text-primary)'}}>
+                                <span className="font-bold">{o.name}</span>
+                                <span style={{color:'var(--text-muted)'}}>{o.dept} 負責人 · {o.ids.length} 筆（NID {o.nids.slice(0, 6).join('、')}{o.nids.length > 6 ? ' …' : ''}）</span>
+                                <button type="button" onClick={() => onShowOwner && onShowOwner(o.dept, o.name)}
+                                        className="ml-auto underline font-bold" style={{color:'var(--brand)'}}>在需求列表看 →</button>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
             const goSection = (k, id) => {
                 setTab(k);
                 if (id) setTimeout(() => { const el = document.getElementById(id); if (el) el.scrollIntoView({ block:'start', behavior:'smooth' }); }, 0);
@@ -2798,6 +2925,16 @@ const { useState, useMemo, Fragment, useEffect } = React;
                             第 190 批（使用者看過示意圖）：三張卡改成一排細藥丸（約省 40px 高），顏色照舊；
                             每一顆都能點，切到那個分頁並捲到那一塊（信件通知分頁一直掛著，切過去就量得到） */}
                         <div className="px-4 pt-3 flex flex-wrap gap-1.5 text-[12px]">
+                            {/* 第 229 批：這台主機的名稱排第一顆、緊鄰「⚡ 自動寄信」—— 切寄信模式之前一定看得到自己在哪一台。
+                                正式區沒設定就不出現（不是按鈕：沒有可以切過去的地方） */}
+                            {ENV_LABEL && (
+                                <span className="rounded-md px-2.5 py-1 font-bold"
+                                      title={`這台網站的設定檔寫的是「${ENV_LABEL}」。資料、寄信模式、收件名單都跟正式區分開。`}
+                                      style={envIsTest(ENV_LABEL) ? {background:'var(--tone-warn-bg)', color:'var(--tone-warn)'}
+                                                                  : {background:'var(--bg-detail-card)', color:'var(--text-secondary)'}}>
+                                    這台是：{ENV_LABEL}
+                                </span>
+                            )}
                             <button type="button" onClick={() => goSection('access', null)}
                                     className="rounded-md px-2.5 py-1 font-bold text-left"
                                     title="切到「瀏覽權限」分頁"
@@ -2824,6 +2961,15 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                     : autoSummary.mode === 'test' ? '試寄中' : autoSummary.mode === 'on' ? '開啟' : '關閉'}
                                 {autoSummary?.failCount > 0 ? ` · ${autoSummary.failCount} 封沒寄出` : ''}
                             </button>
+                            {/* 第 219 批：進行中需求的負責人已停用 → 多一顆黃色藥丸（沒有就不出現）。打開面板停在瀏覽權限也看得到 */}
+                            {inactiveReqCount > 0 && (
+                                <button type="button" onClick={() => goSection('mail', 'ct-mail-inactive')}
+                                        className="rounded-md px-2.5 py-1 font-bold text-left"
+                                        title="點這裡切到「信件通知」看是哪幾位、哪幾筆"
+                                        style={{background:'var(--tone-warn-bg)', color:'var(--tone-warn)'}}>
+                                    ⚠ 負責人已停用：{inactiveReqCount} 筆進行中
+                                </button>
+                            )}
                         </div>
                         <div className="px-4 mt-2 flex gap-5 border-b" role="tablist" style={{borderColor:'var(--border-table)'}}>
                             {[{k:'access', t:'瀏覽權限'}, {k:'mail', t:'信件通知'}].map(x => (
@@ -2840,7 +2986,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                         <div className="p-4 space-y-5 overflow-y-auto">
                             {/* 信件通知分頁一直掛著（狀態列的件數靠它），切走只是 hidden */}
                             <div hidden={tab !== 'mail'}>
-                                <MailSettingsPanel showToast={showToast} onError={onError} onSummary={setMailSummary} onAutoSummary={setAutoSummary} />
+                                <MailSettingsPanel showToast={showToast} onError={onError} onSummary={setMailSummary} onAutoSummary={setAutoSummary} notice={inactiveNotice} />
                             </div>
                             {tab !== 'access' ? null : loading ? (
                                 <div className="text-center text-sm py-10" style={{color:'var(--text-muted)'}}>載入中…</div>
@@ -3120,7 +3266,13 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // ⚠️⚠️ 「網址有沒有指名 view」只能在**掛載當下**問一次：第 28 批之後每次 render 都會
             //    replaceState 把現在的 state 寫回網址，之後再問一律是 true ——
             //    「別人分享的連結不可以被自動預設頁蓋掉」那道界線就會靜靜失效
-            const urlHadViewRef = React.useRef(URL_PARAMS.has('view'));
+            // ⚠️ 第 208 批（使用者：點信裡的「看全部需關注 …?due=attention」還是被帶去我的待辦）：
+            //    網址帶了**篩選條件**也算「指名要看需求列表」—— 已經寄出去的舊信、同事分享的篩選連結都靠這條。
+            //    只認 due／stage／alert／q／f_*；**刻意不認** prog／sort／dl／dp（平常瀏覽就會被 replaceState 寫進網址）
+            //    與 ems／msd（EMS 登入會自動篩自己的名字並寫進網址）—— 認了的話，存過的書籤就再也進不了我的待辦
+            const urlHadViewRef = React.useRef(URL_PARAMS.has('view')
+                || ['due', 'stage', 'alert', 'q'].some(k => !!(URL_PARAMS.get(k) || '').trim())
+                || COL_FILTER_KEYS.some(k => !!(URL_PARAMS.get('f_' + k) || '').trim()));
             const [expandedRows, setExpandedRows] = useState(new Set());
             // 最多一個元素（見 toggleRow）；每個改排序的入口都要先呼叫這支
             const collapseRows = () => setExpandedRows(new Set());
@@ -3180,6 +3332,51 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // 見下方 fetchAssignees() 的說明 —— 靜默失敗的後果是「新增需求存不進去，
             // 而畫面上只寫『必填欄位未完成』」
             const [assigneeError, setAssigneeError] = useState('');
+            // ─── 這個名字是不是「在職的 MSD」（第 215 批，① 標記完成前的那道檢查）───
+            // 回 null＝沒問題；否則回一句講原因的話（完成視窗那一格的灰字）。後端 /done 的 MsdOwnerIssueAsync() 是鏡像。
+            // ⚠️ 名單讀不到（assigneeError 或還是空的）時只看有沒有填：判不出來不可以把每一筆都當成「找不到」，
+            //    那樣下拉也是空的、等於誰都完成不了。後端照樣會擋，訊息講得出原因
+            const msdOwnerIssue = (name) => {
+                const n = (name || '').trim();
+                if (!n) return '這筆還沒指定，完成前要先選';
+                if (assigneeError || assigneeList.length === 0) return null;
+                const hit = assigneeList.find(a => a.dept === 'MSD' && (a.name || '').trim() === n);
+                if (!hit) return `目前的「${n}」不在指派人員名單（MSD）裡，請重新指定`;
+                if (!hit.isActive) return `目前的「${n}」已停用，請重新指定`;
+                return null;
+            };
+            // ─── 進行中需求的負責人已停用（第 219 批，🔐 管理設定的提醒）───
+            // 指派人員維護沒有入口、名單在 SSMS 改（第 217 批 A 的停用提醒因此看不到），系統只能**事後**發現：
+            // 負責人欄（兩邊 trim）對到 dbo.Assignee 裡**停用**的那一列、而且同部門沒有同名的在職列、需求還沒結案。
+            // 這幾筆的自動信不會寄給他（只記灰字略過）。⚠️ 只算「停用」，不算「名字對不上」（那是另一件事、舊資料本來就有，會一直吵）。
+            // 名單讀不到時一律回空（判不出來不可以亂報）
+            const inactiveOwnerGroups = useMemo(() => {
+                if (assigneeError || assigneeList.length === 0) return [];
+                const key = (d, n) => d + '|' + (n || '').trim();
+                const active = new Set(assigneeList.filter(a => a.isActive).map(a => key(a.dept, a.name)));
+                const inactive = new Set(assigneeList.filter(a => !a.isActive).map(a => key(a.dept, a.name)));
+                const g = new Map();
+                requirementsData.forEach(r => {
+                    if (normStatus(r.status) === 'Done' || normStageCode(r.stageCode) === '5') return;
+                    [['EMS', r.emsOwner], ['MSD', r.msdOwner]].forEach(([dept, nm]) => {
+                        const n = (nm || '').trim(), k = key(dept, n);
+                        if (!n || active.has(k) || !inactive.has(k)) return;
+                        if (!g.has(k)) g.set(k, { dept, name: n, ids: [], nids: [] });
+                        g.get(k).ids.push(r.id); g.get(k).nids.push(r.nid || '（無 NID）');
+                    });
+                });
+                return [...g.values()];
+            }, [assigneeList, assigneeError, requirementsData]);
+            // ─── 負責人要是指派名單裡「同部門、在職」的人（第 220 批）───
+            // 後端 OwnerIssueAsync() 的鏡像：null＝沒問題（空字串也回 null，必填與否另外判斷）。名單讀不到一律不判（後端照擋）
+            const ownerIssueOf = (dept, name) => {
+                const n = (name || '').trim();
+                if (!n || assigneeError || assigneeList.length === 0) return null;
+                const hit = assigneeList.find(a => a.dept === dept && (a.name || '').trim() === n);
+                if (!hit) return `「${n}」不在指派人員名單（${dept}）裡`;
+                if (!hit.isActive) return `「${n}」在指派人員名單裡已停用`;
+                return null;
+            };
             const [isAssigneeModalOpen, setIsAssigneeModalOpen] = useState(false);
             // 維護視窗「新增一列」那排輸入欄。⚠️ 這三個 state 2026-08-23 / 第 25 批由
             // AssigneeModal 內部提到這裡 —— 那個視窗改成普通函式 renderAssigneeModal()
@@ -3193,7 +3390,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
             const [unlockReasons, setUnlockReasons] = useState({ spec: '', confirm: '', msd: '', uat: '', stage: '' });
             // 異動原因分類（規格變更／優先級調整／技術問題／其他），與上面的文字說明成對
             const [unlockCategories, setUnlockCategories] = useState({ spec: '', confirm: '', msd: '', uat: '', stage: '' });
-            // 目前階段預設唯讀（第 19 批 / A5）。正常推進只能靠「標記完成…」與「🔄 規格回退」，
+            // 目前階段預設唯讀（第 19 批 / A5）。正常推進只能靠「標記完成…」與「退回重做」，
             // 手動改是繞過那套機制，所以要先按「手動修正」才開放下拉，而且一定要留原因
             const [stageUnlocked, setStageUnlocked] = useState(false);
             // 按過一次「儲存」之後才把驗證結果畫到欄位上（第 26 批）。
@@ -3204,7 +3401,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // 一個視窗 20 幾個欄位、四個階段區塊，而任何一個人在任何一個時間點
             // 真正要動的只有「現在這一階段」。兩個旗標各收一塊（第 103 批把新增視窗那個「更多欄位」整個拿掉了）：
             //   openPhases  = 四個階段區塊（預設只展開「目前這一階段」，見 defaultOpenPhases）
-            //   advOpen     = 目前階段／Status／🔄 規格回退（繞過機制的操作，一般人不該動）
+            //   advOpen     = 目前階段／Status／退回重做（繞過機制的操作，一般人不該動）
                         // ⚠️⚠️ 三塊都是**收合不是隱藏**：標題永遠看得到、收合時那一行要印出裡面的值
             //      （日期／目前階段），而且一按就展開。刻意的限制沒有講出來，在使用者眼裡
             //      就等於壞掉（第 57 批）—— 這裡更嚴重，收掉的是他可能真的要按的東西。
@@ -3221,12 +3418,10 @@ const { useState, useMemo, Fragment, useEffect } = React;
             //                   兩種都是「不給輸入框就沒有出路」—— 不要因為「NID 已經自動化了」
             //                   把這個 state 整個拿掉。
             //   emsManual  = EMS 負責人從「侑憲（你）換人」換回原本的下拉
-            //   specCustom = 日期晶片那一排底下展開一個 <input type="date">
             // ⚠️ 一律不寫 localStorage，而且 openAdd 每次都要重設 —— 上一筆按過「換人」，
             //    下一筆開起來就不該停在下拉（那等於把預設值靜靜拿掉了）。
             const [nidManual, setNidManual] = useState(false);
             const [emsManual, setEmsManual] = useState(false);
-            const [specCustom, setSpecCustom] = useState(false);
             // ─── 「專案資料編輯」模式（第 116 批）：同一個編輯視窗只畫「專案基本資料」那一區 ───
             // ⚠️ 不寫 localStorage（第 86 批那條：「這一次打開這一筆」的狀態）；openEdit／openAdd 每次都重設。
             const [infoMode, setInfoMode] = useState(false);
@@ -3247,6 +3442,9 @@ const { useState, useMemo, Fragment, useEffect } = React;
             const [historyError, setHistoryError] = useState('');
             // 操作者：Windows 帳號（/api/whoami）與模擬帳號
             const [actor, setActor] = useState({ empId: null, source: 'unknown', allowSimulation: false });
+            // 第 229 批：這台主機的名稱（見模組層 ENV_LABEL）。分頁標題跟著它
+            const [envLabel, setEnvLabel] = useState('');
+            useEffect(() => { document.title = envLabel ? `【${envLabel}】MSD 需求管控表` : 'MSD 需求管控表'; }, [envLabel]);
             const [isActorModalOpen, setIsActorModalOpen] = useState(false);
             // 頁面瀏覽權限（第 74 批）：null＝檢查中；{enabled, allowed, reason, empId, isAdmin, person}＝結果。
             // accessError＝逾時／伺服器錯誤（錯誤畫面＋重試，不放行）。見模組層 checkAccess() 的說明
@@ -3283,14 +3481,15 @@ const { useState, useMemo, Fragment, useEffect } = React;
             const [doneModal, setDoneModal] = useState(null);
             // 自動寄信的模式與開關（第 188 批）：完成／退回視窗底部那一行「會自動寄信請 ○○ 壓日期」要用。
             // 視窗一打開就重抓一次（管理者可能剛改過）；讀不到＝當關閉、那一行不出現 —— 不可以講「會寄」而其實不會
+            // 第 211 批：單筆 ✉ 的確認視窗也要（試寄中＝寄到試寄收件人）
             const [autoNotify, setAutoNotify] = useState(null);
             useEffect(() => {
-                if (!doneModal && !rollbackModal) return;
+                if (!doneModal && !rollbackModal && !notifyModal) return;
                 let alive = true;
                 fetch(api('/api/auto-notify/status')).then(r => r.ok ? r.json() : null).catch(() => null)
                     .then(j => { if (alive) setAutoNotify(j && !j.error ? j : null); });
                 return () => { alive = false; };
-            }, [!!doneModal, !!rollbackModal]);
+            }, [!!doneModal, !!rollbackModal, !!notifyModal]);
             // 「完整軌跡」視窗（第 72 批，2026-09-13）：{ id, nid, phase:'all'|phaseKey, expanded:{ [histId]: true } }
             // ⚠️ 只存需求 id，稽核列每次 render 從 historyMap 讀 —— 視窗開著時按頁首重新整理，內容要跟著更新。
             // expanded 是「這一行的理由展開看全文」，一次性的查看動作，不寫 localStorage
@@ -3487,6 +3686,11 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // 那顆鈕的主要動作是「切精簡模式」，等於每放大一次就勸他少看七欄一次。
             // 放大後最多就是需要橫向捲動，而框架現在會跟著一起變寬（見 .page-shell），
             // 橫捲已經是完整而且看得懂的畫面，沒有什麼要先攔下來問的。
+            // 第 214 批：字級改成一次一級的 A−／A＋（原本只能往上循環）。cycleUiScale 已不用
+            const stepUiScale = d => setUiScale(prev => {
+                const i = Math.max(0, UI_SCALES.indexOf(prev));
+                return UI_SCALES[Math.min(UI_SCALES.length - 1, Math.max(0, i + d))];
+            });
             const cycleUiScale = () => setUiScale(prev => {
                 const i = UI_SCALES.indexOf(prev);
                 return UI_SCALES[(i + 1) % UI_SCALES.length];
@@ -3794,37 +3998,18 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // ⚠️ 沒有在模擬時（windows 或 unknown）一律看 accessCheck.isAdmin —— 它本來就是後端用**真實** Windows 帳號算的。
             //    原本寫 `actor.source === 'windows'`，whoami 取不到工號（source 'unknown'）而 Negotiate 仍認得出管理者時，
             //    真正的管理者反而看不到操作欄。
-            const [simAdmin, setSimAdmin] = useState(null);
-            const simEmpId = actor.source === 'simulated' ? String(actor.empId || '').trim() : '';
-            const realIsAdmin = !!(accessCheck && accessCheck.isAdmin);
-            useEffect(() => {
-                if (!simEmpId || !realIsAdmin) { setSimAdmin(null); return; }
-                let alive = true;
-                fetch(api('/api/access-check') + '?testEmpId=' + encodeURIComponent(simEmpId))
-                    .then(r => r.ok ? r.json() : null)
-                    .then(j => { if (alive) setSimAdmin({ empId: simEmpId, isAdmin: !!(j && j.isAdmin) }); })
-                    .catch(() => { if (alive) setSimAdmin({ empId: simEmpId, isAdmin: false }); });
-                return () => { alive = false; };
-            }, [simEmpId, realIsAdmin]);
-            const actingAdmin = simEmpId
-                ? !!(simAdmin && simAdmin.empId === simEmpId && simAdmin.isAdmin)
-                : realIsAdmin;
+            // ⚠️⚠️ 第 221 批（2026-10-17 使用者：模擬要完全等同 Windows 帳號登入 → 全改）：推翻第 134／135 批的
+            //    「模擬時另外用 ?testEmpId= 查、批次 ✉ 還要真實帳號也過」。模擬中每個請求都帶 X-CT-Sim-EmpId，
+            //    後端 /api/access-check 回的 isAdmin 本來就是**被模擬的人**的 —— 不用另外查，也不用兩邊都過。
+            //    ⚠️ 只在 accessCheck.empId 對得上目前身分時才採用：切換模擬帳號後重新檢查回來之前，不可以沿用上一個人的結果。
+            const actingEmpId = stripDomain(actor.empId);
+            const actingAdmin = !!(accessCheck && accessCheck.isAdmin)
+                             && (!actingEmpId || stripDomain(accessCheck.empId).toLowerCase() === actingEmpId.toLowerCase());
             const canManageList = actingAdmin
                                || ((meAssignee && meAssignee.dept) || '').trim() === 'MSD';
-            // ─── 第 135 批（2026-10-07）：模擬時，「後端看真實帳號」的那幾個入口要兩邊都過才畫 ───
-            // 使用者：「模擬帳號就是為了測試真實的 Windows 帳號登入時的畫面」。
-            // 🔐 卡控面板與「需關注」批次 ✉ 的後端權限一律看真實 Windows 帳號（ctx.User），模擬改變不了：
-            //   · 🔐：改看 actingAdmin —— 模擬 EMS 時不畫（＝ EMS 真正看到的畫面）；模擬管理者時畫
-            //     （actingAdmin 在模擬時成立的前提就是真實帳號也是管理者，面板裡的動作照樣過得了後端）。
-            //   · 批次 ✉：canManageList（被模擬的人）**且** realCanAttn（真實帳號，＝後端 /api/notify-attention 那道 403）。
-            //     只看前者會做出「畫面有鈕、按下去 403」；只看後者則模擬 EMS 時還看得到。
-            // ⚠️ realCanAttn 用 accessCheck.empId（Negotiate 讀的真實工號），不可以用 actor.empId（模擬時是被模擬的人）。
-            const realCanAttn = realIsAdmin || (() => {
-                const k = stripDomain(accessCheck && accessCheck.empId);
-                const a = k ? assigneeList.find(x => (x.empNo || '').trim() === k) : null;
-                return ((a && a.dept) || '').trim() === 'MSD';
-            })();
-            const canAttnNotify = canManageList && realCanAttn;
+            // 批次 ✉ 的後端門檻（/api/notify-attention：管理者 ∪ DEPT=MSD）與 canManageList 同一個條件，
+            // 模擬時後端看的也是被模擬的人（第 221 批），所以兩邊一定一致
+            const canAttnNotify = canManageList;
             const showCol = k => ALWAYS_HIDDEN.includes(k) ? false
                 : k === 'actions' ? (!compact && canManageList)
                 : k === 'notesLink' ? (hasNotesLink && !compact)
@@ -3876,6 +4061,9 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     const m = j && (j.message || j.detail);
                     if (m) msg = String(m);
                 } catch (e) { /* 空 body 或不是 JSON */ }
+                // 第 222 批（健檢 A1）：寫入改由伺服器讀 Windows 帳號，401＝這台電腦沒有通過 Windows 登入（多半不在公司網域）。
+                // 回應是 Negotiate 的挑戰、沒有 body，不講白就只剩「HTTP 401」
+                if (res.status === 401) msg = '無法確認你的 Windows 帳號（這台電腦可能不在公司網域，或網址不是公司內網的網址），這次的變更沒有存。';
                 const e = new Error(msg);
                 e.status = res.status;
                 e.fromServer = true;
@@ -4042,16 +4230,27 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 let allow = false;
                 try {
                     const info = await fetch(api('/api/authinfo'));
-                    if (info.ok) allow = !!(await info.json()).allowSimulation;
+                    if (info.ok) {
+                        const j = await info.json();
+                        allow = !!j.allowSimulation;
+                        ENV_LABEL = String(j.envLabel || '').trim();
+                        setEnvLabel(ENV_LABEL);
+                    }
                 } catch (err) { /* 取不到就當不開放模擬 */ }
+                // 第 221 批：上次留下的模擬帳號（localStorage）—— 只有這台主機開放模擬才採用，否則清掉
+                if (!allow && SIM_EMP) setSimEmp('');
+                let real = null;
                 try {
                     const res = await fetch(api('/api/whoami'));
                     if (res.ok) {
                         const d = await res.json();
-                        if (d.empId) { setActor({ empId: d.empId, source: 'windows', allowSimulation: allow }); return; }
+                        if (d.empId) real = d.empId;
                     }
                 } catch (err) { /* 401 或非網域 → 落到下面 */ }
-                setActor({ empId: null, source: 'unknown', allowSimulation: allow });
+                // realEmpId：還原真實帳號時用（模擬中 actor.empId 是被模擬的人）
+                if (allow && SIM_EMP) { setActor({ empId: SIM_EMP, source: 'simulated', allowSimulation: allow, realEmpId: real }); return; }
+                setActor(real ? { empId: real, source: 'windows', allowSimulation: allow, realEmpId: real }
+                              : { empId: null, source: 'unknown', allowSimulation: allow, realEmpId: null });
             };
 
             // ─── 瀏覽權限閘門（第 74 批）───
@@ -4105,8 +4304,8 @@ const { useState, useMemo, Fragment, useEffect } = React;
             }, [historyEntries]);
 
             // 有過時程異動（排除 init 首次填寫）的需求 Id。
-            // 統計報表「時程異動」KPI 卡數的是**事件筆數**，這裡數的是**需求件數**，
-            // 兩者不會相等（一件需求可以改很多次）—— 點卡片跳到列表時要用這個
+            // 數的是**需求件數**（一件需求改很多次也只算一件）—— 「更多篩選 → 警示 → 有時程異動」與它的件數用這個。
+            // （統計報表上方原本的「時程異動」KPI 卡第 210 批已拿掉，每月改日期看「本月到期達成」的「日期延後」）
             const changedIdSet = useMemo(() => {
                 const s = new Set();
                 historyEntries.forEach(h => { if (isDateChange(h)) s.add(h.requirementId); });
@@ -4124,6 +4323,86 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 setHistModal({ id: editingData.id, nid: editingData.nid, phase: phaseKey, expanded: {} });
 
             const handleExport = () => { window.open(api('/api/export'), '_blank'); };
+
+            // ─── 匯出「目前清單」：照畫面的這 N 筆（第 228 批，健檢 P2，使用者看過示意圖：「都照你推薦的改、MP Saving、需求補充都要」）───
+            // 範圍與順序＝sortedData（搜尋／篩選／進度／排序都照畫面）；欄位固定是完整的一般模式欄位＋需求補充／現況描述／
+            // MP Saving／次數（精簡模式或收起的欄位照樣印 —— 主管拿到檔案要看全貌）。
+            // ⚠️⚠️ 每一格的字與顏色在**這裡**用畫面那一套算好（getDueEntry／isPhasePassed／getPhaseAlert／noLinkConfirmOf），
+            //    後端 /api/export-view 只負責寫檔。不可以改成讓後端自己算 —— 那就是第二份規則（第 23 批那條）。
+            // ⚠️ 「全部 N 筆（原始欄位）」那一份（handleExport）一個字都不動，它要能匯回。
+            const EXPORT_VIEW_COLUMNS = ['No', 'NID', '目前階段', '狀況', '註冊日期', 'Main Cat', 'Sub Cat', '需求補充', 'EMS', 'MSD',
+                                         ...DUE_PHASES.map(p => p.label), 'MP Saving', '延期', '退回', '現況描述', '規格文件'];
+            const exportViewCells = (item, i) => {
+                const C = (t, tone = '', extra = {}) => ({ t: t == null ? '' : String(t), tone, ...extra });
+                const stage = normStageCode(item.stageCode);
+                const closed = normStatus(item.status) === 'Done' || stage === '5';
+                // 狀況：與需關注同一支 getDueEntry（窗開到無限大，只為了拿到天數）
+                const e = closed ? null : getDueEntry(item, Infinity);
+                const status = closed ? C('已結案', 'good')
+                    : !e ? C('未排定', 'muted')
+                    : e.level === 'unset' ? C('未壓日期', 'red')
+                    : C(dueLabel(e.diffDays) + (e.inferred || e.phase.code !== stage ? `（最急：${e.phase.label}）` : ''),
+                        e.diffDays < 0 ? 'red' : e.diffDays <= DUE_WINDOW_DEFAULT ? 'orange' : '');
+                const phaseCell = (ph) => {
+                    const date = ph.getDate(item) || '', actual = ph.getActual(item) || '';
+                    if (isPhasePassed(item, ph.key)) {
+                        if (isDateVal(actual) && actual !== date) return C(`✓ ${date || '（沒有原訂日）'} → 實際 ${actual}`, 'good');
+                        return isDateVal(date) ? C(`✓ ${date}`, 'good') : C('✓（沒有日期）', 'muted');
+                    }
+                    if (ph.code === stage && !isDateVal(date)) return C('未壓日期', 'red');
+                    if (!isDateVal(date)) return C('');
+                    const a = getPhaseAlert(date);
+                    return C(date, a ? (a.level === 'overdue' ? 'red' : 'orange') : '');
+                };
+                const link = isLinkVal(item.notesLink) ? item.notesLink.trim() : '';
+                const spec = link ? C(link, '', { link })
+                           : noLinkConfirmOf(item.id) ? C('不另附', 'muted') : C('');
+                return [
+                    C(i + 1, '', { num: true }), C(item.nid), C(STAGE_CODES[stage]?.label || item.stageCode || ''), status,
+                    C(item.regDate), C(item.mainCat), C(item.subCat), C(item.remark), C(item.emsOwner), C(item.msdOwner),
+                    ...DUE_PHASES.map(phaseCell),
+                    C(item.mpSaving), C(item.delayCount || 0, '', { num: true }), C(item.rollbackCount || 0, '', { num: true }),
+                    C(item.currentStatus), spec
+                ];
+            };
+            const exportViewSortText = () => {
+                const parts = [];
+                if (doneLast) parts.push('Done 置底');
+                if (duePriority) parts.push('逾期優先');
+                if (sortConfig.key) parts.push(sortConfig.key === 'delayCount' ? '延期最多'
+                    : sortConfig.key === 'rollbackCount' ? '回退最多'
+                    : `${COL_FILTER_META[sortConfig.key]?.label || sortConfig.key}（${sortConfig.direction === 'desc' ? '由大到小' : '由小到大'}）`);
+                return parts.join('、');
+            };
+            const [exportViewBusy, setExportViewBusy] = useState(false);
+            const handleExportView = async () => {
+                if (exportViewBusy) return;
+                setExportViewBusy(true);
+                try {
+                    const payload = {
+                        columns: EXPORT_VIEW_COLUMNS,
+                        rows: sortedData.map(exportViewCells),
+                        conditions: activeChips.map(c => `${c.label}：${c.value}`).join('　·　'),
+                        sort: exportViewSortText(),
+                        total: requirementsData.length
+                    };
+                    const res = await fetch(api('/api/export-view'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                    if (!res.ok) throw await errFrom(res);
+                    const blob = await res.blob();
+                    const now = new Date(), p2 = n => String(n).padStart(2, '0');
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = `需求管控表_目前清單_${now.getFullYear()}${p2(now.getMonth() + 1)}${p2(now.getDate())}_${p2(now.getHours())}${p2(now.getMinutes())}.xlsx`;
+                    document.body.appendChild(a); a.click(); a.remove();
+                    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+                    showToast(`已開始下載畫面上的這 ${sortedData.length} 筆（欄位與順序跟畫面一樣，不能匯回）`, 'success');
+                } catch (err) {
+                    console.error(err);
+                    setAlertModal({ title: '目前清單匯出失敗', message: err && err.status
+                        ? `${err.message || '伺服器回了錯誤'}\n\n沒有產生檔案，資料庫也沒有任何變動。`
+                        : '沒有拿到檔案（連不上伺服器）。請確認網路與後端服務後再試一次。' });
+                } finally { setExportViewBusy(false); }
+            };
             const handleImport = async (e) => {
                 if(!e.target.files.length) return;
                 // 匯入改用阻擋型 confirmModal，避免原生 confirm() 在某些工廠 PC 被封鎖
@@ -4440,7 +4719,11 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     // 「新增需求先不用強迫指定MSD負責人，但…要標記完成時，發現未指定MSD負責人，則先要請他先壓MSD負責人後，才允許完成」
                     // ⚠️ 與上面的規格文件同一個作法：欄位放在完成視窗裡、當場選、同一個 /done 送出（後端鏡像、同一個交易）。
                     //    補記不套；已經有人時不出現（這裡不負責換人）。編輯視窗裡剛選了還沒存的那位先帶進來
-                    needOwner: phaseKey === 'spec' && !backfill && !(original.msdOwner || '').trim(),
+                    // ⚠️ 第 215 批：「有人」的意思是**在職的 MSD**（msdOwnerIssue）—— 名字對不上名單或已停用的，
+                    //    交棒信一樣寄不出去，要在這裡重新指定（這是這條路唯一會換人的情況）
+                    // 第 220 批：「目前階段還在 ①」的完成都要（按 ② 並一併記錄 ① 也會推過 ①）—— 後端 /done 鏡像
+                    needOwner: curStage === 1 && !backfill && msdOwnerIssue(original.msdOwner) !== null,
+                    ownerWhy: curStage === 1 && !backfill ? msdOwnerIssue(original.msdOwner) : null,
                     msdOwner: (() => {
                         const v = inModal && editingData?.id === original.id ? (editingData.msdOwner || '').trim() : '';
                         return v && assigneeList.some(a => a.dept === 'MSD' && a.isActive && (a.name || '').trim() === v) ? v : '';
@@ -4569,7 +4852,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 if (m.needOwner && !(m.msdOwner || '').trim()) {
                     setAlertModal({
                         title: '還沒指定 MSD 負責人，無法標記完成',
-                        message: `「${m.label}」完成後就輪到 MSD 確認，但這筆需求還沒指定 MSD 負責人。
+                        message: `這次完成後需求就離開「① EMS規格確認」、輪到 MSD 確認，但這筆需求${m.ownerWhy && m.ownerWhy.startsWith('目前') ? `的 MSD 負責人要重新指定（${m.ownerWhy.replace(/，請重新指定$/, '')}）` : '還沒指定 MSD 負責人'}。
 
 請在完成視窗的「MSD 負責人」選一位，再按「確認完成」。`
                     });
@@ -4627,7 +4910,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                             const fr = freshList.find(r => r.id === m.id);
                             const st = fr ? savedStage(fr) : 0;
                             const nph = st ? DUE_PHASES.find(p => p.code === String(st)) : null;
-                            if (st === 5) movedNote = '。這筆已經結案，移到下面的「已結案」';
+                            if (st === 5) movedNote = '。這筆已經結案，移到下面的「我的全部」';
                             else if (nph && (nph.owner(fr) || '').trim() !== myTodoName)
                                 movedNote = `。這筆已移到下面的「追蹤中」，現在輪到 ${nph.side}`;
                             else if (nph) movedNote = `。下一關「${nph.label}」也是你負責，卡片還在上面`;
@@ -4967,6 +5250,11 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 // 沒填就等同 End 同一天，存檔時由 applyStartDefaults 自動補）
                 ...(orig && isDateVal(orig?.spec?.end)
                     ? [{ key:'spec.end', label:'① EMS規格確認 結束日', get: d => d.spec?.end }]
+                    : []),
+                // 第 215 批：過了 ① 就不能把 MSD 負責人清空（只擋原本有值、這次清空；換人可以）——
+                // ① 完成時一定要有人（第 196 批），事後清掉的話 ②③ 的交棒信不知道要寄給誰。後端 MissingRequiredFields 鏡像
+                ...(orig && String(orig.msdOwner || '').trim() && Number(String(orig.stageCode || '').trim()) >= 2
+                    ? [{ key:'msdOwner', label:'MSD 負責人（已過 ①，只能換人、不能清空）', get: d => d.msdOwner }]
                     : [])
             ];
 
@@ -5008,6 +5296,28 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     groups.push({ title:'必填欄位未完成', items: missing.map(f => f.label) });
                 }
 
+                // ─── 負責人（第 220 批，後端 POST／PUT 鏡像）───
+                // ①「這次被改動的」負責人要是同部門、在職的人（沒改的舊值不擋，與後端同一條界線）
+                // ② 目前階段被改到 ≥ 2（含新增時就 ≥ 2）時，MSD 負責人一定要是在職的 MSD
+                {
+                    const items = [];
+                    [['emsOwner', 'EMS'], ['msdOwner', 'MSD']].forEach(([k, dept]) => {
+                        if (saved && String(saved[k] || '').trim() === String(rec[k] || '').trim()) return;
+                        const w = ownerIssueOf(dept, rec[k]);
+                        if (w) { mark(k, w); items.push(`${dept} 負責人：${w}`); }
+                    });
+                    const recStage = Number(normStageCode(rec.stageCode)) || 0;
+                    const stageMoved = !saved || normStageCode(saved.stageCode) !== normStageCode(rec.stageCode);
+                    if (stageMoved && recStage >= 2 && !fields.msdOwner) {
+                        const w = msdOwnerIssue(rec.msdOwner);
+                        if (w) {
+                            mark('msdOwner', '已過 ①，要指定在職的 MSD 負責人');
+                            items.push(`目前階段是「${STAGE_CODES[String(recStage)]?.label || recStage}」（已過 ①），MSD 負責人要是在職的 MSD${(rec.msdOwner || '').trim() ? `（${w.replace(/^目前的/, '').replace(/，請重新指定$/, '')}）` : '（還沒指定）'}`);
+                        }
+                    }
+                    if (items.length) groups.push({ title:'負責人要從指派人員名單裡選', items });
+                }
+
                 // ─── 欄位長度（第 82 批，2026-09-25）───
                 // ⚠️⚠️ 第 178 批起輸入框**沒有 maxLength**（貼上會被靜靜截掉），這裡就是編輯／新增視窗擋超長的
                 //    唯一一道前端防線：就地標紅＋彈窗列出哪一欄、上限、目前幾字。後端超過仍是 400。
@@ -5023,6 +5333,19 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     });
                 }
 
+                // ─── 規格文件有填就一定要是連結（第 227 批，健檢 C3；後端 POST／PUT 的 NotesLinkIssue() 鏡像）───
+                // 我的待辦的「貼上」與完成視窗本來就只收連結，只有這裡不擋 → 同一欄兩套規則：存進「見共用資料夾」這種字，
+                // 需求列表那格留白像沒有文件、① 完成時又被記成「不另附」，欄位裡卻還留著那段字。
+                // ⚠️ 只看這次有改到的（與後端同一條界線，既有的舊值不擋）；清空照舊可以（回到「尚未登錄」）。
+                {
+                    const v = String(rec.notesLink || '').trim();
+                    const was = String((saved || {}).notesLink || '').trim();
+                    if (v && v !== was && !isLinkVal(v)) {
+                        mark('notesLink', '不是開得起來的連結 —— 要 Notes://、https://、http://、file:// 或 ftp:// 開頭；沒有規格文件請清空');
+                        groups.push({ title: '規格文件不是開得起來的連結', items: [`填的是「${v.length > 40 ? v.slice(0, 40) + '…' : v}」—— 要 Notes://、https://、http://、file:// 或 ftp:// 開頭；沒有規格文件請清空`] });
+                    }
+                }
+
                 // 每個區間的結束日不可早於開始日。日期是 "YYYY-MM-DD"，字串比較即等於時間比較
                 const badRanges = ['spec', 'msd', 'uat']
                     .map(k => ({ k, label: PHASES[k].label, obj: PHASES[k].obj, p: rec[PHASES[k].obj] || {} }))
@@ -5036,6 +5359,20 @@ const { useState, useMemo, Fragment, useEffect } = React;
                         title: '日期區間不合理（End Date 早於 Start Date）',
                         items: badRanges.map(({ label }) => label)
                     });
+                }
+
+                // ─── 年份明顯不合理（第 224 批，健檢 A5；後端 ImplausibleDates 鏡像）───
+                // 早於 2000-01-01 或晚於今天＋10 年一律擋；只看這次被動到的欄位（既有怪資料改別的欄位照樣存得了）。
+                // 一年以上、十年以內的遠期日期不擋，由 handleSave 多問一次（farDateChanges）
+                {
+                    const maxIso = (Number(TODAY_ISO.slice(0, 4)) + 10) + TODAY_ISO.slice(4);
+                    const odd = DATE_FIELD_LIST
+                        .map(x => ({ ...x, now: (rec[x.obj] || {})[x.field] || '', was: ((saved || {})[x.obj] || {})[x.field] || '' }))
+                        .filter(x => isDateVal(x.now) && (!saved || x.now !== x.was) && (x.now < '2000-01-01' || x.now > maxIso));
+                    if (odd.length > 0) {
+                        odd.forEach(x => mark(`${x.obj}.${x.field}`, '年份看起來不對'));
+                        groups.push({ title: `日期的年份看起來不對（只接受 2000-01-01 到 ${maxIso}）`, items: odd.map(x => `${x.label} ${x.now}`) });
+                    }
                 }
 
                 // ─── 跨階段的 End 必須遞增（2026-08-22 / 第 21 批）───
@@ -5110,7 +5447,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                         const word = c.field === 'confirm' ? '確認日' : '結束日';
                         if (stageOf < nNow) {
                             mark(`${c.obj}.${c.field}`, `已走完的階段不可清空${word}，要退回請用退回重做`);
-                            badClear.push(`「${PHASES[PHASE_KEYS[i]].label}」已經走完（目前階段 = ${STAGE_CODES[String(nNow)]?.label || nNow}），${word}不可清空；要退回這個階段請用「🔄 退回重做」`);
+                            badClear.push(`「${PHASES[PHASE_KEYS[i]].label}」已經走完（目前階段 = ${STAGE_CODES[String(nNow)]?.label || nNow}），${word}不可清空；要退回這個階段請用「退回重做」`);
                             continue;
                         }
                         // orderChain 與 PHASE_KEYS 都是 spec → confirm → msd → uat 的順序
@@ -5120,7 +5457,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                             .map(o => PHASES[o.key].label);
                         if (later.length) {
                             mark(`${c.obj}.${c.field}`, `清空會留下缺口（${later.join('、')} 仍有日期）`);
-                            badClear.push(`清空「${PHASES[PHASE_KEYS[i]].label}」的${word}會在時程裡留下缺口（${later.join('、')} 仍有日期）；請先清掉後面的階段，或改用「🔄 退回重做」`);
+                            badClear.push(`清空「${PHASES[PHASE_KEYS[i]].label}」的${word}會在時程裡留下缺口（${later.join('、')} 仍有日期）；請先清掉後面的階段，或改用「退回重做」`);
                         }
                     }
                     if (badClear.length > 0) {
@@ -5185,7 +5522,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                         mark('stage', '不可手動往回改，請用退回重做或撤銷');
                         groups.push({
                             title: '目前階段不可以手動往回改',
-                            items: [`${STAGE_CODES[String(fromN)]?.label} → ${toLabel}：要退回前面的階段請用「🔄 退回重做」；誤按了「標記完成…」請用該階段旁的「撤銷」`]
+                            items: [`${STAGE_CODES[String(fromN)]?.label} → ${toLabel}：要退回前面的階段請用「退回重做」；誤按了「標記完成…」請用該階段旁的「撤銷」`]
                         });
                     } else
                     // 前面的階段沒填完就不給改（後端也擋）。排在原因檢查之前 ——
@@ -5219,9 +5556,9 @@ const { useState, useMemo, Fragment, useEffect } = React;
                             groups.push({ title:'Status 是 Done、目前階段卻不是 ⑤ 結案', items:[
                                 `結案只能由 ④ EMS驗收 的「標記完成…」推進（它會自動把 Status 改成 Done）；匯入資料階段填錯，請把目前階段一併調到「⑤ 結案」並填理由`] });
                         } else if (isFive && !isDone) {
-                            mark('status', '目前階段是 ⑤ 結案時 Status 必須是 Done；要重開請用 🔄 退回重做');
+                            mark('status', '目前階段是 ⑤ 結案時 Status 必須是 Done；要重開請用 退回重做');
                             groups.push({ title:'目前階段是 ⑤ 結案、Status 卻不是 Done', items:[
-                                '要把已結案的需求重新打開請用「🔄 退回重做」（它會退回目前階段並自動改成 Ongoing）；直接改 Status 會留下一筆不出現在任何預警裡的「進行中」需求'] });
+                                '要把已結案的需求重新打開請用「退回重做」（它會退回目前階段並自動改成 Ongoing）；直接改 Status 會留下一筆不出現在任何預警裡的「進行中」需求'] });
                         }
                     }
                 }
@@ -5374,6 +5711,21 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 // 「我的待辦」的卡片走**同一支**，所以樂觀鎖、400／409 的訊息、
                 // alertWriteFail 的兩種措辭全部一次套到兩個入口。
                 // **這不是第二條寫入路徑，是同一條路的第二個入口。**
+                // 第 224 批（健檢 A5）：這次動到的日期有在一年以後的 → 先問年份有沒有打錯（不擋；確定了才存）。
+                // 與我的待辦「🗓 自選」小視窗同一條界線。打錯年份存進去之後改回來會被當成日期異動，所以在存之前問
+                const far = farDateChanges(editingData, saved);
+                if (far.length > 0) {
+                    const rec = editingData;
+                    setConfirmModal({
+                        tone: 'warn',
+                        title: '日期離今天超過一年，年份有沒有打錯？',
+                        message: far.map(x => `・${x.label} ${x.now}（距今 ${dayDiff(TODAY_ISO, x.now)} 天）`).join('\n')
+                               + '\n\n確定就是這些日期再按「是，就是這些日期」；要改請按取消，回到編輯視窗。',
+                        confirmLabel: '是，就是這些日期',
+                        onConfirm: () => saveRequirement(rec, changeMeta)
+                    });
+                    return;
+                }
                 await saveRequirement(editingData, changeMeta);
             };
 
@@ -5569,6 +5921,96 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     cat: seed.cat || '', note: seed.note || ''
                 });
             };
+            // ─── 改／壓一格日期的檢查（第 238 批從 dateModal 抽出來）───
+            // 卡片上的日期框（未壓日期那一排、「還沒，要改日期」那一層）與「🗓 改日期…」小視窗**共用這一支**，
+            // 上下限、一年以後要再確認、開始日跟著拉、日期沒變，全部只有這一份 —— 兩邊各算一份遲早會做出
+            // 「卡片不給存、視窗卻存得進去」。m＝{ row, ph, mode:'set'|'delay', prevPh, min, next, cur, date, cat, note, farOk }。
+            // ⚠️ 上下限與 openDateModal 同一組來源（prevChainEndOf / nextPhaseEndOf，第 94 批的兩道）。
+            // ⚠️⚠️ 第 138 批（使用者：「選了 2029 要改成 2027 不就不能調整」）：**改日期也收比原訂早的**；Start 晚於新 End 時
+            //    一起拉過來（withPhaseEndClampStart，畫面上要講）。往前拉一樣算「日期異動」、要分類＋說明。
+            // ⚠️ opts.withProbs：跑一次 validateEdit 找「這筆別的欄位有問題」（小視窗用）。卡片上**不跑**（每張卡每次 render
+            //    都跑太重），那條路按下存檔時 quickSetDate／quickDelayDate 自己會擋、走 blockedOnTodo。
+            const dateCtxOf = (row, ph, mode) => {
+                const i = DUE_PHASES.findIndex(p => p.key === ph.key);
+                return { row, ph, mode, prevPh: i > 0 ? DUE_PHASES[i - 1] : null,
+                         min: prevChainEndOf(row, ph.key), next: nextPhaseEndOf(row, ph.key),
+                         cur: (ph.getDate(row) || '').trim() };
+            };
+            const dateCheckOf = (m, opts = {}) => {
+                const delay = m.mode === 'delay';
+                const word = phaseEndWord(m.ph);
+                const maxIso = m.next ? m.next.end : '';
+                const date = m.date || '';
+                const bad = !isDateVal(date)
+                    ? `請選一個${word}`
+                    : (m.min && date < m.min)
+                    ? `不可早於前一階段「${m.prevPh ? m.prevPh.label : ''}」的 ${fmtYmd(m.min)}（四個階段是依序進行的）`
+                    : (maxIso && date > maxIso)
+                    ? `不可晚於「${m.next.label}」已經壓好的${m.next.word} ${fmtYmd(maxIso)}（四個階段是依序進行的）`
+                    : (date === m.cur)
+                    ? `日期沒有變，目前就是 ${fmtYmd(m.cur)}`
+                    : '';
+                const dateOk = !bad;
+                // ⚠️⚠️ 跑的是**真正會送出去的那一份**（第 92 批：validateEdit 裡的 helper 都要收 rec）
+                const rec = dateOk ? withPhaseEndClampStart(m.row, m.ph.key, date) : null;
+                const pObj = PHASES[m.ph.key];
+                const oldStart = (pObj && pObj.fields.includes('start')) ? String((m.row[pObj.obj] || {}).start || '').trim() : '';
+                const startMoved = !!rec && isDateVal(oldStart) && oldStart !== String((rec[pObj.obj] || {}).start || '').trim();
+                // 第 138 批：離今天超過一年 → 存檔前要他再確認一次（防「2027 打成 2029」）；確認綁在**那一個日期**上
+                const farDays = dateOk ? dayDiff(TODAY_ISO, date) : null;
+                const far = farDays !== null && farDays > 365;
+                const farConfirmed = far && m.farOk === date;
+                const probs = (opts.withProbs && rec)
+                    ? (delay ? validateEdit(rec, { [m.ph.key]: m.note }, { [m.ph.key]: m.cat }, { [m.ph.key]: true })
+                             : validateEdit(rec, {}, {}, {}))
+                    : { groups: [] };
+                // ⚠️ 分類／說明沒填時那兩欄自己會標，這裡**不要再列一次**（第 37 批）
+                const otherProbs = probs.groups.filter(g => !/異動原因/.test(g.title));
+                const noteLong = delay && isOverLimit(m.note || '', NOTE_MAX);   // 第 178 批：輸入框不再 maxLength
+                const ready = dateOk && (!delay || (!!m.cat && !!(m.note || '').trim())) && !noteLong && otherProbs.length === 0 && (!far || farConfirmed);
+                const diff = (dateOk && delay) ? dayDiff(m.cur, date) : null;
+                return { bad, dateOk, rec, oldStart, startMoved, farDays, far, farConfirmed, otherProbs, noteLong, ready, diff };
+            };
+            // ─── 卡片上的日期框（第 238 批；第 239 批新增視窗的 Spec 也用它）───
+            // 原生 <input type="date">：點框的任何地方就開月曆（showPicker；舊瀏覽器沒有就照原生行為），
+            // min／max 讓月曆上超出前後關卡的日子點不到。樣式吃 .ctl（與旁邊的按鈕同高、不透明底，第 27／56 批）。
+            const cardDateInput = ({ value, min, max, onChange, label }) => (
+                <input type="date" value={value || ''} min={min || undefined} max={max || undefined}
+                       onChange={e => onChange(e.target.value)}
+                       onClick={e => { try { if (e.currentTarget.showPicker) e.currentTarget.showPicker(); } catch (_) {} }}
+                       aria-label={label} title={`${label}（點一下打開月曆）`}
+                       className="ctl font-mono text-[14px] cursor-pointer"
+                       style={{fontWeight:400, color:'var(--text-primary)', width:'170px'}} />
+            );
+            // 日期框底下那幾行：哪裡不行（紅）／比原訂晚早幾天、開始日跟著拉（灰）／已經過了（黃）／一年以後要再確認（黃框）。
+            // ⚠️ 還沒選日期時什麼都不印 —— 「請選一個日期」寫在存檔鈕上（先選日期），不要在下面再講一次（第 37 批）
+            const cardDateNotes = (ck, date, cur, mode, onFarOk) => {
+                if (!date) return null;
+                if (ck.bad) return <div className="mt-1.5 text-[12px] font-bold" style={{color:'var(--tone-alert)'}}>{ck.bad}</div>;
+                return (<>
+                    {(ck.diff !== null || (mode === 'delay' && ck.startMoved) || date < TODAY_ISO) && (
+                    <div className="mt-1.5 text-[12px] leading-relaxed" style={{color:'var(--text-muted)'}}>
+                        {ck.diff !== null && <div>{ck.diff > 0 ? `比原訂的 ${fmtYmd(cur)} 晚 ${ck.diff} 天` : `比原訂的 ${fmtYmd(cur)} 早 ${-ck.diff} 天（提前）`}</div>}
+                        {mode === 'delay' && ck.startMoved && <div>開始日 {fmtYmd(ck.oldStart)} 晚於新的日期，會一起改成 {fmtYmd(date)}。</div>}
+                        {date < TODAY_ISO && <div style={{color:'var(--tone-warn)'}}>
+                            {mode === 'delay' ? '這一天已經過了，存了之後會顯示逾期。如果其實已經做完了，請改按「做完了」。' : '這一天已經過了，存了之後會馬上顯示逾期。'}
+                        </div>}
+                    </div>
+                    )}
+                    {ck.far && (
+                    <div className="mt-2 p-2.5 rounded-lg text-[12px] leading-relaxed inline-block" style={{background:'var(--tone-warn-bg)', color:'var(--tone-warn)'}}>
+                        你選的是 <span className="font-bold tabular-nums">{fmtYmd(date)}</span>，距今 {ck.farDays} 天（超過一年）。年份有沒有打錯？
+                        {ck.farConfirmed
+                            ? <span className="font-bold ml-2">已確認是這一天</span>
+                            : <button type="button" onClick={() => onFarOk()}
+                                      className="ml-2 px-3 py-1 rounded text-[12px] font-bold border"
+                                      style={{borderColor:'var(--tone-warn)', color:'var(--tone-warn)', background:'var(--bg-card)'}}>
+                                  是，就是這一天
+                              </button>}
+                    </div>
+                    )}
+                </>);
+            };
             // ─── 卡片上就地貼 Notes Link（第 105 批，2026-10-04）───
             // ⚠️⚠️ 與上面兩支同一條界線：**不是第二條寫入路徑**。驗證走同一支 validateEdit、
             //    送出走同一支 saveRequirement —— 樂觀鎖、400／409 的中文訊息、alertWriteFail
@@ -5670,7 +6112,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 // 軟刪除：改用 confirmModal 取代原生 confirm()，避免在工廠 PC 被安全設定封鎖。
                 // ⚠️ 2026-08-23 起**必須填刪除原因**（後端也擋，回 400）——
                 // 刪除是唯一一個「整筆從清單消失」的動作，卻是唯一查不到誰做的動作。
-                // 作法與「🔄 規格回退」一致（那裡也是文字說明必填、分類由後端固定）
+                // 作法與「退回重做」一致（那裡也是文字說明必填、分類由後端固定）
                 const who = [item.nid && `NID ${item.nid}`, item.mainCat, item.subCat].filter(Boolean).join(' / ');
                 setConfirmModal({
                     title: '確認刪除',
@@ -5973,7 +6415,6 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 setAdvOpen(false);
                 setNidManual(!suggestedNid);        // 取不到號就直接給他一個輸入框
                 setEmsManual(!myEmsName);           // 沒預帶到人就直接給他下拉
-                setSpecCustom(false);
                 setInfoMode(false);
                 setIsModalOpen(true);
             };
@@ -6002,7 +6443,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 //    同一個理由：一按就把剛打的字連同視窗一起丟掉，而他只是想取消這一格
                 // 批次提醒寄送中不給 Esc 關（關掉就看不到哪幾封寄成功了）
                 if (attnModal)           { if (!attnModal.sending) setAttnModal(null); return; }
-                if (viewModal)           { if (viewModal.edit) setViewModal(p => p ? { id:p.id } : p); else setViewModal(null); return; }
+                if (viewModal)           { if (viewModal.edit || viewModal.linkMenu) setViewModal(p => p ? { id:p.id } : p); else setViewModal(null); return; }
                 if (rollbackModal)       { setRollbackModal(null); return; }
                 if (undoModal)           { setUndoModal(null); return; }
                 if (histModal)           { setHistModal(null); return; }
@@ -6199,9 +6640,11 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // ─── 本月到期達成（第 198 批，2026-10-15 使用者看過兩張示意圖：「照你的建議放A，5個都照你的建議做」）───
             // 問的是「這個月該交的，交得怎麼樣」：把**原訂**結束日（② 是確認日）落在這個月的每一個階段，分成五類、每個只歸一類：
             //   rb   退回重做  —— 這一關被退回過（規格回退），原本的時程作廢
-            //   chg  改過日期  —— 有「日期異動」（與 ⚠N／時程異動 KPI 同一把尺：isDateChange）。
-            //                    ⚠️ 改過日期之後才如期完成的也算這一類（使用者同意的第 2 點：先往後改再準時，不算如期）
-            //   ok   如期完成  —— 沒改過、完成日 ≤ 原訂
+            //   chg  日期延後  —— 有「日期異動」（isDateChange）**而且**完成日（沒完成看目前日期）晚於原訂。
+            //                    ⚠️ 改晚之後才在新日期準時完成的也算這一類（第 198 批使用者同意：和原訂比還是晚了）
+            //                    第 209 批（使用者：「提早完成的話應該不能算異動日期」）：原名「改過日期」、只要有日期異動就算 ——
+            //                    改早、或改了但最後沒晚於原訂的被冤枉扣分。改成只算真的往後延的，名稱改「日期延後」（使用者選的）
+            //   ok   如期完成  —— 完成日 ≤ 原訂（改早、改了又改回來也算；結果欄小字照印「至今改 N 次」）
             //   late 延期完成  —— 沒改過、完成日 > 原訂
             //   open 未完成    —— 還沒走完；目前的 End 已過＝逾期，否則還沒到期（不算進如期率的分母）
             // ⚠️ 「原訂」＝這一階段**第一次有日期**的那一筆稽核列的值（init 的新值，或第一筆變更的舊值）——
@@ -6262,16 +6705,22 @@ const { useState, useMemo, Fragment, useEffect } = React;
                             return;
                         }
                         inSet.add(item.id + '|' + pk);
+                        // 第 209 批：跟原訂比「最後落在哪一天」—— 完成了看完成日（沒有完成日看完成前的預定日），沒完成看目前日期
+                        const landed = passed ? (isDateVal(doneDate) ? doneDate : plan) : curEnd;
+                        const later = isDateVal(landed) && landed > base;
                         let cat;
                         if (rbE) cat = 'rb';
-                        else if (chgs.length) cat = 'chg';
-                        else if (passed) cat = isDateVal(doneDate) && doneDate > base ? 'late' : 'ok';
-                        else cat = 'open';
+                        else if (passed) cat = later ? (chgs.length ? 'chg' : 'late') : 'ok';
+                        else cat = chgs.length && later ? 'chg' : 'open';
                         const notDue = cat === 'open' && !overdue;
                         const parts = [];
                         if (cat === 'late') parts.push(`晚 ${dayDiff(base, doneDate)} 天`);
                         else if (cat === 'chg') parts.push(`至今改 ${chgs.length} 次`);
-                        if (cat !== 'rb' && cm && cm !== M) parts.push(`已改到 ${ymText(cm)}`);
+                        // 改過但沒晚於原訂（如期／未完成）：次數照印，完成前的預定日比原訂早就標「改早」
+                        else if (chgs.length) parts.push(`至今改 ${chgs.length} 次${isDateVal(plan) && plan < base ? '（改早）' : ''}`);
+                        // 第 213 批（體檢 A2，使用者：「A2修改」）：**已完成的不印**「已改到 N 月」——
+                        // NID 110 改晚到 11 月、10-09 就做完，寫「已改到 11 月」讀起來像還沒做。改動過程照樣在 ⓘ 裡
+                        if (cat !== 'rb' && !passed && cm && cm !== M) parts.push(`已改到 ${ymText(cm)}`);
                         if (cat !== 'rb' && due) parts.push(due);
                         rows.push({ ...common, cat, sub: parts.join(' · '), notDue });
                     });
@@ -6299,7 +6748,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     else { o.to = endOf(h, 'new'); o.last = h; o.n++; o.list.push(h); }
                 });
                 const others = [...other.values()].sort((a, b) => b.last.id - a.last.id);
-                // 變更紀錄從哪一天開始有（匯入會清空）：選的月份不晚於那個月時，「改過日期」可能偏少
+                // 變更紀錄從哪一天開始有（匯入會清空）：選的月份不晚於那個月時，「日期延後」可能偏少
                 const histStart = historyEntries.reduce((m, h) => (h.changedAt && (!m || h.changedAt < m)) ? h.changedAt : m, '');
                 return { rows, count, overdueN, notDueN, denom, rate: denom > 0 ? Math.round(count.ok / denom * 100) : null,
                          reqN: new Set(rows.map(r => r.item.id)).size, movedIn, others, minM, maxM,
@@ -6329,6 +6778,22 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 buildDueList(requirementsData, 36500).forEach(e => m.set(e.item.id, e));
                 return m;
             }, [requirementsData, todayTick]);
+            // ─── 第 210 批（使用者看過示意圖：「照這版改、用綠字、下週到期也要放」）───
+            // 進行中依「現在輪到誰」分兩邊：EMS＝①④、MSD＝②③（目前階段走 effStageCode，與需求列表那排按鈕同一套）
+            const ongoingSides = useMemo(() => {
+                const by = { 1:0, 2:0, 3:0, 4:0, other:0 };
+                requirementsData.forEach(item => {
+                    if (normStatus(item.status) === 'Done') return;
+                    const c = effStageCode(item);
+                    if (by[c] !== undefined && c !== 'other') by[c]++; else by.other++;
+                });
+                return { ...by, ems: by[1] + by[4], msd: by[2] + by[3] };
+            }, [requirementsData]);
+            // 下週到期＝不在需關注、最近要到期的那一階剩 8～14 天。⚠️ 後端 NextWeekOf()（批次提醒信）的鏡像：
+            // dueInfo 的那一筆就是 AttentionOf 會挑的那一個（未壓優先、否則沒走完的階段裡最早到期），改規則兩邊一起改
+            const nextWeekCount = useMemo(() =>
+                [...dueInfo.values()].filter(e => e.level === 'soon' && e.diffDays >= 8 && e.diffDays <= 14).length,
+                [dueInfo]);
             const countLevels = list => ({
                 all: list.length,
                 unset: list.filter(e => e.level === 'unset').length,
@@ -6659,7 +7124,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 // ⚠️⚠️ 「追蹤中」裡已經逾期的件數**一定要數出來印在收合那一行上**（第 113 批）。
                 //    量過本機 13 位負責人：focus 為 0 的有 8 位，其中 5 位的「追蹤中」有逾期件，
                 //    而靖凱／桂瑮／明翰／宗宜 4 位是 focus 與 later 都 0 —— 不印這個數字的話，
-                //    他打開這一頁會看到五區全部收合、什麼都沒有，而手上有逾期 35 天在等對方的需求。
+                //    他打開這一頁會看到每一區全部收合、什麼都沒有，而手上有逾期 35 天在等對方的需求。
                 //    這與第 95 批那條「等 ○○ 的逾期不可以被吃掉」是同一條界線的延伸。
                 // ⚠️ **刻意不把它升到「要你處理」**：那是別人的球，升上去就會在上面長出
                 //    「做完了」按鈕 —— 第 90 批那條「分邊看誰的球」。出路是展開後的 ✉。
@@ -6707,10 +7172,13 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // 「我的全部 N 筆」預設收起（含已結案）。⚠️ **不寫 localStorage**：那是
             // 「這一次打開這一頁」的狀態不是偏好（與第 86 批那三個收合旗標同一條）
             const [myAllOpen, setMyAllOpen] = useState(false);
+            // 第 232 批 B1：「我的全部」裡的已結案預設只列最近 MY_CLOSED_PEEK 筆，按「再顯示 N 筆較早的」才全部列。
+            // ⚠️ 同一條：不寫 localStorage（每次打開都是只列最近幾筆）；切換模擬帳號時一起歸位。
+            const [myClosedAll, setMyClosedAll] = useState(false);
             // 「等 ○○」那一區也收起來（第 90 批）：它的定義就是「不用你動手」，
             // 不該和要動手的那幾張卡競爭版面。⚠️ 同樣不寫 localStorage
             const [myWaitOpen, setMyWaitOpen] = useState(false);
-            // ─── 第 113 批：五區各自的收合旗標 ───
+            // ─── 第 113 批：各區的收合旗標（當時五區；第 231 批「已結案」併進「我的全部」後是四區）───
             // ⚠️ 三個都**不寫 localStorage**（與 myAllOpen／myWaitOpen 同一條，第 86 批）：
             //    那是「這一次打開這一頁」的狀態，不是偏好。
             // ⚠️⚠️ myLaterOpen 的 null 是「使用者還沒動過」，**不可以改成直接 useState(false)
@@ -6719,13 +7187,12 @@ const { useState, useMemo, Fragment, useEffect } = React;
             //    這種衍生值、不可以 setCompactPref(true)」一字不差。
             const [myFocusOpen, setMyFocusOpen] = useState(true);
             const [myLaterOpen, setMyLaterOpen] = useState(null);
-            const [myClosedOpen, setMyClosedOpen] = useState(false);
-            // 五區共用的收合標題列。⚠️ 標題一定要把「裡面有幾筆」寫出來（第 86 批：收合不是隱藏）。
+            // 四區共用的收合標題列。⚠️ 標題一定要把「裡面有幾筆」寫出來（第 86 批：收合不是隱藏）。
             // ⚠️ warn 那一格只有「追蹤中」在用，而它是這一批存在的理由，不可以收進 tooltip（第 95 批）。
             // ─── 第 126 批（2026-10-06 使用者選的四項視覺調整）───
             // ①左邊一條區塊色 ②SVG 圖示取代 emoji（emoji 在不同 Windows 版本長得不一樣）③件數改成圓形徽章
             // ④定義句維持同一行右側灰字＋tooltip（不另起一行，收合的標題不可以變高）。
-            // ⚠️⚠️ **只動視覺**：五區的順序、預設展開（第 113 批）、標題用詞、「· 其中 N 筆已逾期」紅字一律不變。
+            // ⚠️⚠️ **只動視覺**：各區的順序、預設展開（第 113 批）、標題用詞、「· 其中 N 筆已逾期」紅字一律不變。
             // ⚠️ 顏色語意照第 59 批：紅只給「要你處理」（逾期／未壓日期）、teal 只給「已結案」（已經發生的結果）、
             //    「還有時間」用 --brand、其餘中性。紅色實心徽章只在 n > 0 時才上色（0 筆時一顆紅 0 是假警報）。
             // ⚠️ 色條用 inset box-shadow 不用 border-left：不改寬度、不吃掉圓角；而 inline 的 boxShadow 會蓋掉
@@ -6764,14 +7231,14 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
                          strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="flex-shrink-0"
                          style={{color:lk.color}}>{lk.icon}</svg>
-                    <span className="text-[14px] font-bold" style={{color:'var(--text-primary)'}}>{title}</span>
+                    <span className="text-[14px] font-bold whitespace-nowrap" style={{color:'var(--text-primary)'}}>{title}</span>
                     <span className="text-[13px] font-bold tabular-nums" style={{color:'var(--text-secondary)'}}
                           aria-label={`${n} 筆`} title={`${n} 筆`}>{n}</span>
                     {!!warn && (
-                    <span className="text-[13px] font-bold" style={{color:'var(--tone-alert)'}}>· {warn}</span>
+                    <span className="text-[13px] font-bold whitespace-nowrap" style={{color:'var(--tone-alert)'}}>· {warn}</span>
                     )}
                     {!!sub && (
-                    <span className="text-[12px] ml-auto flex-shrink-0" style={{color: opts.subTone || 'var(--text-muted)'}}>{sub}</span>
+                    <span className="text-[12px] ml-auto min-w-0 text-right" style={{color: opts.subTone || 'var(--text-muted)'}}>{sub}</span>
                     )}
                     {chevron}
                 </button>
@@ -6790,16 +7257,16 @@ const { useState, useMemo, Fragment, useEffect } = React;
                         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                              strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{lk.icon}</svg>
                     </span>
-                    <span className="text-[15px] font-bold" style={{color:'var(--text-primary)'}}>{title}</span>
+                    <span className="text-[15px] font-bold whitespace-nowrap" style={{color:'var(--text-primary)'}}>{title}</span>
                     {/* ⚠️ 徽章裡只放數字，「筆」留給螢幕報讀與 tooltip（aria-label） */}
                     <span className="inline-flex items-center justify-center rounded-full border text-[12px] font-bold tabular-nums"
                           style={{minWidth:'1.6rem', height:'1.6rem', padding:'0 0.45rem', ...badgeStyle}}
                           aria-label={`${n} 筆`} title={`${n} 筆`}>{n}</span>
                     {!!warn && (
-                    <span className="text-[13px] font-bold" style={{color:'var(--tone-alert)'}}>· {warn}</span>
+                    <span className="text-[13px] font-bold whitespace-nowrap" style={{color:'var(--tone-alert)'}}>· {warn}</span>
                     )}
                     {!!sub && (
-                    <span className="text-[13px] ml-auto flex-shrink-0" style={{color: opts.subTone || 'var(--text-muted)', fontWeight: opts.subTone ? 700 : 400}}>{sub}</span>
+                    <span className="text-[13px] ml-auto min-w-0 text-right" style={{color: opts.subTone || 'var(--text-muted)', fontWeight: opts.subTone ? 700 : 400}}>{sub}</span>
                     )}
                     {chevron}
                 </button>
@@ -6833,6 +7300,9 @@ const { useState, useMemo, Fragment, useEffect } = React;
             // ⚠️ 它與 myDoneAsk／myDelay 不互斥 —— 貼連結與「做完了嗎」是兩件可以同時在想的事，
             //    而且貼完連結往往下一步就是按完成。
             const [myLinkEdit, setMyLinkEdit] = useState(null);
+            // 第 237 批 B：規格文件已附連結時，「更換」「不另附」收進一顆「改…」，按了才攤開兩個選項。值＝需求 id（一次只開一張卡）。
+            // 不寫 localStorage；切換身分時歸位（resetForIdentitySwitch）。
+            const [myLinkMenu, setMyLinkMenu] = useState(null);
             // ─── 卡片抬頭那顆「現況描述 ✏」按下去就地展開的輸入列（第 108 批，2026-10-05）───
             // {id, value}。⚠️ 與 myLinkEdit 一字不差的理由：不寫 localStorage、與其他幾個
             //    展開層不互斥（寫現況與「做完了嗎」是兩件可以同時在想的事）。
@@ -6950,7 +7420,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
             //    決定日期，先停留在我的待辦對他們也是方便」）。需求列表他另外開一個分頁。
             // ⚠️⚠️ 四道界線，少一道就會變成那種靜默失效：
             //   ① 身分三道（myTodoReady）不成立 → 什麼都不做，預設頁維持需求列表
-            //   ② 網址指名過 view 就不覆蓋 —— 與第 87 批的 `ems=` 同一條（別人分享的連結、書籤）
+            //   ② 網址指名過 view（或帶了篩選條件，第 208 批）就不覆蓋 —— 與第 87 批的 `ems=` 同一條（別人分享的連結、書籤）
             //   ③ 同一個工號只套一次：他自己切去需求列表之後不可以又跳回來（第 23 批那條坑）
             //   ④ **不寫 localStorage** —— 第 23／48／64 批同一個坑已經三次了
             // ⚠️ 會晚一步才翻（要等 requirementsData 到齊才問得出界線 ③），所以載入當下
@@ -6974,13 +7444,28 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 setProgressFilter('ongoing'); setColFilters({}); setShowColFilters(false);
                 setSortConfig({ key:null, direction:'asc' }); setDoneLast(true); setDuePriority(readDuePriorityPref());
                 collapseRows(); setOpenMenu(null);
-                setMyDoneAsk(''); setMyDelay(null); setMyPick(null); setMyLinkEdit(null); setMyStatusEdit(null);
-                setMyAllOpen(false); setMyWaitOpen(false); setMyFocusOpen(true); setMyLaterOpen(null); setMyClosedOpen(false);
+                setMyDoneAsk(''); setMyDelay(null); setMyPick(null); setMyLinkEdit(null); setMyLinkMenu(null); setMyStatusEdit(null);
+                setMyAllOpen(false); setMyClosedAll(false); setMyWaitOpen(false); setMyFocusOpen(true); setMyLaterOpen(null);
                 setEmsAutoToast('');
                 setActiveView('table');   // 沒帶 view 打開網頁時的樣子；身分成立時預設頁那支 effect 會再翻去我的待辦
                 autoEmsRef.current = ''; autoEmsNameRef.current = ''; autoViewRef.current = '';
                 identitySwitchedRef.current = true;
                 setIdentityEpoch(n => n + 1);
+            };
+            // 第 221 批：切換／還原模擬帳號都走這一支 —— 記進 localStorage（重新整理、信件連結進來仍是他）、
+            // 重跑瀏覽權限檢查（後端改看被模擬的人：卡控擋不擋、是不是管理者都跟著換）。
+            // v 空字串＝還原真實帳號（detectActor 在 SIM_EMP 清掉後會回到 Windows 帳號）
+            const simulateAs = (v) => {
+                const id = stripDomain(v);
+                setSimEmp(id);
+                resetForIdentitySwitch();
+                // ⚠️ 還原時**當下**就換回真實帳號（detectActor 載入時記下的 realEmpId），不要只呼叫 detectActor() 等它回來：
+                //    等的那一下 actor 還是被模擬的 EMS，預設頁那支 effect 會把真實帳號（多半不在名單）帶去我的待辦（第 221 批實測）
+                if (id) setActor(a => ({ ...a, empId: id, source: 'simulated' }));
+                else setActor(a => a.realEmpId ? { ...a, empId: a.realEmpId, source: 'windows' } : { ...a, empId: null, source: 'unknown' });
+                setAccessRetry(n => n + 1);
+                setIsActorModalOpen(false);
+                showToast(id ? `已切換為模擬帳號：${id}（篩選與排序已回到預設）` : '已還原為 Windows 登入帳號（篩選與排序已回到預設）');
             };
 
             // 編輯視窗「指派負責人」的下拉選項 —— 來源是指派人員主檔 dbo.Assignee，
@@ -7154,8 +7639,12 @@ const { useState, useMemo, Fragment, useEffect } = React;
                       + '信箱欄位是唯讀的，請直接在 SSMS 修正之後再試一次。\n'
                       + '常見打錯：夾雜全形字元、多個信箱用逗號或分號串在一起、前後多了角括號或姓名。'
                     : '';
+                // 第 217 批：收件者在指派名單裡**已停用**（離職／轉調）—— 照樣給寄（不擋），視窗多一行黃字建議先換人。
+                // ⚠️ 只是提醒，不算 problem：後端 /notify-unset 是受保護路徑、本來就照查信箱寄，這裡不改它的行為
+                const toHit = toName ? assigneeList.find(a => a.dept === side && (a.name || '').trim() === toName) : null;
+                const toInactive = !!toHit && !toHit.isActive;
                 return { phase: ph, kind, end: od ? od.end : '', alert: od ? od.alert : null,
-                         side, toName, toEmail, ccDept, ccName, ccEmail, ccBadFormat, problem };
+                         side, toName, toEmail, ccDept, ccName, ccEmail, ccBadFormat, problem, toInactive };
             };
 
             // ─── 這封通知的收件者，是不是登入的這個人自己？（第 110 批，2026-10-05）───
@@ -7187,28 +7676,38 @@ const { useState, useMemo, Fragment, useEffect } = React;
 
             // ─── 自動寄信那一行提示（第 188 批，使用者選的「B 提示」）───
             // ⚠️ 後端 RunAutoNotifyAsync() 的**預告版**：真正寄不寄、寄給誰由後端在存好之後重讀 DB 再算，
-            //    這裡只照同一組規則先講一次 —— 模式／開關、模擬帳號不寄、交棒時下一棒已壓日期不寄、
+            //    這裡只照同一組規則先講一次 —— 模式／開關、模擬帳號不寄（試寄時照寄，第 203 批）、交棒時下一棒已壓日期不寄、
             //    已停用不寄；副本＝另一位負責人。改規則兩邊一起改。
             //    ⚠️ 第 197 批：收件者是按的本人**照樣寄**（使用者：「即使是本人點選完成，也是不影響原本的規則」），不可加回
-            // 回傳 null＝不會寄（那一行不出現）；有 problem＝會試著寄但寄不出去（那一行講原因）
+            // 回傳 null＝不會寄（那一行不出現）；有 problem＝寄不出去或不會寄給他（那一行講原因：沒指派／對不上／沒信箱／已停用）
             // 第 195 批：kind='close'（推到 ⑤ 結案）→ 收件者 MSD 負責人、副本 EMS 負責人，開關 s.close（預設關）
             const autoNotifyPreview = (kind, item, stageAfter) => {
                 const s = autoNotify;
                 if (!s || s.mode === 'off' || !(kind === 'close' ? s.close : kind === 'handoff' ? s.handoff : s.rollback)) return null;
-                if (actor.source === 'simulated' || !item) return null;
+                // 第 203 批：試寄時模擬帳號按的也寄（只寄到試寄收件人）。
+                // 第 221 批：推翻第 218 批的「開啟時模擬帳號改寄試寄收件人」—— 模擬與真實帳號完全相同，只看模式（後端 RunAutoNotifyAsync 鏡像）
+                if (!item) return null;
+                const test = s.mode === 'test';
                 const ph = kind === 'close'
                     ? { label: STAGE_CODES['5'].label, side: 'MSD', owner: r => r.msdOwner, getDate: () => '' }
                     : DUE_PHASES.find(p => p.code === String(stageAfter));
                 if (!ph) return null;
-                if (kind === 'handoff' && isDateVal(ph.getDate(item))) return null;
+                // 下一棒已經有日期 → 正式時不寄；試寄時照寄一封灰框「[正式時不會寄]」（第 204 批）
+                const hasDate = kind === 'handoff' && isDateVal(ph.getDate(item));
+                if (hasDate && !test) return null;
                 const toName = (ph.owner(item) || '').trim();
                 const ccSide = ph.side === 'MSD' ? 'EMS' : 'MSD';
                 const ccName = ((ccSide === 'EMS' ? item.emsOwner : item.msdOwner) || '').trim();
-                const base = { kind, phLabel: ph.label, side: ph.side, toName, ccName: '', test: s.mode === 'test', testTo: s.testTo || '' };
+                const base = { kind, phLabel: ph.label, side: ph.side, toName, ccName: '', test, testTo: s.testTo || '' };
+                if (hasDate) return { ...base, skip: `「${ph.label}」已經有日期，正式時不會寄` };
                 if (!toName) return { ...base, problem: kind === 'close' ? '還沒指派 MSD 負責人，結案通知不知道要寄給誰'
                                                                          : `「${ph.label}」還沒指派 ${ph.side} 負責人，自動信不知道要寄給誰` };
                 const hit = assigneeList.find(a => a.dept === ph.side && (a.name || '').trim() === toName);
-                if (hit && !hit.isActive) return null;
+                // 已停用：正式時不寄；試寄時照寄一封「[正式時不會寄]」到試寄收件人（第 203 批）。
+                // ⚠️ 第 217 批：正式時**那一行照樣出現、講原因**（以前回 null＝整行消失，按的人不知道信沒寄）——
+                //    借 problem 的樣式（黃字＋「完成照樣會存」、toast 不提寄信）；後端同時在「最近 5 封」記一筆略過
+                if (hit && !hit.isActive) return base.test ? { ...base, skip: `${toName} 已停用，正式時不會寄` }
+                                                           : { ...base, problem: `${toName}（${ph.side} 負責人）已停用，這次不會寄信，請先改負責人` };
                 if (!hit) return { ...base, problem: `${toName} 不在指派名單裡（名字對不上），自動信寄不出去` };
                 const email = assigneeEmailOf(ph.side, toName);
                 if (!email || !isMailAddr(email))
@@ -7233,19 +7732,25 @@ const { useState, useMemo, Fragment, useEffect } = React;
             };
             const autoNotifyLine = (p, kind) => !p ? null : (
                 <div className="flex items-start gap-1.5 pt-2.5 border-t text-[12px] leading-snug"
-                     style={{borderColor:'var(--border-table)', color: p.problem ? 'var(--tone-warn)' : 'var(--text-secondary)'}}>
+                     style={{borderColor:'var(--border-table)', color: p.problem && !p.test ? 'var(--tone-warn)' : 'var(--text-secondary)'}}>
                     <span aria-hidden="true">✉</span>
                     <span>
-                        {p.problem ? <>{p.problem}（{kind === 'rollback' ? '退回' : '完成'}照樣會存）</>
-                         : p.test ? <>試寄中：自動信會寄到 <span className="font-mono break-all">{p.testTo}</span>，{p.toName} 收不到</>
+                        {/* 第 203 批：試寄時收件者有問題也照寄到試寄收件人，信的最上面會講正式時會怎樣 */}
+                        {/* 試寄收件人沒設＝這次不會寄（後端記未寄出）。第 221 批起模擬帳號與真實帳號同一套，只看模式 */}
+                        {p.test && !p.testTo ? <span style={{color:'var(--tone-warn)'}}>試寄中：試寄收件人沒設，這次不會寄（到 🔐 管理設定 →「信件通知」填）</span>
+                         : p.test ? <>試寄中：自動信會寄到 <span className="font-mono break-all">{p.testTo}</span>，{p.toName || '負責人'} 收不到
+                                    {p.problem ? <span style={{color:'var(--tone-warn)'}}>（正式時會寄不出去：{p.problem}）</span>
+                                     : p.skip ? <>（{p.skip}）</> : null}</>
+                         : p.problem ? <>{p.problem}（{kind === 'rollback' ? '退回' : '完成'}照樣會存）</>
                          : p.kind === 'close' ? <>完成後會自動寄信通知 <span className="font-bold" style={{color:'var(--text-primary)'}}>{p.toName}</span>（MSD 負責人）這筆需求已結案{p.ccName ? `，副本 ${p.ccName}` : ''}</>
                          : <>{kind === 'rollback' ? '退回' : '完成'}後會自動寄信請 <span className="font-bold" style={{color:'var(--text-primary)'}}>{p.toName}</span>（{p.phLabel}）{kind === 'rollback' ? '重新' : ''}壓日期{p.ccName ? `，副本 ${p.ccName}` : ''}</>}
                     </span>
                 </div>
             );
             // 成功 toast 接的那半句。⚠️ 信在背景寄（使用者選的「不等」），所以只能說「會寄」，不說「已寄出」
-            const autoNotifyToast = (p, kind) => !p || p.problem ? ''
-                : p.test ? `；試寄信會寄到 ${p.testTo}`
+            const autoNotifyToast = (p, kind) => !p ? ''
+                : p.test ? (p.testTo ? `；試寄信會寄到 ${p.testTo}` : '')
+                : p.problem ? ''
                 : p.kind === 'close' ? `；系統會寄信通知 ${p.toName} 已結案`
                 : `；系統會寄信請 ${p.toName} ${kind === 'rollback' ? '重新' : ''}壓日期`;
 
@@ -7353,7 +7858,15 @@ const { useState, useMemo, Fragment, useEffect } = React;
                             });
                             const b = await res.json().catch(() => ({}));
                             if (!res.ok) {
-                                setAlertModal({ title: '無法寄出通知', message: b.message || `寄信被拒絕 (HTTP ${res.status})` });
+                                setAlertModal({ title: '無法寄出通知', message: b.message
+                                    || (res.status === 401 ? '無法確認你的 Windows 帳號（這台電腦可能不在公司網域，或網址不是公司內網的網址），這封沒有寄出。' : `寄信被拒絕 (HTTP ${res.status})`) });
+                                return;
+                            }
+                            // 第 211 批：試寄改道（第 221 批起只看自動寄信是不是試寄）—— 只寄到試寄收件人、不寫軌跡。
+                            // 訊息由後端給（寄到哪、正式時會寄給誰）；未確認送出照樣用彈窗、不說「已寄出」
+                            if (b.test) {
+                                if (b.queued) setAlertModal({ title: '試寄信尚未確認送出', message: b.message });
+                                else showToast(b.message, 'success');
                                 return;
                             }
                             // ⚠️ 只重抓稽核表就夠 —— 寄信不會動到 dbo.Controltable 的任何一欄
@@ -7416,7 +7929,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 if (mode === 'All') return true;
                 if (mode === 'delay')    return (item.delayCount || 0) > 0;
                 if (mode === 'rollback') return (item.rollbackCount || 0) > 0;
-                // 有任何時程異動（不限延期或回退）—— 統計報表「時程異動」KPI 卡的落點
+                // 有任何時程異動（不限延期或回退）—— 「更多篩選 → 警示 → 有時程異動」
                 if (mode === 'changed')  return changedIdSet.has(item.id);
                 return true;
             };
@@ -7475,8 +7988,9 @@ const { useState, useMemo, Fragment, useEffect } = React;
                         const c = effStageCode(item);
                         val = c + ' ' + (STAGE_CODES[c]?.label || '');
                     }
-                    // 註冊日期畫面上是 YYYY/MM/DD，篩選字串照畫面比對
-                    if (k==='regDate') val = fmtYmd(item.regDate);
+                    // 註冊日期畫面上是 YYYY-MM-DD（第 207 批起，與同一張表的四個階段日期一致；之前是 YYYY/MM/DD）。
+                    // 斜線與橫線一律當同一個字比對：舊習慣打的「2026/05」、統計報表點長條帶進來的「2026/05」都篩得到
+                    if (k==='regDate') return String(item.regDate||'').split('/').join('-').includes(String(v).split('/').join('-'));
                     return String(val||'').toLowerCase().includes(v.toLowerCase());
                 });
             };
@@ -7677,7 +8191,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 setActiveView('table');
             };
             // ─── 統計報表的長條圖／交叉表 → 需求列表（第 200 批，使用者看過示意圖：「兩張都做，照示意圖改」）───
-            // 篩「註冊日期」欄位（colFilters.regDate，比對畫面上的 YYYY/MM/DD，所以給 YYYY/MM 就是那個月）＋進度或目前階段。
+            // 篩「註冊日期」欄位（colFilters.regDate；給 YYYY/MM 就是那個月 —— 第 207 批起畫面是 YYYY-MM-DD，比對時斜線當橫線）＋進度或目前階段。
             // ⚠️ 兩張圖分組用的 yearMonth 是由 RegDate 反推的（本機 69/69 筆一致），所以篩出來的筆數＝點的那個數字。
             //    '-'（沒有年月）與「— 未分類」那一列不給點：篩不出同一群。
             // prog：'ongoing'／'done'／null（全部）；stage：'1'~'5'／null
@@ -7799,7 +8313,39 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 //    —— 失敗時按鈕沒反應、也沒有任何訊息，使用者只會覺得這顆鈕壞了。
                 //    同一個視窗的新增與刪除都有錯誤處理，只有這顆漏了。
                 //    （只改 IsActive 不會被後端的 409 擋，所以這裡接的多半是 DB 出問題。）
-                const handleToggleActive = async (a) => {
+                // ─── 停用前先提醒（第 217 批，使用者：「A 提醒就好」）───
+                // ⚠️ 只提醒、不擋：人突然離職時換人要等 MSD 決定，不可以連「從下拉拿掉」都做不到（刪除會擋是因為名字會對不到人，停用不會）。
+                //    但停用之後他名下進行中的需求，自動信（交棒／退回重做／結案）一律不寄（只在 🔐「最近 5 封」記一筆略過），
+                //    所以要在這一刻講出來，並給一條路直接去需求列表把那幾筆篩出來換人。
+                //    件數＝負責人欄（兩邊 trim）是他、而且還沒結案的（與 AssigneeUsageAsync 同一個比對，但只算進行中）
+                const handleToggleActive = (a) => {
+                    if (!a.isActive) return doToggleActive(a);
+                    const col = a.dept === 'MSD' ? 'msdOwner' : 'emsOwner';
+                    const n = (a.name || '').trim();
+                    const open = requirementsData.filter(r => (r[col] || '').trim() === n
+                        && normStatus(r.status) !== 'Done' && normStageCode(r.stageCode) !== '5');
+                    if (open.length === 0) return doToggleActive(a);
+                    const nids = open.map(r => r.nid || '（無 NID）');
+                    setConfirmModal({
+                        title: `${n} 還有 ${open.length} 筆進行中的需求`,
+                        message: `${n} 還是 ${open.length} 筆進行中需求的 ${a.dept} 負責人（NID ${nids.slice(0, 8).join('、')}${nids.length > 8 ? ` 等 ${nids.length} 筆` : ''}）。\n\n`
+                               + '停用後他不會再出現在負責人下拉，這幾筆的自動信（交棒、退回重做、結案）也不會寄給他。\n'
+                               + '建議先把這幾筆換成別人再停用。',
+                        confirmLabel: '仍要停用',
+                        extra: {
+                            label: `在需求列表看這 ${open.length} 筆`,
+                            onClick: () => {
+                                setIsAssigneeModalOpen(false);
+                                openListWith(() => {
+                                    if (a.dept === 'MSD') setMsdFilter(n); else setEmsFilter(n);
+                                    setProgressFilter('ongoing');
+                                });
+                            }
+                        },
+                        onConfirm: () => doToggleActive(a)
+                    });
+                };
+                const doToggleActive = async (a) => {
                     try {
                         const res = await fetch(api(`/api/assignees/${a.id}`), {
                             method: 'PUT',
@@ -7982,6 +8528,14 @@ const { useState, useMemo, Fragment, useEffect } = React;
                         onChanged：規則或開關動過之後重問一次自己的 check，讓頁首那顆的 tooltip 跟上 */}
                     {isAccessPanelOpen && (
                         <AccessPanel myCheck={accessCheck} showToast={showToast} onError={alertWriteFail}
+                                     inactiveOwners={inactiveOwnerGroups}
+                                     onShowOwner={(dept, name) => {
+                                         setIsAccessPanelOpen(false);
+                                         openListWith(() => {
+                                             if (dept === 'MSD') setMsdFilter(name); else setEmsFilter(name);
+                                             setProgressFilter('ongoing');
+                                         });
+                                     }}
                                      onClose={() => setIsAccessPanelOpen(false)}
                                      onChanged={() => { checkAccess().then(r => setAccessCheck(r)).catch(() => { /* 保留舊值 */ }); }} />
                     )}
@@ -8047,7 +8601,11 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                 <div className="w-8 h-8 rounded-lg flex items-center justify-center text-white text-sm font-black flex-shrink-0"
                                      style={{background:'var(--brand)', boxShadow:'0 2px 6px -1px var(--brand-soft)'}}>M</div>
                                 <div className="min-w-0">
-                                    <h1 className="text-[15px] font-bold leading-tight tracking-tight truncate" style={{color:'var(--text-primary)'}}>MSD 需求管控表</h1>
+                                    {/* 第 229 批：系統名稱右邊的環境小標（設定檔 Site:EnvLabel；正式區不寫＝不出現）。投影模式照樣顯示 */}
+                                    <div className="flex items-center gap-2 min-w-0">
+                                        <h1 className="text-[15px] font-bold leading-tight tracking-tight truncate" style={{color:'var(--text-primary)'}}>MSD 需求管控表</h1>
+                                        <EnvPill label={envLabel} />
+                                    </div>
                                     <p className="text-[11px] leading-tight mt-0.5" style={{color:'var(--text-muted)'}}>EMS × MSD 跨部門需求管控</p>
                                 </div>
                             </div>
@@ -8092,6 +8650,81 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                     </button>
                                 ))}
                                 </div>
+                                {/* 投影倍率。只在投影模式出現 —— 桌機看的人不需要這兩顆，
+                                    而且它調的是 zoom 不是瀏覽器縮放，關掉投影模式就完全失效 */}
+                                {/* ⚠ 右邊被切掉。**只有投影模式才會出現**（第 46 批第四段，
+                                    見 renderClipWarning 上方的說明）——平常橫捲已經是完整的畫面，
+                                    這顆只會白白佔掉工具列的寬度，而它出現的時機剛好是版面最擠的時候。
+                                    已經橫捲時它會跟著頁首滑走 —— 那時改由最外層的浮動版接手，
+                                    兩個位置**同時只會有一顆**，避免變成兩個一樣的鈕 */}
+                                {!scrolledX && renderClipWarning(false)}
+                                {present && (
+                                    <div className="ctl-sm flex-shrink-0 gap-0.5 px-1"
+                                         title="投影倍率：後排看不清就往上加，右邊被切掉就往下降">
+                                        <button onClick={()=>stepZoom(-1)} disabled={presentZoom <= PRESENT_ZOOMS[0]}
+                                                aria-label="投影倍率縮小"
+                                                className="w-5 h-5 rounded text-[13px] font-black leading-none disabled:opacity-30"
+                                                style={{color:'var(--text-tertiary)'}}>−</button>
+                                        <span className="text-[10px] font-black tabular-nums w-9 text-center"
+                                              style={{color:'var(--text-secondary)'}}>{Math.round(presentZoom*100)}%</span>
+                                        <button onClick={()=>stepZoom(1)} disabled={presentZoom >= PRESENT_ZOOMS[PRESENT_ZOOMS.length-1]}
+                                                aria-label="投影倍率放大"
+                                                className="w-5 h-5 rounded text-[13px] font-black leading-none disabled:opacity-30"
+                                                style={{color:'var(--text-tertiary)'}}>＋</button>
+                                    </div>
+                                )}
+                                {/* 字級（第 29 批；第 214 批改成 A− 百分比 A＋，使用者：「我自己還蠻常調整字體大小」）：
+                                    一次一級、往上往下都一下；點中間的數字回 100%。到底的那一顆 disabled。不是 100% 時整組 ctl-on。
+                                    投影模式有自己的倍率控制，這組就讓開 */}
+                                {!present && (
+                                    <div className={`ctl-sm flex-shrink-0 gap-0.5 px-1${uiScale !== 1 ? ' ctl-on' : ''}`} role="group" aria-label="字級"
+                                         title={'資料列的字很小，這裡可以整片放大（' + UI_SCALES.map(x => `${Math.round(x*100)}%`).join(' → ') + '）。\n'
+                                              + '頁首與內容一起放大；右邊放不下時整個版面會一起變寬，用橫向捲動看完整的欄位。\n'
+                                              + '開會投影請用需求列表的「📽 投影」（精簡模式下才能開）'}>
+                                        <button onClick={()=>stepUiScale(-1)} disabled={uiScale <= UI_SCALES[0]}
+                                                aria-label="字級縮小一級"
+                                                className="h-5 px-1 rounded text-[12px] font-black leading-none disabled:opacity-30">A−</button>
+                                        <button onClick={()=>setUiScale(1)} disabled={uiScale === 1}
+                                                aria-label={`字級 ${Math.round(uiScale*100)}%，點擊回到 100%`}
+                                                title={uiScale === 1 ? '目前 100%' : '點一下回到 100%'}
+                                                className="h-5 px-0.5 text-[11px] font-black tabular-nums w-10 text-center disabled:cursor-default">{Math.round(uiScale*100)}%</button>
+                                        <button onClick={()=>stepUiScale(1)} disabled={uiScale >= UI_SCALES[UI_SCALES.length-1]}
+                                                aria-label="字級放大一級"
+                                                className="h-5 px-1 rounded text-[12px] font-black leading-none disabled:opacity-30">A＋</button>
+                                    </div>
+                                )}
+                                <ThemeToggle dark={dark} onToggle={()=>setDark(!dark)} />
+                                {/* ⚠️ 投影模式的前置條件是精簡模式（第 32 批，使用者要求）。
+                                    在此之前是「按下去順手幫你打開精簡模式」，而那個借用製造了兩次
+                                    「版面跑掉」的回報 —— 只要「投影 + 16 欄」組得出來就一定橫捲。
+                                    改成 disabled + 講清楚要先做什麼，而不是替使用者改設定 */}
+                                {/* 第 214 批（體檢 B1，使用者：「保留投影」）：只在需求列表出現 —— 我的待辦、統計報表永遠按不了，留著只是佔位置。規則不變 */}
+                                {(activeView === 'table' || present) && (
+                                <button onClick={togglePresent}
+                                        disabled={!present && (!compact || activeView !== 'table')}
+                                        className={`ctl-sm flex-shrink-0 disabled:opacity-40 disabled:cursor-default${present ? ' ctl-on' : ''}`}
+                                        title={present
+                                            ? '離開投影模式：字級、對比與被收起的操作鈕都會回到原本的樣子（含進入前的深淺色設定）'
+                                            : activeView !== 'table'
+                                                ? '投影模式只用於需求列表。\n統計報表是圖表與交叉表，放大後圖會被擠扁 —— 請先切回「需求列表」'
+                                                : compact
+                                                    ? '投影模式：整體放大、提高對比、加上斑馬紋，並收起新增／Excel 這類寫入型操作。同時切到淺色底（投影機黑階偏灰），離開時自動還原。\n切到統計報表會自動回到正常版面'
+                                                    : '投影模式只能在精簡模式下使用。\n一般模式的 16 欄放大後一定會超出布幕（可用寬度＝視窗寬 ÷ 倍率），台下看不到右邊的欄位。\n請先按下左邊的「精簡模式」'}>
+                                    📽 投影
+                                </button>
+                                )}
+                                {/* 第 214 批：頁首分三群（顯示｜說明與身分｜資料），細線隔開 */}
+                                {!present && <div className="ctl-div mx-0.5"></div>}
+                                {/* 使用者手冊（第 76 批）。後端 GET /manual 直接讀 docs/使用者手冊.html 回傳，
+                                    走 api() 是為了子路徑部署。新分頁開：手冊是拿來對照著操作的，
+                                    蓋掉正在編輯的畫面就本末倒置。投影模式收起（台下不需要看到它） */}
+                                {!present && (
+                                    <a href={api('/manual')} target="_blank" rel="noopener"
+                                       className="ctl-sm flex-shrink-0 no-underline"
+                                       title="使用者手冊（另開分頁）：第一部依 EMS／MSD／主管的角度講「輪到我時要按哪裡」，第二部是逐一功能的完整參考">
+                                        <BookIcon size={13} />手冊
+                                    </a>
+                                )}
                                 {/* 異動人員。Windows 帳號由 /api/whoami 自動偵測；
                                     開發環境（Auth:AllowSimulation=true）可切換成模擬帳號，
                                     模擬寫入的稽核列會標成「模擬」，不會冒充真實登入者 */}
@@ -8117,83 +8750,26 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                     )}
                                 </button>
                                 )}
-                                {!present && (
-                                <button onClick={()=>actor.allowSimulation && setIsActorModalOpen(true)}
-                                        className="ctl-sm"
-                                        style={actor.source==='simulated'
-                                            ? {color:'var(--c-violet)', background:'rgba(139,92,246,0.12)', borderColor:'var(--c-violet)'}
-                                            : actor.empId
-                                                ? undefined
-                                                : {color:'var(--tone-warn)', background:'var(--tone-warn-bg)', borderColor:'var(--tone-warn-border)'}}
-                                        title={actor.empId
-                                            ? `異動人員：${actor.empId}（${actor.source==='simulated'?'模擬帳號':'Windows 登入'}）${actor.allowSimulation?'\n點擊可切換模擬帳號':''}`
-                                            : '無法取得 Windows 帳號，稽核紀錄的異動人員會留空' + (actor.allowSimulation?'\n點擊可設定模擬帳號':'')}>
-                                    🖥️ {actor.empId || '未識別'}{actor.source==='simulated' && ' (模擬)'}
-                                </button>
-                                )}
-                                {/* 投影倍率。只在投影模式出現 —— 桌機看的人不需要這兩顆，
-                                    而且它調的是 zoom 不是瀏覽器縮放，關掉投影模式就完全失效 */}
-                                {/* ⚠ 右邊被切掉。**只有投影模式才會出現**（第 46 批第四段，
-                                    見 renderClipWarning 上方的說明）——平常橫捲已經是完整的畫面，
-                                    這顆只會白白佔掉工具列的寬度，而它出現的時機剛好是版面最擠的時候。
-                                    已經橫捲時它會跟著頁首滑走 —— 那時改由最外層的浮動版接手，
-                                    兩個位置**同時只會有一顆**，避免變成兩個一樣的鈕 */}
-                                {!scrolledX && renderClipWarning(false)}
-                                {present && (
-                                    <div className="ctl-sm flex-shrink-0 gap-0.5 px-1"
-                                         title="投影倍率：後排看不清就往上加，右邊被切掉就往下降">
-                                        <button onClick={()=>stepZoom(-1)} disabled={presentZoom <= PRESENT_ZOOMS[0]}
-                                                aria-label="投影倍率縮小"
-                                                className="w-5 h-5 rounded text-[13px] font-black leading-none disabled:opacity-30"
-                                                style={{color:'var(--text-tertiary)'}}>−</button>
-                                        <span className="text-[10px] font-black tabular-nums w-9 text-center"
-                                              style={{color:'var(--text-secondary)'}}>{Math.round(presentZoom*100)}%</span>
-                                        <button onClick={()=>stepZoom(1)} disabled={presentZoom >= PRESENT_ZOOMS[PRESENT_ZOOMS.length-1]}
-                                                aria-label="投影倍率放大"
-                                                className="w-5 h-5 rounded text-[13px] font-black leading-none disabled:opacity-30"
-                                                style={{color:'var(--text-tertiary)'}}>＋</button>
-                                    </div>
-                                )}
-                                {/* ⚠️ 投影模式的前置條件是精簡模式（第 32 批，使用者要求）。
-                                    在此之前是「按下去順手幫你打開精簡模式」，而那個借用製造了兩次
-                                    「版面跑掉」的回報 —— 只要「投影 + 16 欄」組得出來就一定橫捲。
-                                    改成 disabled + 講清楚要先做什麼，而不是替使用者改設定 */}
-                                <button onClick={togglePresent}
-                                        disabled={!present && (!compact || activeView !== 'table')}
-                                        className={`ctl-sm flex-shrink-0 disabled:opacity-40 disabled:cursor-default${present ? ' ctl-on' : ''}`}
-                                        title={present
-                                            ? '離開投影模式：字級、對比與被收起的操作鈕都會回到原本的樣子（含進入前的深淺色設定）'
-                                            : activeView !== 'table'
-                                                ? '投影模式只用於需求列表。\n統計報表是圖表與交叉表，放大後圖會被擠扁 —— 請先切回「需求列表」'
-                                                : compact
-                                                    ? '投影模式：整體放大、提高對比、加上斑馬紋，並收起新增／Excel 這類寫入型操作。同時切到淺色底（投影機黑階偏灰），離開時自動還原。\n切到統計報表會自動回到正常版面'
-                                                    : '投影模式只能在精簡模式下使用。\n一般模式的 16 欄放大後一定會超出布幕（可用寬度＝視窗寬 ÷ 倍率），台下看不到右邊的欄位。\n請先按下左邊的「精簡模式」'}>
-                                    📽 投影
-                                </button>
-                                {/* 字級（第 29 批）。投影模式有自己的倍率控制，這顆就讓開 */}
-                                {!present && (
-                                    <button onClick={cycleUiScale}
-                                            className={`ctl-sm flex-shrink-0 tabular-nums${uiScale !== 1 ? ' ctl-on' : ''}`}
-                                            aria-label={`字級 ${Math.round(uiScale*100)}%，點擊切換下一級`}
-                                            title={'資料列的字很小（10~11px），這裡可以整片放大。\n'
-                                                 + UI_SCALES.map(s => `${Math.round(s*100)}%`).join(' → ') + ' → 循環。\n'
-                                                 + '⚠️ 放大的是需求列表本身（頁首不變）；投影模式有自己的倍率。\n'
-                                                 + '放大後右邊放不下時，整個版面（含頁首與工具列）會一起變寬，\n'
-                                                 + '用橫向捲動看完整的 16 欄 —— 欄位不會被自動收起來。'}>
-                                        Ａ {Math.round(uiScale*100)}%
-                                    </button>
-                                )}
-                                {/* 使用者手冊（第 76 批）。後端 GET /manual 直接讀 docs/使用者手冊.html 回傳，
-                                    走 api() 是為了子路徑部署。新分頁開：手冊是拿來對照著操作的，
-                                    蓋掉正在編輯的畫面就本末倒置。投影模式收起（台下不需要看到它） */}
-                                {!present && (
-                                    <a href={api('/manual')} target="_blank" rel="noopener"
-                                       className="ctl-sm flex-shrink-0 no-underline"
-                                       title="使用者手冊（另開分頁）：第一部依 EMS／MSD／主管的角度講「輪到我時要按哪裡」，第二部是逐一功能的完整參考">
-                                        <BookIcon size={13} />手冊
-                                    </a>
-                                )}
-                                <ThemeToggle dark={dark} onToggle={()=>setDark(!dark)} />
+                                {/* 第 214 批（體檢 B2，使用者看過示意圖）：只顯示**名字**（dbo.Assignee 查得到時；查不到照舊顯示帳號），
+                                    帳號放 title。能切模擬帳號的主機（Auth:AllowSimulation）才是按鈕，正式主機只是一段字、不像按鈕。
+                                    模擬中仍用紫色並接「（模擬）」—— 一眼看得出現在不是真實身分。
+                                    ⚠️ 第 221 批把變更軌跡等處的「（模擬）」全部拿掉，**只留這一顆**：模擬會跨重新整理保留，
+                                    測試的人一定要看得出自己現在是誰（它是切換模擬的入口，不是被模擬的人會看到的資料） */}
+                                {!present && (() => {
+                                    const nm = (meAssignee && (meAssignee.name || '').trim()) || '';
+                                    const label = actor.empId ? (nm || actor.empId) + (actor.source==='simulated' ? '（模擬）' : '') : '未識別';
+                                    const tip = actor.empId
+                                        ? `登入帳號 ${actor.empId}（${actor.source==='simulated'?'模擬帳號':'Windows 登入'}）${actor.allowSimulation?'\n點擊可切換模擬帳號':''}`
+                                        : '無法取得 Windows 帳號，稽核紀錄的異動人員會留空' + (actor.allowSimulation?'\n點擊可設定模擬帳號':'');
+                                    const tone = actor.source==='simulated'
+                                        ? {color:'var(--c-violet)', background:'rgba(139,92,246,0.12)', borderColor:'var(--c-violet)'}
+                                        : actor.empId ? undefined
+                                        : {color:'var(--tone-warn)', background:'var(--tone-warn-bg)', borderColor:'var(--tone-warn-border)'};
+                                    return actor.allowSimulation
+                                        ? <button onClick={()=>setIsActorModalOpen(true)} className="ctl-sm flex-shrink-0" style={tone} title={tip}>{label}</button>
+                                        : <span className="text-[12px] font-bold px-1 flex-shrink-0" style={{color: tone ? tone.color : 'var(--text-secondary)'}} title={tip}>{label}</span>;
+                                })()}
+                                {!present && <div className="ctl-div mx-0.5"></div>}
                                 {/* H：原本只顯示今天日期 —— 主管看不出資料新不新。
                                     改成以「資料更新時間」為主，今天日期退到 tooltip（逾期都是以今天為基準算的，
                                     所以那個資訊還是要留著，只是不必佔版面）。
@@ -8251,6 +8827,8 @@ const { useState, useMemo, Fragment, useEffect } = React;
                             會議上傳閱時沒有人知道它是什麼時候的數字 */}
                         <div className="print-only mb-2 pb-2" style={{borderBottom:'2px solid var(--border-card)'}}>
                             <span className="text-sm font-bold" style={{color:'var(--text-primary)'}}>MSD 需求管控表</span>
+                            {/* 第 229 批：測試區印出來的清單不會被當成正式資料 */}
+                            {envLabel && <span className="text-sm font-bold ml-1" style={{color:'var(--text-primary)'}}>【{envLabel}】</span>}
                             <span className="text-[11px] ml-3" style={{color:'var(--text-tertiary)'}}>
                                 資料更新 {lastDataUpdate ? lastDataUpdate.slice(0, 16) : '—'}
                                 ｜列印於 {formatToday}
@@ -8340,10 +8918,10 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                          : myTodo.later.length > 0 ? '目前沒有急件'
                                          : '目前沒有要你處理的事'}
                                     </span>
+                                    {/* 第 231 批（使用者：「照你建議的修改」B2）：副標只留部門與日期。
+                                        原本前面還有「另 N 件還有時間 · N 件在等 ○○」—— 底下「還有時間」「追蹤中」的區塊標題
+                                        已經各印一次同一個數字（第 37 批：同一個數字在同一個畫面上只印一次）。不要加回來。 */}
                                     <span className="block text-[12px] mt-1" style={{color:'var(--text-muted)'}}>
-                                        {[myTodo.later.length > 0 ? `${myTodo.focus.length > 0 ? '另 ' : ''}${myTodo.later.length} 件還有時間` : '',
-                                          myTodo.waiting.length > 0 ? `${myTodo.waiting.length} 件在等 ${myTodo.waitSide}` : '']
-                                            .filter(Boolean).map(t => <span key={t} style={{color:'var(--text-secondary)'}}>{t} · </span>)}
                                         <span className="cursor-help" title={identityHint}>{myDept} · 今天 {formatToday}</span>
                                     </span>
                                 </span>
@@ -8392,7 +8970,9 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                       subTone: (fOver || fUnset) ? 'var(--tone-alert)' : fSoon ? 'var(--tone-warn)' : '',
                                       rows: myTodo.focus, open: myFocusOpen, toggle: ()=>setMyFocusOpen(v => !v),
                                       hint:'要你處理＝逾期、未壓日期、7 天內到期。\n這幾筆現在就該動：已經逾期的、還沒壓日期的，以及 7 天內到期的' },
-                                    { key:'later', icon:'later', title:'還有時間', sub: laterNext ? `最近一筆 ${fmtYmd(laterNext)} 到期` : '',
+                                    { key:'later', icon:'later', title:'還有時間',
+                                      // 第 237 批 C：右邊灰字先講「要不要你動手」（原本只在 tooltip，不懂系統的人不會去停）
+                                      sub: laterNext ? `也是你的，還不急 · 最近一筆 ${fmtYmd(laterNext)} 到期` : '也是你的，還不急',
                                       rows: myTodo.later, open: laterShown, toggle: ()=>setMyLaterOpen(!laterShown),
                                       hint:'還有時間＝也是你的球，日期在 7 天後。\n這幾筆也是你負責的階段，只是排定的日期還在 7 天之後。提早做完了一樣可以在這裡按「做完了」' }
                                 ];
@@ -8517,7 +9097,6 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         //    於是 ③ 未壓、④ 已壓時，晚於 ④ 的晶片按下去必然被 validateEdit 擋下；第 130 批之後擋下來是
                                         //    blockedOnTodo「請 MSD 在需求列表修正」，那句話對這一種是錯的（他只要挑早一點的日子）。
                                         const maxNext = x.unset ? nextPhaseEndOf(x.r, x.ph.key) : null;
-                                        const quicks = x.unset ? quickDateChoices() : [];
                                         // ─── 完成日晶片（第 92 批 B 組）───
                                         // ⚠️ 只在 kind==='button'（＝那顆「標記完成…」真的按得動）時出現。
                                         //    其餘幾種（前置缺日期／完成順序擋著／已略過）維持一顆「開啟這一階段 →」——
@@ -8537,38 +9116,25 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 color:'var(--tone-good)', late:false, days:0 };
                                         // 第二層（哪一天做完的）展開在哪一張卡上（第 93 批）
                                         const doneAskKey = `${x.r.id}:${x.ph.key}`;
-                                        // 第 136 批：未壓日期這張卡「選好、還沒存」的那一天。⚠️ 只認目前還按得動的那幾顆
-                                        //    （資料重抓後上下限可能變了，選過的那顆變灰就當沒選）
-                                        const pickIso = (x.unset && myPick && myPick.key === doneAskKey
-                                                         && quicks.some(q => q.iso === myPick.iso
-                                                                             && !((!!minEnd && q.iso < minEnd) || (!!maxNext && q.iso > maxNext.end))))
-                                            ? myPick.iso : '';
-                                        // ─── 延後那一層的日期晶片（第 94 批）───
-                                        // ⚠️⚠️ 延後比「壓一個空的 End」多兩道，少一道就會做出一顆
-                                        //    「按下去必定 400」或「按了等於沒按」的鈕：
-                                        //    ① **必須真的比原訂晚**。quickDateChoices() 只濾掉「≤ 今天」，
-                                        //       而原訂日在未來時（還沒逾期就想延）算出來的那幾顆可能
-                                        //       早於、甚至正好等於原訂日 —— 一顆寫著「延後」卻什麼都沒延的鈕。
-                                        //       比原訂早更糟：那不是延後是提前，語意完全不同（第 71 批）。
-                                        //       這一種**整顆不印**（與 quickDateChoices 濾掉重複日期同一類：
-                                        //       沒有意義的選項，不是被擋住的選項）。
-                                        //    ② **上限＝下一階段已經壓好的 End**。我確認過後端
-                                        //       PhaseOrderViolations：相鄰那一對只要有一端被動到就會擋，
-                                        //       所以延後 ②③ 超過下一階段會回 400。第 92 批的 quickSetDate
-                                        //       只吃下限是因為它壓的是**空的** End，後面按 H1 前綴不變量
-                                        //       通常也是空的 —— 延後不適用那個前提。
-                                        //       這一種**印出來但 disabled**，並在 title 寫是被哪一階段擋住
-                                        //       （與第 92 批下限那一顆同一個作法）。
+                                        // ─── 第 238 批（使用者看過三個方案：「照方案A改，改日期那層也改」）───
+                                        // 未壓日期那一排與「還沒，要改日期」那一層，原本是四顆快速日期（下週一／兩週後／三週後／月底）
+                                        // ＋「🗓 自選」＋存檔＋灰字 —— 改成**一個日期框＋一顆存檔**，存檔鈕上寫「存成 YYYY/MM/DD（一）」。
+                                        // ⚠️⚠️ 仍然是「先選、再按存檔」（第 136 批：按錯一顆不會直接存進去），不可以改成選了就存。
+                                        // ⚠️⚠️ 檢查一律走 dateCheckOf()（與「🗓 改日期…」小視窗同一支）：上下限、日期沒變、
+                                        //    一年以後要再按「是，就是這一天」、改早時開始日跟著拉（delay），沒有第二份規則。
+                                        // 選好、還沒存的那一天：myPick＝{ key, iso, farOk }（key 帶 phaseKey；不寫 localStorage）
+                                        const pick = (x.unset && myPick && myPick.key === doneAskKey) ? myPick : null;
+                                        const setCk = x.unset
+                                            ? dateCheckOf({ ...dateCtxOf(x.r, x.ph, 'set'), date: pick ? pick.iso : '', farOk: pick ? pick.farOk : '' })
+                                            : null;
+                                        // 改日期那一層：上下限＝前一階段的 End／下一階段已經壓好的 End（第 94 批那兩道），
+                                        // 改早改晚都收（第 138 批；原本卡片上的晶片只列比原訂晚的，改早要去 🗓 自選）
                                         const delayMin = canDone ? prevChainEndOf(x.r, x.ph.key) : '';
                                         const delayNext = canDone ? nextPhaseEndOf(x.r, x.ph.key) : null;
-                                        const delayQuicks = canDone
-                                            ? quickDateChoices().filter(q => !x.end || q.iso > x.end) : [];
-                                        const delayBadOf = q => (delayMin && q.iso < delayMin)
-                                            ? `不可早於前一階段的「${prevPh ? prevPh.label : ''}」${delayMin}（四個階段是依序進行的）`
-                                            : (delayNext && q.iso > delayNext.end)
-                                            ? `不可晚於「${delayNext.label}」已經壓好的${delayNext.word} ${delayNext.end}（四個階段是依序進行的）`
-                                            : '';
                                         const dl = (myDelay && myDelay.key === doneAskKey) ? myDelay : null;
+                                        const dlCk = dl
+                                            ? dateCheckOf({ ...dateCtxOf(x.r, x.ph, 'delay'), date: dl.date, cat: dl.cat, note: dl.note, farOk: dl.farOk })
+                                            : null;
                                         // ─── SPEC 連結與現況描述（第 98 批）───
                                         // ⚠️ 兩個都是「有值才印」：空的時候整顆／整行不出現，不要印一顆灰鈕
                                         //    也不要印「—」。卡片上每多一行都是在跟真正要按的那顆鈕搶注意力。
@@ -8588,7 +9154,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         const curStatus = (x.r.currentStatus || '').trim();
                                         // 只印最新那一則（第 102 批）。⚠️ 切不出來時 latest 就是整段、hidden 是 0
                                         const curLatest = latestStatusOf(curStatus);
-                                        // ─── 「🔄 規格回退」第三個入口（第 99 批，2026-10-04）───
+                                        // ─── 「退回重做」第三個入口（第 99 批，2026-10-04；當時叫「🔄 規格回退」）───
                                         // ⚠️⚠️ 在此之前它**只在**編輯視窗最下面那個收合起來的「⚙ 進階」裡，一顆 11px 的鈕 ——
                                         //    而 ⚙ 進階 自己的定位寫著「繞過機制的操作，**一般人不該動**」。但回退的真實觸發點
                                         //    （規格變了、前面要重做）是 **EMS 自己身上發生的事**，而他的落地頁就是這一頁。
@@ -8602,14 +9168,14 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         //    ≥ 目標階段的**全部**日期並讓 RollbackCount +1，那個計數是主管在看的。做成同尺寸
                                         //    同一排，就是把一個每次都該停一下的動作做成順手。使用者 2026-10-04 看過三種權重的
                                         //    示意圖之後選了這一種（A 文字／B 同級外框鈕／C 紅色實心）。⚠️ 日後要調權重回來看這段。
-                                        // ⚠️⚠️ **名稱一定是「規格回退」**，不可以改叫「退回前關」之類：後端的擋下訊息裡有四處
-                                        //    寫著「請用『🔄 規格回退』」（validateEdit 的 badClear 與 stage 那兩段也是），加上
-                                        //    🔄 徽章 tooltip 與手冊的 #m-rollback —— 換一組字就是第 37 批那個坑（訊息叫他去找
-                                        //    一個畫面上根本沒有的東西）。
+                                        // ⚠️⚠️ **畫面名稱一定是「退回重做」**（第 146 批改名、第 240 批拿掉 🔄），不可以另取名字：
+                                        //    後端的擋下訊息、validateEdit 的 badClear 與 stage 那兩段、退回次數徽章的 tooltip、
+                                        //    手冊的 #m-rollback 都是這組字 —— 換一組字就是第 37 批那個坑（訊息叫他去找
+                                        //    一個畫面上根本沒有的東西）。ChangeType 存的值仍是「規格回退」（只改畫面的字）。
                                         // ⚠️⚠️ 顏色一律取 CHANGE_TYPES['規格回退'].color，**不要另外挑一個**。尤其**不可以用紅色**
                                         //    —— 紅在這一頁已經是「逾期」（卡片左邊那條色塊），再用一次就是同一個顏色兩個意思
                                         //    （第 59 批：不同的事不要長得一樣）。
-                                        // ⚠️⚠️ 它**只能是「開既有的回退視窗」**，不可以像日期晶片那樣內嵌寫入：回退要兩個輸入
+                                        // ⚠️⚠️ 它**只能是「開既有的回退視窗」**，不可以像日期框那樣內嵌寫入：回退要兩個輸入
                                         //    （目標階段 ＋ 必填說明），攤在卡片上就是第二套版面（第 92 批：呼叫既有那一支，
                                         //    不要自己寫一份）。handleRollback 成功後本來就會 setEditingData(null) 並重抓兩份，
                                         //    從卡片呼叫不需要改它一個字。
@@ -8621,21 +9187,19 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         //    算出來的，所以逾期的必然就是 x.ph 那一關 —— 傳別的 key 就會標錯格（第 97 批）。
                                         const timeline = phaseTimelineOf(x.r, (x.alert && x.alert.level === 'overdue' && x.ph) ? x.ph.key : '');
                                         const rbStage = savedStage(x.r);
-                                        const rollbackLink = rbStage < 2 ? null : (<>
-                                            <span className="flex-shrink-0" aria-hidden="true"
-                                                  style={{width:'1px', height:'18px', background:'var(--border-table)'}}></span>
-                                            <span className="text-[12px]" style={{color:'var(--text-muted)'}}>規格變了要重做？</span>
+                                        // 第 238 批：從「做完了」那一排／未壓日期那一排／按不了完成那一排，搬到卡片右上角（「需求資料編輯 ↗」左邊）——
+                                        // 很少用卻跟日期與完成鈕擠在同一排。拿掉 🔄（Windows 畫成藍色方塊）與「規格變了要重做？」（改放 title）。
+                                        // 仍然照第 99 批：權重是文字不是鈕、紫色取 CHANGE_TYPES（不可用紅）、只開既有的退回重做視窗、目前在 ① 不印。
+                                        const rollbackLink = rbStage < 2 ? null : (
                                             <button type="button"
                                                     onClick={()=>setRollbackModal({ id:x.r.id, nid:x.r.nid,
                                                                                     curStage:rbStage, target:rbStage-1, note:'' })}
-                                                    className="text-[12px] font-bold underline hover:no-underline flex-shrink-0"
-                                                    style={{color:CHANGE_TYPES['規格回退'].color, textUnderlineOffset:'3px'}}
-                                                    title={`開啟「退回重做」視窗：規格變了、驗收沒過等需要重做目前或前面的階段時使用。
-會清掉目標階段（含）以後的日期、退回次數 +1，而且必須填寫說明。
-（退到哪一階段與說明都在那個視窗裡填，這裡只負責把它打開）`}>
-                                                🔄 退回重做 ↗
+                                                    className="text-[13px] hover:underline flex-shrink-0"
+                                                    style={{color:CHANGE_TYPES['規格回退'].color}}
+                                                    title={'規格變了要重做？驗收沒過？按這裡開「退回重做」視窗，退回目前或前面的階段。\n會清掉目標階段（含）以後的日期、退回次數 +1，而且必須填寫說明。\n只是日期要改，請用「還沒，要改日期」，不要用退回。'}>
+                                                退回重做 ↗
                                             </button>
-                                        </>);
+                                        );
                                         return (
                                         /* 左邊那條色塊：未壓日期與已逾期一律紅色，其餘用該階段自己的顏色 */
                                         <div key={x.r.id} className="t-card px-4 py-4"
@@ -8673,6 +9237,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                               {/* ⚠️⚠️ 第 116 批（2026-10-06 使用者要求）：「完整編輯」改名「專案資料編輯」，開的是
                                                   只有「專案基本資料」那一區的視窗（與新增視窗同一段 JSX）。第 120 批起
                                                   「我的待辦」沒有進完整編輯視窗的入口（見 editingData 視窗底部那段註解）。 */}
+                                              {rollbackLink}
                                               <button type="button" onClick={()=>openEdit(x.r, null, '', { info:true })}
                                                       className="text-[13px] hover:underline flex-shrink-0"
                                                       style={{color:'var(--text-muted)'}}
@@ -8713,70 +9278,40 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                      寬度本來就是容器的 100%，**那條不適用**，不要拿它來擋這個擺法。
                                                   ⚠️⚠️ flex-wrap 不可以拿掉：1280 筆電、字級 130%、投影模式下右半部就不空了，
                                                      要讓它自己掉到下一行。**不可以寫死寬度**（第 46-3 批那條）。 */}
-                                              {timeline && <PhaseTimeline cells={timeline} />}
+                                              {timeline && <PhaseTimeline cells={timeline} curTag />}
                                           </div>
 
                                           {/* ─── ① 還沒壓日期：快速日期（第 92 批）─── */}
                                           {x.unset && (
                                           <div className="mt-3">
-                                              {/* ⚠️ 第 95 批：問句與晶片**同一行**，中間那條分隔線拿掉 ——
-                                                  一張卡被切成上下兩塊，但它講的是同一件事 */}
+                                              {/* ⚠️ 第 95 批：問句與日期框**同一行**。
+                                                  第 238 批（方案 A）：四顆快速日期＋🗓 自選＋灰字 → 一個日期框＋一顆存檔。
+                                                  問句講清楚是「預計」（原本「哪天確認？」會被讀成「你哪天確認的？」），而且不用紅字：
+                                                  卡片左邊紅色條與進度條上的紅字「未壓日期」已經在提醒。
+                                                  ⚠️⚠️ 存檔鈕上直接寫會存成哪天（還沒選＝灰色「先選日期」）—— 取代原本旁邊那行灰字。
+                                                  寫入仍然是同一支 quickSetDate（第 92 批）。 */}
                                               <div className="flex items-center gap-2 flex-wrap">
-                                                  <span className="text-[14px] font-bold" style={{color:'var(--tone-alert)'}}>
-                                                      {x.ph.code === '2' ? '哪天確認' : '哪天完成'}？
+                                                  <span className="text-[14px] font-bold" style={{color:'var(--text-primary)'}}>
+                                                      預計哪天{x.ph.code === '2' ? '確認好' : '完成'}？
                                                   </span>
-                                                  {quicks.map(q => {
-                                                      const bad = (!!minEnd && q.iso < minEnd) || (!!maxNext && q.iso > maxNext.end);
-                                                      // 第 136 批：先選（與延後那一層的晶片同一種選中樣式）、再按右邊的「存檔」
-                                                      const on = !bad && pickIso === q.iso;
-                                                      return (
-                                                      <button key={q.iso} type="button" disabled={bad || isSubmitting}
-                                                              onClick={()=>setMyPick({ key:doneAskKey, iso:q.iso })}
-                                                              aria-pressed={on}
-                                                              className="ctl px-3 text-[14px] disabled:opacity-40 disabled:cursor-not-allowed"
-                                                              style={on ? {whiteSpace:'nowrap', background:'var(--brand)', borderColor:'transparent', color:'#fff'}
-                                                                        : {whiteSpace:'nowrap'}}
-                                                              title={(!!minEnd && q.iso < minEnd)
-                                                                  ? `不可早於前一階段的「${prevPh ? prevPh.label : ''}」${minEnd}（四個階段是依序進行的）`
-                                                                  : bad
-                                                                  ? `不可晚於「${maxNext.label}」已經壓好的${maxNext.word} ${maxNext.end}（四個階段是依序進行的）`
-                                                                  : `選 ${q.iso}（還沒存，選好之後按右邊的「存檔」）`}>
-                                                          {q.label}
-                                                          <span className="font-mono ml-2 text-[13px]"
-                                                                style={{color: on ? 'rgba(255,255,255,0.85)' : 'var(--text-muted)'}}>
-                                                              {fmtYmd(q.iso)}
-                                                          </span>
-                                                      </button>
-                                                      );
-                                                  })}
-                                                  {/* ⚠️ 第 111 批：這一顆原本是 openEdit(...)（整個「編輯資料列」視窗）——
-                                                      改成只問這一格日期的小視窗。存檔仍然是同一支 quickSetDate（第 92 批） */}
-                                                  <button type="button" onClick={()=>openDateModal(x.r, x.ph, 'set')}
-                                                          className="ctl px-3 text-[14px]" style={{whiteSpace:'nowrap'}}
-                                                          title={`自己挑一天：開一個只問${phaseEndWord(x.ph)}的小視窗（不會開整個編輯視窗）`}>
-                                                      🗓 自選
+                                                  {cardDateInput({ value: pick ? pick.iso : '', min: minEnd, max: maxNext ? maxNext.end : '',
+                                                                   label: `預計哪天${x.ph.code === '2' ? '確認好' : '完成'}`,
+                                                                   onChange: v => setMyPick(v ? { key:doneAskKey, iso:v, farOk:'' } : null) })}
+                                                  <button type="button" disabled={!setCk.ready || isSubmitting}
+                                                          onClick={()=>{ const iso = pick.iso; setMyPick(null); quickSetDate(x.r, x.ph.key, iso); }}
+                                                          className={'ctl px-5 text-[14px] font-bold disabled:cursor-not-allowed'
+                                                                     + (setCk.dateOk ? ' text-white hover:text-white disabled:opacity-40' : '')}
+                                                          style={setCk.dateOk
+                                                              ? {background:'var(--brand)', borderColor:'transparent', whiteSpace:'nowrap', boxShadow:'0 1px 2px rgba(15,23,42,0.12)'}
+                                                              : {whiteSpace:'nowrap', color:'var(--text-muted)'}}
+                                                          title={setCk.ready ? `把${phaseEndWord(x.ph)}壓成 ${pick.iso} 並存檔`
+                                                                 : setCk.dateOk ? '這一天離今天超過一年，請先在下面按「是，就是這一天」'
+                                                                 : '請先在左邊的日期框選一天'}>
+                                                      {setCk.dateOk ? `存成 ${ymdWeek(pick.iso)}` : '先選日期'}
                                                   </button>
-                                                  {/* ⚠️ 存檔鈕與那行灰字接在「🗓 自選」右邊、同一排（第 108 批：一行灰字不要自己佔一列，
-                                                         卡片寬度是容器給的，疊不疊下一行不影響欄寬）。
-                                                      ⚠️ 排在 rollbackLink **前面**：它們講的是左邊那幾顆日期晶片，
-                                                         而回退那一段自己帶一條分隔線（第 99 批：權重刻意較低）。 */}
-                                                  {/* ⚠️⚠️ 第 136 批：「按了就存」改成「先選、再按存檔」（使用者 2026-10-07 依建議清單選的）。
-                                                      理由：壓好之後這張卡只剩「還沒，要延後」（只收更晚的日期），按錯一顆就得去找 MSD。
-                                                      寫入仍然是同一支 quickSetDate（第 92 批），🗓 自選 那個小視窗有自己的存檔、不受影響。 */}
-                                                  <button type="button" disabled={!pickIso || isSubmitting}
-                                                          onClick={()=>{ const iso = pickIso; setMyPick(null); quickSetDate(x.r, x.ph.key, iso); }}
-                                                          className="ctl px-5 text-[14px] font-bold text-white hover:text-white disabled:opacity-40 disabled:cursor-not-allowed"
-                                                          style={{background:'var(--brand)', borderColor:'transparent', whiteSpace:'nowrap',
-                                                                  boxShadow:'0 1px 2px rgba(15,23,42,0.12)'}}
-                                                          title={pickIso ? `把${phaseEndWord(x.ph)}壓成 ${pickIso} 並存檔`
-                                                                         : '請先在左邊選一天，或按「🗓 自選」'}>
-                                                      存檔
-                                                  </button>
-                                                  <span className="text-[12px]" style={{color:'var(--text-muted)'}}>
-                                                      {pickIso ? `會壓成 ${fmtYmd(pickIso)}` : '先選一天，再按「存檔」'}
-                                                  </span>
-                                                  {rollbackLink}
                                               </div>
+                                              {cardDateNotes(setCk, pick ? pick.iso : '', '', 'set',
+                                                             () => setMyPick(p => p ? { ...p, farOk: p.iso } : p))}
                                           </div>
                                           )}
 
@@ -8804,41 +9339,16 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                   <div className="text-[14px] font-bold mb-2" style={{color:'var(--text-primary)'}}>
                                                       {verb}改到哪天？
                                                   </div>
+                                                  {/* 第 238 批（方案 A）：四顆晶片＋🗓 自選＋「要改成更早的…」灰字 → 一個日期框。
+                                                      改早改晚都收（第 138 批），檢查走 dateCheckOf()；底下那幾行講晚／早幾天、開始日跟著拉、一年以後要確認 */}
                                                   <div className="flex items-center gap-2 flex-wrap">
-                                                      {delayQuicks.map(q => {
-                                                          const bad = delayBadOf(q);
-                                                          const on = dl.date === q.iso;
-                                                          return (
-                                                          <button key={q.iso} type="button" disabled={!!bad || isSubmitting}
-                                                                  onClick={()=>setMyDelay(p => p ? {...p, date:q.iso} : p)}
-                                                                  className="ctl px-3 text-[14px] disabled:opacity-40 disabled:cursor-not-allowed"
-                                                                  style={on ? {whiteSpace:'nowrap', background:'var(--brand)', borderColor:'transparent', color:'#fff'}
-                                                                            : {whiteSpace:'nowrap'}}
-                                                                  title={bad || `把${phaseEndWord(x.ph)}從 ${x.end} 延到 ${q.iso}`}>
-                                                              {q.label}
-                                                              <span className="font-mono ml-2 text-[13px]"
-                                                                    style={{color: on ? 'rgba(255,255,255,0.85)' : 'var(--text-muted)'}}>
-                                                                  {fmtYmd(q.iso)}
-                                                              </span>
-                                                          </button>
-                                                          );
-                                                      })}
-                                                      {/* ⚠️⚠️ 第 111 批：這一顆原本是 openEdit(... {unlock:true})，也就是「為了改一格
-                                                          日期，開出整個編輯資料列視窗」——使用者 2026-10-05 指名要改掉的就是它。
-                                                          現在開的是只有「日期 ＋ 原因分類 ＋ 文字說明」的小視窗（openDateModal）。
-                                                          ⚠️ 已經挑好的分類與說明**一定要帶過去** —— 不帶的話那兩欄在新視窗裡
-                                                             仍然是必填的，等於罰他重打一次（第 94 批那條，一個字都沒變）。
-                                                          ⚠️ 真的要改別的欄位時，入口仍然是卡片右上角的「完整編輯 ↗」（第 92 批：
-                                                             那是進編輯視窗的唯一入口，不可以拿掉）。 */}
-                                                      <button type="button"
-                                                              onClick={()=>openDateModal(x.r, x.ph, 'delay', {cat:dl.cat, note:dl.note})}
-                                                              className="ctl px-3 text-[14px]" style={{whiteSpace:'nowrap'}}
-                                                              title={`自己挑一天（也可以改成比原訂更早的日期）：開一個只問${phaseEndWord(x.ph)}與異動原因的小視窗（已經填好的原因會一起帶過去）`}>
-                                                          🗓 自選
-                                                      </button>
-                                                      {/* 第 138 批：這一排只列比原訂晚的；要往前拉（例：年份打錯）的出路一定要看得見 */}
-                                                      <span className="text-[12px]" style={{color:'var(--text-muted)'}}>要改成更早的日期（例如年份打錯）也按「🗓 自選」</span>
+                                                      {cardDateInput({ value: dl.date, min: delayMin, max: delayNext ? delayNext.end : '',
+                                                                       label: `${verb}改到哪天`,
+                                                                       onChange: v => setMyDelay(p => p ? { ...p, date:v, farOk:'' } : p) })}
+                                                      {x.end && <span className="text-[12px]" style={{color:'var(--text-muted)'}}>原訂 {fmtYmd(x.end)}，改早改晚都可以</span>}
                                                   </div>
+                                                  {cardDateNotes(dlCk, dl.date, x.end || '', 'delay',
+                                                                 () => setMyDelay(p => p ? { ...p, farOk: p.date } : p))}
                                                   {/* ⚠️⚠️ 分類與說明**兩個都是必填**，前後端都擋（見 quickDelayDate 的說明）。
                                                       ⚠️ 分類沿用編輯視窗那一組 REASON_CATEGORIES，**不另外發明一組詞**
                                                          （第 37 批：同一個概念在畫面上只能有一組字；2026-10-04 使用者指定） */}
@@ -8872,24 +9382,25 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                   </div>
                                                   <div className="flex items-center gap-3 flex-wrap mt-3">
                                                       <button type="button"
-                                                              disabled={isSubmitting || !dl.date || !dl.cat || !dl.note.trim() || isOverLimit(dl.note, NOTE_MAX)}
+                                                              disabled={isSubmitting || !dlCk.ready}
                                                               onClick={()=>{ const d = dl; setMyDelay(null);
                                                                              quickDelayDate(x.r, x.ph.key, d.date, d.cat, d.note.trim()); }}
                                                               className="ctl px-5 text-[14px] font-bold text-white hover:text-white disabled:opacity-40 disabled:cursor-not-allowed"
                                                               style={{background:'var(--brand)', borderColor:'transparent', whiteSpace:'nowrap',
                                                                       boxShadow:'0 1px 2px rgba(15,23,42,0.12)'}}
-                                                              title={(!dl.date || !dl.cat || !dl.note.trim())
+                                                              title={(!dlCk.dateOk || !dl.cat || !dl.note.trim())
                                                                   ? '請先選好改到哪天、原因分類，並填寫文字說明（三樣都是必填）'
-                                                                  : isOverLimit(dl.note, NOTE_MAX) ? overLimitMsg('文字說明', dl.note, NOTE_MAX)
-                                                                  : `把${phaseEndWord(x.ph)}延到 ${dl.date} 並直接存檔`}>
-                                                          存檔
+                                                                  : dlCk.noteLong ? overLimitMsg('文字說明', dl.note, NOTE_MAX)
+                                                                  : (dlCk.far && !dlCk.farConfirmed) ? '這一天離今天超過一年，請先在上面按「是，就是這一天」'
+                                                                  : `把${phaseEndWord(x.ph)}改到 ${dl.date} 並直接存檔`}>
+                                                          {dlCk.dateOk ? `存成 ${ymdWeek(dl.date)}` : '存檔'}
                                                       </button>
                                                       <button type="button" onClick={()=>setMyDelay(null)}
                                                               className="text-[12px] hover:underline" style={{color:'var(--text-muted)'}}
-                                                              title="收起來，回到「做完了嗎？」">← 回上一步</button>
+                                                              title={`收起來，回到「${x.ph.ask || '做完了嗎？'}」`}>← 回上一步</button>
                                                   </div>
                                                   {/* ⚠️ 延後**刻意不給「復原」**（第 92 批）：那要靠再寫一筆「日期異動」改回去，
-                                                      會污染 ⚠N 與第 69 批的「重新排程」判定。出路是「完整編輯 ↗」。
+                                                      會污染 ⚠N 與第 69 批的「重新排程」判定。出路是再按一次「還沒，要改日期」。
                                                       ⚠️ 這行字與完成那排的「按錯可以按復原」講的是**不同的事**，不可以互抄 */}
                                                   <div className="text-[12px] mt-2" style={{color:'var(--text-muted)'}}>
                                                       這會記成一筆「日期異動」。之後要再改，可以再按一次「還沒，要改日期」。
@@ -8898,7 +9409,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                   {/* ⚠️ 第 95 批：問句與兩顆鈕同一行。「{verb}」拿掉 ——
                                                       上面那行已經寫了「驗收已逾期 N 天」，同一個詞不印兩次（第 37 批） */}
                                                   <div className="flex items-center gap-2 flex-wrap">
-                                                      <span className="text-[14px] font-bold" style={{color:'var(--text-primary)'}}>做完了嗎？</span>
+                                                      <span className="text-[14px] font-bold" style={{color:'var(--text-primary)'}}>{x.ph.ask || '做完了嗎？'}</span>
                                                       <button type="button" disabled={isSubmitting}
                                                               onClick={()=>{ setMyDelay(null); setMyDoneAsk(doneAskKey); }}
                                                               className="ctl px-5 text-[14px] font-bold text-white hover:text-white disabled:opacity-40"
@@ -8918,7 +9429,6 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                               title="按下去會再問「改到哪天」與「為什麼要改」，不會直接改掉日期（改早改晚都可以）">
                                                           還沒，要改日期
                                                       </button>
-                                                      {rollbackLink}
                                                   </div>
                                                   </>) : (<>
                                                   {/* ─── 第二層：哪一天做完的（第 92 批 B 組那三顆，原封不動搬進來）───
@@ -8928,7 +9438,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                       <button type="button" onClick={()=>setMyDoneAsk('')}
                                                               className="text-[12px] font-normal hover:underline"
                                                               style={{color:'var(--text-muted)'}}
-                                                              title="收起來，回到「做完了嗎？」">← 返回</button>
+                                                              title={`收起來，回到「${x.ph.ask || '做完了嗎？'}」`}>← 返回</button>
                                                   </div>
                                                   {/* ─── 第 136 批：每一顆都直接寫出「會記成什麼」───
                                                       ⚠️ 原本只有 tooltip 講，而且「今天」那顆連 tooltip 都沒講後果：原訂 09/11、10/07 才來按，
@@ -8967,16 +9477,15 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                           🗓 其他日期…
                                                       </button>
                                                   </div>
-                                                  {/* 第 136 批：延期那一種一定要在按之前講清楚，並給出路（選實際那一天） */}
+                                                  {/* 第 136 批：延期那一種一定要在按之前講清楚。
+                                                      第 231 批（使用者：「照你建議的修改」A3）縮成一句：後面那句「如果其實更早就做完了，請選…」
+                                                      與「點一下就存好了，按錯可以從提示上按「復原」」拿掉 —— 出路就是左邊那兩顆晶片本身
+                                                      （晶片上已經印「準時／延期 N 天」），復原在存檔後的提示框上照舊有。不要加回來。 */}
                                                   {todayOutcome.late && (
                                                   <div className="text-[12px] mt-2" style={{color:'var(--text-secondary)'}}>
                                                       選「今天」會記成<b style={{color:'var(--tone-alert)'}}>延期 {todayOutcome.days} 天完成</b>（延期次數 +1）。
-                                                      如果其實更早就做完了，請選「{plannedPast && !sameDay ? '原訂那天' : '其他日期…'}」{plannedPast && !sameDay ? '或「其他日期…」' : ''}挑實際做完的那一天。
                                                   </div>
                                                   )}
-                                                  <div className="text-[12px] mt-2" style={{color:'var(--text-muted)'}}>
-                                                      點一下就存好了，按錯可以從提示上按「復原」。
-                                                  </div>
                                                   </>)}
                                               </div>
                                           )}
@@ -9002,7 +9511,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                : null}
                                               <span className="text-[12px]" style={{color:'var(--text-muted)'}}>
                                                   {x.st && x.st.kind === 'order'
-                                                      ? '等前一階段的日期過了，這裡就會出現「做完了嗎？」'
+                                                      ? `等前一階段的日期過了，這裡就會出現「${x.ph.ask || '做完了嗎？'}」`
                                                       : x.st && x.st.kind === 'prereq'
                                                       ? '前面的日期要請 MSD 負責人在「需求列表」補齊'
                                                       : '這一階段的狀態要請 MSD 負責人在「需求列表」確認'}
@@ -9013,7 +9522,6 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                       title={`修改「${x.ph.label}」的${phaseEndWord(x.ph)}（改晚或改早都可以，要選原因並寫一句說明）`}>
                                                   🗓 改日期…
                                               </button>
-                                              {rollbackLink}
                                           </div>
                                           )}
 
@@ -9071,32 +9579,44 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                           style={{color:'var(--text-muted)'}}>取消</button>
                                               </div>
                                               ) : specUrl ? (<>
+                                              {/* 第 230 批（使用者看過示意圖：「A1先改」）：不印網址本身，改成「已附連結 ↗」——
+                                                  一長串網址（https://www.bing.com/search?…）對 EMS 是雜訊，與展開明細第 167 批同一個做法。
+                                                  完整網址仍在 title；「更換」的輸入框照舊帶出完整網址。 */}
                                               <a href={specUrl} target="_blank" rel="noopener noreferrer"
                                                  className="truncate min-w-0 hover:underline" style={{color:'var(--brand)'}}
                                                  title={`點一下開啟規格文件：${specUrl}`}>
-                                                  {specUrl}
+                                                  已附連結 <span aria-hidden="true">↗</span>
                                               </a>
                                               {/* ⚠️⚠️ 第 140 批（使用者：「Notes Link 我若輸入錯誤，看起來不能再重新更新，請修正!!!」）：
                                                   有連結時原本只有「開啟 ↗」，貼錯了就改不回來（我的待辦沒有完整編輯）。補一顆「更換」，
                                                   與檢視視窗那顆同名（第 123 批）、同一條寫入（quickSaveLink）。輸入框帶出目前的值方便改一兩個字。
                                                   ⚠️ 仍然不給「清成空白」；第 159 批起要拿掉連結＝改成「不另附」（askNoLink，會留確認列）。 */}
-                                              <span className="inline-flex items-center gap-3 whitespace-nowrap">
-                                                  {/* 第 141 批（使用者指定）：「開啟 ↗」拿掉，只留「更換」—— 左邊那條藍字網址本身就點得開 */}
-                                                  <button type="button" onClick={()=>{ setMyLinkEdit({ id:x.r.id, value:specUrl, cur:specUrl });
+                                              {/* 第 237 批 B（使用者看過示意圖：「A~D都做」）：原本右邊同時有「更換」「不另附」兩顆，EMS 多半一次都不按、卻每張卡都看到。
+                                                  收成一顆「改…」，按了才在下一行攤開兩個選項（字面講清楚會做什麼）。兩條路與寫入都沒變：
+                                                  換一個連結＝原本的「更換」（第 140 批，quickSaveLink）；改成不另附＝askNoLink（第 159 批，會先確認）。 */}
+                                              <button type="button" onClick={()=>setMyLinkMenu(m => m === x.r.id ? null : x.r.id)}
+                                                      aria-expanded={myLinkMenu === x.r.id}
+                                                      className="inline-flex items-center gap-1 whitespace-nowrap hover:underline"
+                                                      style={{color:'var(--text-secondary)'}}
+                                                      title="連結貼錯了、或這筆其實不需要規格文件？按這裡選要怎麼改">
+                                                  <PencilIcon size={12} />{myLinkMenu === x.r.id ? '收起' : '改…'}
+                                              </button>
+                                              {myLinkMenu === x.r.id && (
+                                              <span className="flex items-center justify-end gap-2 flex-wrap text-[12px]" style={{gridColumn:'2 / 4'}}>
+                                                  <button type="button" onClick={()=>{ setMyLinkMenu(null); setMyLinkEdit({ id:x.r.id, value:specUrl, cur:specUrl });
                                                                           // 舊網址先全選：貼錯的多半整條換掉（autoFocus 時 onFocus 選不到，所以等它掛上再選）
                                                                           setTimeout(() => { const el = document.activeElement; if (el && el.tagName === 'INPUT') el.select(); }, 0); }}
-                                                          className="inline-flex items-center gap-1 hover:underline"
-                                                          style={{color:'var(--text-secondary)'}}
+                                                          className="ctl px-3" style={{whiteSpace:'nowrap'}}
                                                           title="連結貼錯了？換成正確的網址（會記在變更軌跡裡）">
-                                                      <PencilIcon size={12} />更換
+                                                      換一個連結
                                                   </button>
-                                                  <button type="button" onClick={()=>askNoLink(x.r)}
-                                                          className="underline hover:no-underline"
-                                                          style={{color:'var(--text-muted)', textUnderlineOffset:'3px'}}
+                                                  <button type="button" onClick={()=>{ setMyLinkMenu(null); askNoLink(x.r); }}
+                                                          className="ctl px-3" style={{whiteSpace:'nowrap'}}
                                                           title="這筆其實不需要規格文件：拿掉目前的連結、改記成「不另附」。按下去會再確認一次">
-                                                      不另附
+                                                      改成不另附
                                                   </button>
                                               </span>
+                                              )}
                                               </>) : noLinkEntry ? (<>
                                               <span className="truncate min-w-0 cursor-help" style={{color:'var(--text-muted)'}}
                                                     title={`${whoOf(noLinkEntry.changedBy) || '—'} 於 ${(noLinkEntry.changedAt || '').slice(0, 10)} 確認這筆不另附規格文件。\n之後有文件，按右邊的「貼上」就會取代這筆確認。`}>
@@ -9137,16 +9657,16 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                               <div className="min-w-0" style={{gridColumn:'2 / 4'}}>
                                                   {/* ⚠️⚠️ 起點是完整的 curStatus（第 108 批），不是只印最新一則的 curLatest.latest；
                                                       textarea、不加 maxLength（NVARCHAR(MAX)）、Ctrl/⌘+Enter 送出但主要出口是按鈕 */}
-                                                  <textarea rows="3" autoFocus value={myStatusEdit.value}
+                                                  <textarea rows="3" autoFocus ref={caretToEnd} value={myStatusEdit.value}
                                                             onChange={e=>setMyStatusEdit(p => p ? {...p, value:e.target.value} : p)}
                                                             onKeyDown={e=>{ if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-                                                                                const v = myStatusEdit.value; setMyStatusEdit(null); quickSaveStatus(x.r, v); } }}
+                                                                                const v = statusEditFinal(myStatusEdit.value, myStatusEdit.seed); setMyStatusEdit(null); quickSaveStatus(x.r, v); } }}
                                                             className="w-full px-3 py-2 rounded text-sm border outline-none focus:ring-2 ring-indigo-500/40"
                                                             style={{background:'var(--bg-main)', borderColor:'var(--border-table)'}}
                                                             placeholder="現在進行到哪裡、卡在什麼地方…" />
                                                   <div className="mt-1.5 flex items-center gap-2 flex-wrap">
                                                       <button type="button" disabled={isSubmitting}
-                                                              onClick={()=>{ const v = myStatusEdit.value; setMyStatusEdit(null); quickSaveStatus(x.r, v); }}
+                                                              onClick={()=>{ const v = statusEditFinal(myStatusEdit.value, myStatusEdit.seed); setMyStatusEdit(null); quickSaveStatus(x.r, v); }}
                                                               className="ctl px-4 text-[14px] disabled:opacity-40 disabled:cursor-not-allowed"
                                                               style={{whiteSpace:'nowrap'}}
                                                               title="存進這筆需求的現況描述（會記在變更軌跡裡）。快捷鍵：Ctrl + Enter">
@@ -9156,7 +9676,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                               className="text-[12px] hover:underline flex-shrink-0"
                                                               style={{color:'var(--text-muted)'}}>取消</button>
                                                       <span className="text-[12px]" style={{color:'var(--text-muted)'}}>
-                                                          這裡是完整內容，新的一則請接在最後面 · EMS 與 MSD 兩邊都看得到
+                                                          {curStatus ? '直接打新的一則就好，前面的內容會留著 · ' : ''}EMS 與 MSD 兩邊都看得到
                                                       </span>
                                                   </div>
                                               </div>
@@ -9177,14 +9697,14 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                   </span>
                                                   )}
                                                   </>) : (
-                                                  <span style={{color:'var(--text-muted)'}}>還沒寫</span>
+                                                  <span style={{color:'var(--text-muted)'}}>還沒寫（選填）</span>
                                                   )}
                                               </span>
-                                              <button type="button" onClick={()=>setMyStatusEdit({ id:x.r.id, value: curStatus })}
+                                              <button type="button" onClick={()=>setMyStatusEdit({ id:x.r.id, ...statusEditStart(curStatus) })}
                                                       className="inline-flex items-center gap-1 whitespace-nowrap hover:underline"
                                                       style={{color:'var(--text-secondary)'}}
                                                       title={curStatus
-                                                          ? '就地更新現況描述（框裡會帶出完整內容，新的一則接在最後面）'
+                                                          ? '就地更新現況描述（框裡會帶出完整內容、換好一行，直接打新的一則）'
                                                           : '寫一段目前進度 —— EMS 與 MSD 兩邊都看得到'}>
                                                   <PencilIcon size={12} />{curStatus ? '更新' : '填寫'}
                                               </button>
@@ -9229,7 +9749,9 @@ const { useState, useMemo, Fragment, useEffect } = React;
                             <div>
                                 {todoSecHead(myWaitOpen, ()=>setMyWaitOpen(v => !v), 'wait', '追蹤中',
                                              myTodo.waiting.length,
-                                             `在等 ${myTodo.waitSide}`,
+                                             // 第 237 批 C：灰字直接講「不用你動手」（原本只寫「在等 ○○」，意思在 tooltip）；
+                                             // 有逾期的才接後半句 —— 逾期件數本身仍是左邊那個紅字（第 113 批）
+                                             `輪到 ${myTodo.waitSide}，不用你動手${myTodo.waitOverdue > 0 ? ' · 逾期的可按 ✉ 提醒' : ''}`,
                                              myTodo.waitOverdue > 0 ? `其中 ${myTodo.waitOverdue} 筆已逾期` : '',
                                              `追蹤中＝不用你動手，目前在等 ${myTodo.waitSide}。\n這幾筆現在是 ${myTodo.waitSide} 那一邊要動；還沒壓日期或已經逾期的，展開可以按 ✉ 寄信提醒`,
                                              { compact:true, first:true })}
@@ -9310,17 +9832,34 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 判定走 overdueDuePhase()（＝後端 OverduePhaseOf()），不是只看 x.alert ——
                                                 畫面有鈕、後端卻回「不需要通知」就是第 57 批那種壞掉。
                                                 還沒到期的（含 7 日內）維持小圓點：還沒到期就去催人不是這顆鈕的用途。 */}
-                                            {(x.unset || overdueDuePhase(x.r)) ? (
+                                            {(x.unset || overdueDuePhase(x.r)) ? (() => {
+                                                // 第 232 批 A2（使用者看過示意圖：「照你建議的改」）：今天已經寄過同一封（同一階段、同一位收件者、
+                                                // 逾期的話同一個原訂日）→ 鈕改灰框「✉ 再提醒 ○○」、title 寫幾點寄給誰。**只告知、不擋**（第 43 批），
+                                                // 按下去照樣開 notifyModal（那裡的黃字「今天 HH:mm 已寄過一次」是同一筆）。
+                                                // ⚠️ 判定一律走 phaseNotifiedEntry()（與 askNotifyUnset 傳一樣的參數），不在這裡自己看稽核列。
+                                                // ⚠️ 試寄的信本來就不寫軌跡，所以不會被算成寄過；**不要**在這裡看 autoNotify（它只在視窗打開時才抓，
+                                                //    頁面剛載入時是 null，看它會讓同一顆鈕開過視窗前後長得不一樣）。不是今天寄的回到紅框原樣。
+                                                const np = notifyPreview(x.r);
+                                                const prev = (np && !np.problem)
+                                                    ? phaseNotifiedEntry(x.r.id, np.phase.key, np.toEmail, null, np.kind === 'overdue' ? np.end : undefined)
+                                                    : null;
+                                                const sentAt = prev && (prev.changedAt || '').slice(0, 10) === TODAY_ISO
+                                                    ? prev.changedAt.slice(11, 16) : '';
+                                                return (
                                                 <button type="button" onClick={()=>askNotifyUnset(x.r)}
                                                         className="ctl px-3 text-[13px] flex-shrink-0"
-                                                        style={{whiteSpace:'nowrap', color:ALERT_STYLES.unset.color,
-                                                                borderColor:ALERT_STYLES.unset.border}}
-                                                        title={x.unset
+                                                        style={sentAt ? {whiteSpace:'nowrap'}
+                                                                      : {whiteSpace:'nowrap', color:ALERT_STYLES.unset.color,
+                                                                         borderColor:ALERT_STYLES.unset.border}}
+                                                        title={sentAt
+                                                            ? `今天 ${sentAt} 已寄過一次給 ${np.toName}${np.ccName ? `（副本 ${np.ccName}）` : ''}。\n要再寄一封就按下去，還是會先問一次。`
+                                                            : x.unset
                                                             ? `寄信通知「${x.ph.label}」的負責人進系統壓定日期（副本會給另一邊的負責人）`
                                                             : `「${x.ph.label}」已經逾期 —— 寄信提醒負責人標記完成或更新日期（副本會給另一邊的負責人）`}>
-                                                    ✉ 提醒 {x.ph.side}
+                                                    ✉ {sentAt ? '再提醒' : '提醒'} {x.ph.side}
                                                 </button>
-                                            ) : (
+                                                );
+                                            })() : (
                                                 <StageDots stage={savedStage(x.r)} />
                                             )}
                                         </div>
@@ -9348,20 +9887,33 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                    展開之後什麼都沒有的收合鈕，正是第 94 批那條「沒有意義的選項整顆不印」。
                                    上面那格空狀態已經把「你還沒有被指派」講完了。 */}
                             {(() => {
+                                // ⚠️⚠️ 第 231 批（使用者：「照你建議的修改」B1）：「已結案」那一區**併進「我的全部」**。
+                                //    兩區重疊（已結案 ⊂ 我的全部），EMS 要找舊需求時不知道該點哪一個。現在只剩一區：
+                                //    進行中（登記順序）在上、已結案（完成日新→舊，第 113 批那個排序與日期照用）在下，
+                                //    中間一行小標題「已結案 N 筆」。標題右邊的摘要寫「進行中 N · 已結案 M」。
+                                //    推翻第 113 批「已結案獨立一區」—— 不要再拆回兩區。
+                                const openRows = myTodo.all.filter(r => savedStage(r) !== 5);
+                                const closedRows = myTodo.closed.map(c => c.r);
+                                // ⚠️⚠️ 第 232 批 B1（使用者看過示意圖：「照你建議的改」）：已結案預設只列最近 MY_CLOSED_PEEK 筆
+                                //    （玉婷 20 筆、侑憲 17 筆，展開後整頁大半是結案清單）。按「再顯示 N 筆較早的」才全部列，
+                                //    小標題與右邊摘要的件數**一律寫總數**（收起來的不是不存在）。進行中永遠全部列。
+                                const MY_CLOSED_PEEK = 5;
+                                const closedHidden = myClosedAll ? 0 : Math.max(0, closedRows.length - MY_CLOSED_PEEK);
+                                const closedShown = closedHidden > 0 ? closedRows.slice(0, MY_CLOSED_PEEK) : closedRows;
                                 const lists = [
-                                    { key:'closed', icon:'closed', title:'已結案', rows: myTodo.closed.map(c => c.r),
-                                      done:true, open: myClosedOpen, toggle: ()=>setMyClosedOpen(v => !v),
-                                      sub: myTodo.closed.length && myTodo.closed[0].done ? `最近一筆 ${myTodo.closed[0].done.replace(/-/g, '/')} 結案` : '',
-                                      hint:'已結案＝你名下已經走完四關的需求，依完成日由新到舊排。日期印的是 ④ 驗收的完成日' },
-                                    { key:'all', icon:'all', title:'我的全部', rows: myTodo.all,
+                                    { key:'all', icon:'all', title:'我的全部', rows: [...openRows, ...closedShown], closedFrom: openRows.length,
+                                      closedTotal: closedRows.length, closedHidden,
+                                      closedHiddenRange: closedHidden > 0
+                                          ? [doneDateOf(closedRows[closedRows.length - 1]), doneDateOf(closedRows[MY_CLOSED_PEEK])] : null,
                                       done:false, open: myAllOpen, toggle: ()=>setMyAllOpen(v => !v),
-                                      sub:'含已結案 · 找舊的看這裡',
-                                      hint:'你名下的全部需求（進行中與已結案都在裡面），依登記順序排' }
+                                      sub: [openRows.length ? `進行中 ${openRows.length}` : '', closedRows.length ? `已結案 ${closedRows.length}` : '']
+                                               .filter(Boolean).join(' · '),
+                                      hint:'你名下的全部需求。進行中的在上面（依登記順序），已結案的在下面（依 ④ 驗收的完成日由新到舊）' }
                                 ];
-                                return lists.filter(s => s.rows.length > 0).map((sec, si) => (
+                                return lists.filter(s => s.rows.length > 0 || s.closedTotal > 0).map((sec, si) => (
                                 <div key={sec.key}>
                                     {todoSecHead(sec.open, sec.toggle, sec.icon, sec.title,
-                                                 sec.rows.length, sec.sub, '', sec.hint,
+                                                 sec.closedFrom + sec.closedTotal, sec.sub, '', sec.hint,
                                                  { compact:true, first: si === 0 && myTodo.waiting.length === 0 })}
                                     {sec.open && (
                                     <div className="overflow-hidden" style={{borderTop:'1px solid var(--border-card)'}}>
@@ -9391,8 +9943,26 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         const due = dueInfo.get(r.id);
                                         const overdue = !!due && due.level === 'overdue' && !!lp && due.phase.key === lp.key;
                                         return (
-                                        <div key={r.id} className="px-4 py-2.5 flex items-center gap-3.5"
-                                             style={i > 0 ? {borderTop:'1px solid var(--border-card)'} : undefined}>
+                                        <Fragment key={r.id}>
+                                        {/* 第 231 批：進行中與已結案之間一行小標題（已結案那幾列的日期是完成日、由新到舊） */}
+                                        {/* 第 232 批 B2：進行中那一段也有一行小標題（與已結案那行對稱；原本看不出是照什麼排的） */}
+                                        {i === 0 && sec.closedFrom > 0 && (
+                                        <div className="px-4 py-1.5 text-[12px] font-bold"
+                                             style={{color:'var(--text-secondary)', background:'var(--bg-table-expanded)'}}
+                                             title="還沒結案的需求，依登記順序（與需求列表的 No 同一個順序）">
+                                            進行中 {sec.closedFrom} 筆 <span className="font-normal" style={{color:'var(--text-muted)'}}>· 依登記順序</span>
+                                        </div>
+                                        )}
+                                        {i === sec.closedFrom && (
+                                        <div className="px-4 py-1.5 text-[12px] font-bold"
+                                             style={{color:'var(--tone-good)', background:'var(--bg-table-expanded)',
+                                                     borderTop: i > 0 ? '1px solid var(--border-card)' : undefined}}
+                                             title="已經走完四關的需求，依 ④ 驗收的完成日由新到舊排">
+                                            已結案 {sec.closedTotal} 筆 <span className="font-normal" style={{color:'var(--text-muted)'}}>· 依完成日由新到舊</span>
+                                        </div>
+                                        )}
+                                        <div className="px-4 py-2.5 flex items-center gap-3.5"
+                                             style={(i > 0 && i !== sec.closedFrom) ? {borderTop:'1px solid var(--border-card)'} : undefined}>
                                             {/* NID 從藍色連結降成灰字前綴：62 列重複 62 次「NID」兩個字，
                                                 而整列要開編輯視窗按名稱就好（與「等 ○○」同一個作法） */}
                                             <span className="font-mono text-[13px] flex-shrink-0 text-right"
@@ -9447,6 +10017,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 <StageDots stage={st} />
                                             </span>
                                         </div>
+                                        </Fragment>
                                         );
                                     })}
                                         {/* ⚠️⚠️ 第 95 批：原本這顆與上面那顆收合鈕**並排**，兩顆同樣是
@@ -9459,6 +10030,22 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                             ⚠️ 第 113 批：**只掛在「我的全部」那一區**。「已結案」切過去之後
                                                需求列表套的是「負責人＝我」而不是「只看已結案」，兩邊筆數對不起來
                                                （第 84 批那條）；而要搜尋、匯出的人本來就會展開完整那一份。 */}
+                                        {/* 第 232 批 B1：已結案收起來的那幾筆。⚠️ 件數與日期範圍一定要寫（第 84 批：排除了東西就要說排除幾件） */}
+                                        {sec.closedTotal > MY_CLOSED_PEEK && (
+                                        <button type="button" onClick={()=>setMyClosedAll(v => !v)} aria-expanded={!sec.closedHidden}
+                                                className="w-full text-left px-4 py-2 text-[13px] font-bold hover:underline"
+                                                style={{color:'var(--brand)', borderTop:'1px solid var(--border-card)'}}
+                                                title={sec.closedHidden ? '列出全部已結案的需求' : `收起來，只列最近 ${MY_CLOSED_PEEK} 筆已結案`}>
+                                            {sec.closedHidden ? (<>
+                                                ▾ 再顯示 {sec.closedHidden} 筆較早的
+                                                {sec.closedHiddenRange && sec.closedHiddenRange[0] && (
+                                                <span className="font-normal" style={{color:'var(--text-muted)'}}>
+                                                    （{fmtYmd(sec.closedHiddenRange[1])} ～ {fmtYmd(sec.closedHiddenRange[0])}）
+                                                </span>
+                                                )}
+                                            </>) : <>▴ 只看最近 {MY_CLOSED_PEEK} 筆</>}
+                                        </button>
+                                        )}
                                         {sec.key === 'all' && (
                                         <div className="px-4 py-2.5" style={{borderTop:'1px solid var(--border-card)'}}>
                                             <button type="button"
@@ -9486,16 +10073,39 @@ const { useState, useMemo, Fragment, useEffect } = React;
                         {/* ═══ Dashboard ═══ */}
                         {activeView === 'dashboard' && (
                             <div className="space-y-4 dash-view">{/* dash-view：第 157 批，input.css 把這一頁的 10px 一律提到 11px */}
-                                {/* KPI ── 正常數值一律中性色，只有需關注／時程異動在大於 0 時才上色。
-                                    五張卡全部可點：點下去＝切到需求列表並套上這張卡代表的條件
-                                    （見 openListWith）。件數為 0 的卡不給點 —— 點了只會看到空表格 */}
-                                <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+                                {/* KPI ── 正常數值一律中性色，只有需關注在大於 0 時才上色。
+                                    四張卡全部可點：點下去＝切到需求列表並套上這張卡代表的條件
+                                    （見 openListWith）。件數為 0 的卡不給點 —— 點了只會看到空表格。
+                                    ⚠️ 第 210 批拿掉「時程異動」（使用者：「最上方需要時程異動的卡片嗎? 好像有點突兀」）：
+                                    累計數字只增不減、單位是「次」不是「件」、永遠是黃色。每月的改日期看「本月到期達成」的日期延後，
+                                    找改過日期的需求走「更多篩選 → 警示 → 有時程異動」與每一列的 ⚠N。不要加回來 */}
+                                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
                                     <KpiCard label="總需求數" value={analytics.total} sub="所有已登記需求"
                                              onClick={analytics.total>0 ? ()=>openListWith(null) : null}
                                              hint="點此切到需求列表，看全部需求（清除所有篩選）" />
-                                    <KpiCard label="進行中" value={analytics.ongoing} sub={`佔比 ${analytics.total>0?Math.round((analytics.ongoing/analytics.total)*100):0}%`}
+                                    {/* 第 210 批：副標「佔比 N%」改成依現在輪到誰分兩邊（使用者：進行中其實有兩邊；看過三種寫法選精簡版）。
+                                        兩個數字各自是按鈕（stopPropagation，不觸發整張卡），點了篩那兩關＋只看進行中。四關明細在 title */}
+                                    <KpiCard label="進行中" value={analytics.ongoing}
+                                             sub={analytics.ongoing > 0 ? (<>
+                                                 {[['EMS', ongoingSides.ems, ['1', '4']], ['MSD', ongoingSides.msd, ['2', '3']]].map(([side, n, codes], i) => (
+                                                     <Fragment key={side}>
+                                                         {i > 0 && <span aria-hidden="true"> · </span>}
+                                                         <button type="button" disabled={n === 0}
+                                                                 className="hover:underline disabled:no-underline disabled:cursor-default"
+                                                                 style={{textDecorationStyle:'dotted'}}
+                                                                 title={n > 0 ? `點此切到需求列表，只看 ${codes.map(c => STAGE_CODES[c].label).join('、')}（${n} 筆）` : undefined}
+                                                                 onClick={e => { e.stopPropagation(); if (n > 0) openListWith(() => { setProgressFilter('ongoing'); setStageMulti(true); setStageFilter(codes); }); }}>
+                                                             {side} <b className="tabular-nums" style={{color:'var(--text-primary)'}}>{n}</b>
+                                                         </button>
+                                                     </Fragment>
+                                                 ))}
+                                             </>) : '沒有進行中的需求'}
                                              onClick={analytics.ongoing>0 ? ()=>openListWith(()=>setProgressFilter('ongoing')) : null}
-                                             hint="點此切到需求列表，只看尚未結案的需求" />
+                                             hint={`還沒結案的需求，依現在輪到誰分兩邊
+EMS＝${STAGE_CODES['1'].label} ${ongoingSides[1]}、${STAGE_CODES['4'].label} ${ongoingSides[4]}
+MSD＝${STAGE_CODES['2'].label} ${ongoingSides[2]}、${STAGE_CODES['3'].label} ${ongoingSides[3]}${ongoingSides.other > 0 ? `
+目前階段沒填或不認得 ${ongoingSides.other}` : ''}
+點 EMS／MSD 的數字只看那兩關；點卡片其他地方看全部進行中`} />
                                     <KpiCard label="已完成" value={analytics.done} sub={`完成率 ${completionRate}%`}
                                              onClick={analytics.done>0 ? ()=>openListWith(()=>setProgressFilter('done')) : null}
                                              hint="點此切到需求列表，只看已結案的需求" />
@@ -9507,23 +10117,13 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                     : "無緊急項目"}
                                              onClick={dueAlerts.length>0 ? ()=>openListWith(()=>{ setDueFilter('attention'); setDuePriority(true); }) : null}
                                              hint="點此切到需求列表，只看需關注的項目" />
-                                    {/* 這張卡的數字是**異動次數**，篩出來的是**需求件數**，兩個數字本來就不會一樣。
-                                        所以副標直接把件數寫出來，不然點下去會以為篩選漏掉了 */}
-                                    {/* ⚠️ 軌跡讀不到時這張卡一定要顯示成「不可用」而不是 0（第 24 批）——
-                                        0 的意思是「沒有人改過時程」，那是完全相反的結論 */}
-                                    <KpiCard label="時程異動" value={historyError ? '—' : analytics.totalChanges}
-                                             tone={historyError ? 'alert' : (analytics.totalChanges>0?'warn':null)}
-                                             sub={historyError ? '軌跡讀取失敗，數字暫不可用'
-                                                  : analytics.totalChanges>0?`累計 · 不分月份 · 涉及 ${alertCounts.changed} 件`:"累計 · 不分月份"}
-                                             onClick={!historyError && alertCounts.changed>0 ? ()=>openListWith(()=>setAlertFilter('changed')) : null}
-                                             hint="點此切到需求列表，只看有時程異動過的需求" />
                                 </div>
                                 {/* ─── KPI 的口徑＋頁內跳轉（第 201 批，使用者看過示意圖選 1、2）───
                                     整頁約 2.7 個螢幕高：一行連結直接捲到那張卡（扣掉黏在上面的頁首）。不列印 */}
                                 <div className="flex items-center gap-x-3 gap-y-1.5 flex-wrap -mt-1 text-[12px] no-print" style={{color:'var(--text-muted)'}}>
                                     <span className="flex items-center gap-1.5">
-                                        <ScopePill tip="上面五張 KPI 算的是全部需求，不分時間">全部需求</ScopePill>
-                                        <span>上面五張 KPI</span>
+                                        {/* 第 210 批：原本「［全部需求］上面五張 KPI」兩個詞並排不成句，改成一句話 */}
+                                        <span>上面四張算的是<b style={{color:'var(--text-secondary)'}}>全部需求</b>（不分時間）</span>
                                     </span>
                                     <span className="ml-auto flex items-center gap-1 flex-wrap">
                                         跳到：
@@ -9548,6 +10148,20 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                 {/* 「需求狀態分佈」已於第 12 批搬到需求列表 —— 改為可點的統計卡，
                                     點下去直接篩選出那一群資料，不再另外維護一份唯讀的統計。
                                     統計報表保留圖表分析與人員負載（那些放進表格反而擠）。 */}
+                                {/* 第 210 批（使用者看過示意圖：「照這版改、用綠字、下週到期也要放」）：需關注 0 筆時縮成一條細橫條 ——
+                                    原本 210px 的大卡只有一行灰字，像沒載入完。綠字＝「已經發生的結果」（目前全數正常），符合第 59 批的用色規則。
+                                    下週到期＝nextWeekCount（批次提醒信 NextWeekOf 的鏡像）。id 保留給「跳到：」 */}
+                                {dueAlerts.length === 0 ? (
+                                <div id="ct-dash-risk" className="t-card px-5 py-3 flex items-center gap-x-3 gap-y-1 flex-wrap">
+                                    <h2 className="text-sm font-semibold" style={{color:'var(--text-primary)'}}>風險預警</h2>
+                                    <ScopePill tip="看的是現在：已到階段卻沒壓日期、已逾期、7 日內到期">現在</ScopePill>
+                                    <span className="text-[13px] font-semibold" style={{color:'var(--tone-good)'}}>✓ 目前沒有逾期、未壓日期或 {DUE_WINDOW_DEFAULT} 日內到期的需求</span>
+                                    <span className="text-[12px]" style={{color:'var(--text-secondary)'}}
+                                          title="下週到期＝不在需關注裡、最近要到期的那一關還剩 8～14 天（與需關注批次提醒信尾那一段同一個定義）">
+                                        · {nextWeekCount > 0 ? `下週到期 ${nextWeekCount} 筆` : '下週也沒有到期的需求'}
+                                    </span>
+                                </div>
+                                ) : (
                                 <div id="ct-dash-risk" className="t-card p-5">
                                     <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
                                         <div className="flex items-center gap-2">
@@ -9592,6 +10206,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         </div>
                                     )}
                                 </div>
+                                )}
 
                                 {/* ═══ 本月到期達成（第 198 批）═══ 計算見 monthDue。放在風險預警與交叉表之間（使用者選 A）。
                                     ⚠️ 月份是這張卡自己的，不跟下面的註冊年月區間連動 —— 標題底下一定要講「依原訂結束日」。
@@ -9600,11 +10215,11 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                     const md = monthDue;
                                     const CATS = [
                                         { k:'ok',   t:'如期完成', c:'var(--tone-good)',  bg:'var(--tone-good-bg)',
-                                          tip:'沒改過日期，完成日在原訂當天或之前' },
+                                          tip:'完成日在原訂當天或之前（日期改早、改了又改回來的也算）' },
                                         { k:'late', t:'延期完成', c:'var(--tone-alert)', bg:'var(--tone-alert-bg)',
-                                          tip:'沒改過日期，但完成日晚於原訂' },
-                                        { k:'chg',  t:'改過日期', c:'var(--tone-warn)',  bg:'var(--tone-warn-bg)',
-                                          tip:'有「日期異動」（改過結束日）。改過之後才如期完成的也算這一類' },
+                                          tip:'沒改過日期，完成時已經晚於原訂' },
+                                        { k:'chg',  t:'日期延後', c:'var(--tone-warn)',  bg:'var(--tone-warn-bg)',
+                                          tip:'原訂日期被往後改過（完成日或目前日期晚於原訂）。改晚之後才在新日期準時完成的也算這一類' },
                                         { k:'rb',   t:'退回重做', c:CHANGE_TYPES['規格回退'].color, bg:CHANGE_TYPES['規格回退'].bg,
                                           tip:'這一關被退回重做過，原本的時程作廢' },
                                         { k:'open', t:'未完成',   c:'var(--text-secondary)', bg:'var(--bg-input)',
@@ -9648,7 +10263,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         // 軌跡讀不到：不出數字（0 個改過日期＝「大家都很準時」，是相反的結論）
                                         <div className="rounded-lg p-3 text-sm font-semibold"
                                              style={{color:'var(--tone-alert)', background:'var(--tone-alert-bg)', border:'1px solid var(--tone-alert-border)'}}>
-                                            變更紀錄讀取失敗，無法判斷哪些如期、哪些改過日期。請按頁首的重新整理再試一次。
+                                            變更紀錄讀取失敗，無法判斷哪些如期、哪些日期延後。請按頁首的重新整理再試一次。
                                         </div>
                                     ) : md.rows.length === 0 && md.movedIn.length === 0 ? (
                                         <div className="text-center py-8 text-sm" style={{color:'var(--text-muted)'}}>{mdMonth} 沒有在這個月到期的階段</div>
@@ -9656,12 +10271,12 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                     {md.histPartial && (
                                         <div className="mb-3 rounded-lg px-3 py-2 text-[12px]"
                                              style={{color:'var(--tone-warn)', background:'var(--tone-warn-bg)', border:'1px solid var(--tone-warn-border)'}}>
-                                            變更紀錄從 {md.histStart} 才開始有，這個月的「改過日期」可能偏少（之前的改動查不到）
+                                            變更紀錄從 {md.histStart} 才開始有，這個月的「日期延後」可能偏少（之前的改動查不到）
                                         </div>
                                     )}
                                     <div className="flex items-baseline gap-x-4 gap-y-1 flex-wrap text-[13px] mb-2" style={{color:'var(--text-secondary)'}}>
                                         <span>原訂在本月 <b className="tabular-nums" style={{color:'var(--text-primary)'}}>{md.rows.length}</b> 個階段（{md.reqN} 筆需求）</span>
-                                        <span title="如期完成 ÷（到期的階段 − 還沒到期的未完成）。改過日期、延期、退回重做、逾期都算沒如期">
+                                        <span title="如期完成 ÷（到期的階段 − 還沒到期的未完成）。日期延後、延期、退回重做、逾期都算沒如期">
                                             如期率 <b className="tabular-nums" style={{color:'var(--text-primary)'}}>{md.rate === null ? '—' : `${md.rate}%`}</b>
                                             <span className="text-[12px]">（{md.count.ok} / {md.denom}{md.notDueN > 0 ? `，不含還沒到期的 ${md.notDueN} 個` : ''}）</span>
                                         </span>
@@ -10253,24 +10868,49 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                             ⚠️ 筆數走 requirementsData.length（全部未刪除的），不可以用 sortedData.length。
                                             ⚠️⚠️ 第 146 批（2026-10-09 使用者要求）：「Excel 匯入」入口拿掉，**管理者也不開放**，只留匯出。
                                             程式（handleImport、確認視窗、/api/import、底下那個隱藏的 file input）全部保留 ——
-                                            日後要恢復：把這顆改回 MenuButton＋Popover（'data'），面板裡放匯出與
+                                            日後要恢復（第 228 批起這顆已經是 MenuButton＋Popover 'excel'）：在下面那個面板裡加一個匯入項目，
                                             onClick={()=>{ setOpenMenu(null); fileInputRef.current.click(); }}、紅框「⚠ 匯入 Excel／會清空整張表後以檔案內容重建」 */}
-                                        <button type="button" className="ctl gap-1.5"
-                                                onClick={()=>{
-                                                    handleExport();
-                                                    const filtered = sortedData.length !== requirementsData.length;
-                                                    showToast(filtered
-                                                        ? `已開始下載全部 ${requirementsData.length} 筆的 Excel（不套用畫面上的篩選，畫面目前是 ${sortedData.length} 筆）`
-                                                        : `已開始下載全部 ${requirementsData.length} 筆的 Excel`,
-                                                        filtered ? 'warn' : 'success');
-                                                }}
-                                                title={`匯出 Excel：下載全部 ${requirementsData.length} 筆成 .xlsx`
-                                                     + (sortedData.length !== requirementsData.length ? `\n不套用畫面上的篩選（畫面目前是 ${sortedData.length} 筆）` : '')}>
-                                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                                                <path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/>
-                                            </svg>
-                                            Excel
-                                        </button>
+                                        {/* 第 228 批（健檢 P2，使用者看過示意圖選「一顆 ⤓ Excel ▾ 點了選」）：兩個選項。
+                                            ①「照畫面的這 N 筆」＝handleExportView（給人看、帶去開會，不能匯回）
+                                            ②「全部 N 筆（原始欄位）」＝原本那顆，handleExport 與 toast 一個字都沒改（要能匯回、當備份）
+                                            ⚠️ 1280 寬的工具列只多一個 ▾（約 14px），原本餘約 185px */}
+                                        <div className="relative">
+                                            <MenuButton open={openMenu==='excel'} onClick={()=>toggleMenu('excel')}
+                                                        title={`匯出 Excel：照畫面的這 ${sortedData.length} 筆，或全部 ${requirementsData.length} 筆（原始欄位）`}>
+                                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                                    <path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/>
+                                                </svg>
+                                                Excel
+                                            </MenuButton>
+                                            <Popover open={openMenu==='excel'} onClose={()=>setOpenMenu(null)} label="匯出 Excel">
+                                                <div className="w-[280px] flex flex-col gap-1">
+                                                    <button type="button" disabled={exportViewBusy || sortedData.length === 0}
+                                                            onClick={()=>{ setOpenMenu(null); handleExportView(); }}
+                                                            className="text-left rounded-md px-2.5 py-2 hover:bg-[var(--bg-pill-hover)] disabled:opacity-50"
+                                                            title={sortedData.length === 0 ? '畫面上目前沒有任何一筆' : '搜尋、篩選、排序都照畫面；欄位固定是完整的欄位'}>
+                                                        <div className="text-xs font-bold" style={{color:'var(--text-primary)'}}>
+                                                            {exportViewBusy ? '產生中…' : `照畫面的這 ${sortedData.length} 筆`}
+                                                        </div>
+                                                        <div className="text-[11px]" style={{color:'var(--text-muted)'}}>欄位、順序跟畫面一樣，日期旁寫逾期／未壓日期，給人看</div>
+                                                    </button>
+                                                    <button type="button"
+                                                            onClick={()=>{
+                                                                setOpenMenu(null);
+                                                                handleExport();
+                                                                const filtered = sortedData.length !== requirementsData.length;
+                                                                showToast(filtered
+                                                                    ? `已開始下載全部 ${requirementsData.length} 筆的 Excel（不套用畫面上的篩選，畫面目前是 ${sortedData.length} 筆）`
+                                                                    : `已開始下載全部 ${requirementsData.length} 筆的 Excel`,
+                                                                    filtered ? 'warn' : 'success');
+                                                            }}
+                                                            className="text-left rounded-md px-2.5 py-2 hover:bg-[var(--bg-pill-hover)]"
+                                                            title={`下載全部 ${requirementsData.length} 筆成 .xlsx，不套用畫面上的篩選`}>
+                                                        <div className="text-xs font-bold" style={{color:'var(--text-primary)'}}>全部 {requirementsData.length} 筆（原始欄位）</div>
+                                                        <div className="text-[11px]" style={{color:'var(--text-muted)'}}>跟原本的檔案一樣，可以匯回、當備份</div>
+                                                    </button>
+                                                </div>
+                                            </Popover>
+                                        </div>
                                         <input type="file" ref={fileInputRef} onChange={handleImport} style={{ display: 'none' }} accept=".xlsx" />
                                         {/* 新增：主要動作用實心色，與次要操作在視覺上分層。
                                             ⚠️⚠️ 第 121 批（2026-10-06 使用者要求）：**所有人都看得到**，不掛 canManageList。
@@ -10369,11 +11009,16 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         {/* ─── 需關注批次提醒（第 125 批）：只給 MSD／管理者（canManageList，與其他寫入入口同一個條件）───
                                             ⚠️ 純圖示 34px（ctl ctl-icon）：這一排的寬度預算只有幾十 px（第 51／73 批），帶文字會斷成兩行。
                                             後端自己會再擋一次（真實 Windows 帳號），這裡藏起來只是畫面。 */}
-                                        {canAttnNotify && dueAlerts.length > 0 && (
+                                        {/* 第 206 批（使用者：「需關注 0 筆時也要出現批次寄信的 icon，可以提醒大家 7 日內快到期是 0 筆」）：
+                                            一直出現（不看 dueAlerts.length）；0 筆時信裡寫「目前沒有需關注的需求」＋下週到期 */}
+                                        {canAttnNotify && (
                                             <button type="button" onClick={()=>openAttnNotify()}
                                                     className="ctl ctl-icon no-print"
-                                                    aria-label={`寄信提醒需關注的 ${dueAlerts.length} 筆需求`}
-                                                    title={`寄信提醒「需關注」這 ${dueAlerts.length} 筆（逾期／${DUE_WINDOW_DEFAULT} 日內到期／未壓日期）。
+                                                    aria-label={dueAlerts.length > 0 ? `寄信提醒需關注的 ${dueAlerts.length} 筆需求` : '寄信給固定名單：目前沒有需關注的需求'}
+                                                    title={(dueAlerts.length > 0
+                                                              ? `寄信提醒「需關注」這 ${dueAlerts.length} 筆（逾期／${DUE_WINDOW_DEFAULT} 日內到期／未壓日期）`
+                                                              : '目前需關注 0 筆，仍可寄信讓大家知道')
+                                                         + `，信尾另列下週到期的需求（下週到期＝第 8～14 天）。
 寄一封信給固定名單（管理設定 → 信件通知），寄出前會先讓你確認收件者。`}>
                                                 <span aria-hidden="true" style={{fontSize:'15px', lineHeight:1}}>✉</span>
                                             </button>
@@ -10554,7 +11199,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         它是「第一次要看、之後再也不看」的內容，卻每天佔著表格上方 61px
                                         （實測第一列資料的起點是 489px，而一列只有 79px）。
                                         ⚠️ 收起只作用在螢幕：`.legend-strip.is-collapsed` 在列印時會回來
-                                        —— 紙本沒有 tooltip，⏰／🔄／⚠ 只剩圖例解釋得了。
+                                        —— 紙本沒有 tooltip，延期／退回次數圖示與 ⚠ 只剩圖例解釋得了。
                                         ⚠️ 也不要改成「整個刪掉」：新接手的人第一次看這張表需要它。 */}
                                     <div className={`legend-strip flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2.5 text-[10px] rounded-t-[10px]${legendShown ? '' : ' is-collapsed'}`}
                                          style={{color:'var(--text-muted)', background:'var(--bg-input)', borderBottom:'1px solid var(--border-card)'}}>
@@ -10769,7 +11414,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                     {showCol('status') && <th className="px-1 py-1" style={{borderRight:'1px solid var(--border-card)'}}><input type="text" className="w-full px-1.5 py-1 text-[10px] rounded focus:outline-none" style={{background:'var(--bg-input)',border:'1px solid var(--border-card)',color:'var(--text-primary)'}} placeholder="Init/Ongoing…" value={colFilters.status||''} onChange={e=>setColFilters({...colFilters, status:e.target.value})} /></th>}
                                                     {/* 目前階段的篩選框跟著它的欄位走：精簡模式在 MSD 右邊（見下方） */}
                                                     {!compact && <th className="px-1 py-1" style={{borderRight:'1px solid var(--border-card)'}}><input type="text" className="w-full px-1.5 py-1 text-[10px] rounded focus:outline-none" style={{background:'var(--bg-input)',border:'1px solid var(--border-card)',color:'var(--text-primary)'}} placeholder="1-5 或名稱" value={colFilters.stageCode||''} onChange={e=>setColFilters({...colFilters, stageCode:e.target.value})} /></th>}
-                                                    {showCol('regDate') && <th className="px-1 py-1" style={{borderRight:'1px solid var(--border-card)'}}><input type="text" className="w-full px-1.5 py-1 text-[10px] rounded focus:outline-none" style={{background:'var(--bg-input)',border:'1px solid var(--border-card)',color:'var(--text-primary)'}} placeholder="YYYY/MM/DD" value={colFilters.regDate||''} onChange={e=>setColFilters({...colFilters, regDate:e.target.value})} /></th>}
+                                                    {showCol('regDate') && <th className="px-1 py-1" style={{borderRight:'1px solid var(--border-card)'}}><input type="text" className="w-full px-1.5 py-1 text-[10px] rounded focus:outline-none" style={{background:'var(--bg-input)',border:'1px solid var(--border-card)',color:'var(--text-primary)'}} placeholder="YYYY-MM-DD" value={colFilters.regDate||''} onChange={e=>setColFilters({...colFilters, regDate:e.target.value})} /></th>}
                                                     <th className="px-1 py-1" style={{borderRight:'1px solid var(--border-card)'}}><input type="text" className="w-full px-1.5 py-1 text-[10px] rounded focus:outline-none" style={{background:'var(--bg-input)',border:'1px solid var(--border-card)',color:'var(--text-primary)'}} placeholder="篩選" value={colFilters.mainCat||''} onChange={e=>setColFilters({...colFilters, mainCat:e.target.value})} /></th>
                                                     <th className="px-1 py-1" style={{borderRight: showCol('notesLink') ? '1px solid var(--border-card)' : '2px solid var(--border-card)'}}><input type="text" className="w-full px-1.5 py-1 text-[10px] rounded focus:outline-none" style={{background:'var(--bg-input)',border:'1px solid var(--border-card)',color:'var(--text-primary)'}} placeholder="篩選" value={colFilters.subCat||''} onChange={e=>setColFilters({...colFilters, subCat:e.target.value})} /></th>
                                                     {/* Notes Link 沒有可輸入的篩選條件（只存超連結），留一格空的把欄位對齊 */}
@@ -10825,7 +11470,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 // 舊的 *History 字串欄位已不再讀寫。
                                                 const rowHist = historyMap.get(item.id) || [];
                                                 // ⚠️ 只數 `日期異動`（見 isDateChange）：init 是首次填寫、
-                                                // 提早完成是好消息、延期與回退各自已有 ⏰ / 🔄 徽章。
+                                                // 提早完成是好消息、延期與退回重做各自已有次數徽章（DelayIcon／RollbackIcon）。
                                                 // 全部算進來的話每一筆都會冤枉地掛上 ⚠，同一件事還會被數兩次
                                                 const changeOf = ph => rowHist.filter(h => h.phase === ph && isDateChange(h)).length;
                                                 const histCount = rowHist.filter(isDateChange).length;
@@ -11047,7 +11692,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                                 一份 JSX 在兩處各插一次 —— 複製兩份遲早會改到剩一邊 */}
                                                             {!compact && stageIdCell}
                                                             {/* 註冊日期 (RegDate)，YYYY/MM/DD */}
-                                                            {showCol('regDate') && <td className="px-2 py-2.5 text-xs font-bold whitespace-nowrap" style={{color:'var(--text-secondary)', borderRight:'1px solid var(--border-col)'}} title={item.createdAt ? `建立於 ${item.createdAt}` : ''}>{fmtYmd(item.regDate) || '-'}</td>}
+                                                            {showCol('regDate') && <td className="px-2 py-2.5 text-xs font-bold whitespace-nowrap" style={{color:'var(--text-secondary)', borderRight:'1px solid var(--border-col)'}} title={item.createdAt ? `建立於 ${item.createdAt}` : ''}>{item.regDate || '-'}</td>}
                                                             {/* Main Cat / Sub Cat 改為換行完整顯示（2026-08-19）。
                                                                 舊版是 truncate + title，長的分類名在畫面上變成「電源管理系...」，
                                                                 主管要逐筆 hover 才知道是哪一筆 —— 資訊不該藏在 tooltip 裡。
@@ -11106,10 +11751,10 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                             {/* onSetDate：「⚠ 未壓日期」那顆按下去直接跳到該階段的日期欄。
                                                                 這條路只有一般模式才有 —— currentStageCell（精簡模式）刻意不傳，
                                                                 它與「操作」欄整欄收起是同一條規則 */}
-                                                            {scheduleCell({ val:item.spec?.end, alert:specAlert, changes:changeOf('spec'),    label:'① EMS規格確認', br:'1px solid var(--border-col)', actual:item.spec?.actualEnd,        unset:unsetPhase?.key==='spec',    onNotify:notifyThis, onSetDate: canManageList ? ()=>openEdit(item,'spec') : null, lockedHint: READONLY_LIST_HINT })}
-                                                            {scheduleCell({ val:item.msd?.confirm, alert:confirmAlert, changes:changeOf('confirm'), label:'② MSD確認', br:'1px solid var(--border-col)', actual:item.msd?.confirmActualEnd, unset:unsetPhase?.key==='confirm', onNotify:notifyThis, onSetDate: canManageList ? ()=>openEdit(item,'confirm') : null, lockedHint: READONLY_LIST_HINT })}
-                                                            {scheduleCell({ val:item.msd?.end,     alert:msdAlert,  changes:changeOf('msd'),     label:'③ MSD開發', br:'1px solid var(--border-col)', actual:item.msd?.actualEnd,        unset:unsetPhase?.key==='msd',     onNotify:notifyThis, onSetDate: canManageList ? ()=>openEdit(item,'msd') : null, lockedHint: READONLY_LIST_HINT })}
-                                                            {scheduleCell({ val:item.uat?.end,     alert:uatAlert,  changes:changeOf('uat'),     label:'④ EMS驗收',   br:'2px solid var(--border-card)', actual:item.uat?.actualEnd,        unset:unsetPhase?.key==='uat',     onNotify:notifyThis, onSetDate: canManageList ? ()=>openEdit(item,'uat') : null, lockedHint: READONLY_LIST_HINT })}
+                                                            {scheduleCell({ val:item.spec?.end, alert:specAlert, changes:changeOf('spec'),    label:'① EMS規格確認', br:'1px solid var(--border-col)', actual:item.spec?.actualEnd,        unset:unsetPhase?.key==='spec',    onNotify:notifyThis, onSetDate: canManageList ? ()=>openEdit(item,'spec') : null, lockedHint: READONLY_LIST_HINT, item })}
+                                                            {scheduleCell({ val:item.msd?.confirm, alert:confirmAlert, changes:changeOf('confirm'), label:'② MSD確認', br:'1px solid var(--border-col)', actual:item.msd?.confirmActualEnd, unset:unsetPhase?.key==='confirm', onNotify:notifyThis, onSetDate: canManageList ? ()=>openEdit(item,'confirm') : null, lockedHint: READONLY_LIST_HINT, item })}
+                                                            {scheduleCell({ val:item.msd?.end,     alert:msdAlert,  changes:changeOf('msd'),     label:'③ MSD開發', br:'1px solid var(--border-col)', actual:item.msd?.actualEnd,        unset:unsetPhase?.key==='msd',     onNotify:notifyThis, onSetDate: canManageList ? ()=>openEdit(item,'msd') : null, lockedHint: READONLY_LIST_HINT, item })}
+                                                            {scheduleCell({ val:item.uat?.end,     alert:uatAlert,  changes:changeOf('uat'),     label:'④ EMS驗收',   br:'2px solid var(--border-card)', actual:item.uat?.actualEnd,        unset:unsetPhase?.key==='uat',     onNotify:notifyThis, onSetDate: canManageList ? ()=>openEdit(item,'uat') : null, lockedHint: READONLY_LIST_HINT, item })}
                                                             </>)}
                                                             {/* 現況描述（CurrentStatus）。精簡模式的最後一欄。
                                                                 ⚠️ 不可用 truncate：內容常是多行長文，nowrap 會讓這一欄的
@@ -11314,7 +11959,6 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                                                                     {h.changedBy && (
                                                                                                         <span style={{color:'var(--text-muted)'}}>
                                                                                                             · {whoOf(h.changedBy)}
-                                                                                                            {h.changedBySource === 'simulated' && <span title="這筆是用模擬帳號寫入的">（模擬）</span>}
                                                                                                         </span>
                                                                                                     )}
                                                                                                     <span>→ {notifyToOf(h) || '（收件者不明）'}</span>
@@ -11376,7 +12020,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                                                         );
                                                                                         return (
                                                                                             <div className="pt-1.5 mt-0.5 whitespace-pre-wrap break-words cursor-help" style={{borderTop:'1px solid var(--border-card)', color:'var(--text-muted)'}} title={hopTitleOf(last)}>
-                                                                                                最後改日期：<span className="tabular-nums">{whenOf(last.changedAt)}</span>{last.changedBy ? ` · ${whoOf(last.changedBy)}` : ''}{last.changedBySource === 'simulated' ? '（模擬）' : ''}
+                                                                                                最後改日期：<span className="tabular-nums">{whenOf(last.changedAt)}</span>{last.changedBy ? ` · ${whoOf(last.changedBy)}` : ''}
                                                                                             </div>
                                                                                         );
                                                                                     })()}
@@ -11451,12 +12095,12 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                                             第 168 批：查不到時寫「建立者：無紀錄（YYYY-MM-DD 進系統）」—— 原本「建立：無紀錄 2026-09-12 21:40」
                                                                             的「無紀錄」讀起來像人名，那個時間也會跟註冊日期打架（它是資料進系統的時間，多半是匯入當下） */}
                                                                         <div className={nCards === 3 ? 'lg:col-span-3 flex flex-wrap gap-x-3 gap-y-0.5 px-1 text-[11px]' : nCards === 2 ? 'lg:col-span-2 flex flex-wrap gap-x-3 gap-y-0.5 px-1 text-[11px]' : 'flex flex-wrap gap-x-3 gap-y-0.5 px-1 text-[11px]'} style={{color:'var(--text-muted)'}}>
-                                                                            {!showCol('regDate') && <><span>註冊日期 {fmtYmd(item.regDate) || '-'}</span>
+                                                                            {!showCol('regDate') && <><span>註冊日期 {item.regDate || '-'}</span>
                                                                             <span>·</span></>}
                                                                             <span>
                                                                                 建立者：{createEntry
                                                                                     ? <span title={`${createEntry.note || '建立需求'}\n${createEntry.changedAt}`}>
-                                                                                          {whoOf(createEntry.changedBy) || '未取得帳號'}{createEntry.changedBySource === 'simulated' && <span style={{color:'var(--tone-warn)'}} title="模擬帳號">（模擬）</span>}
+                                                                                          {whoOf(createEntry.changedBy) || '未取得帳號'}
                                                                                           {item.createdAt ? ` ${item.createdAt}` : ''}
                                                                                       </span>
                                                                                     : <span title={`2026-09-28 之前建立的需求沒有記錄建立者${item.createdAt ? `\n進系統時間：${item.createdAt}` : ''}`}>
@@ -11517,7 +12161,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         {!editingData.isNew && !infoMode && (
                                         <div className="col-span-1">
                                             <label className="block text-xs font-bold mb-1" style={{color:'var(--text-secondary)'}}>註冊日期 (RegDate)</label>
-                                            <input type="text" className="w-full px-3 py-2 rounded-lg text-sm border outline-none cursor-not-allowed" style={{background:'var(--bg-header-border)', borderColor:'var(--border-table)', color:'var(--text-secondary)'}} value={fmtYmd(editingData.regDate)} readOnly placeholder="例如: 2026/01/15"/>
+                                            <input type="text" className="w-full px-3 py-2 rounded-lg text-sm border outline-none cursor-not-allowed" style={{background:'var(--bg-header-border)', borderColor:'var(--border-table)', color:'var(--text-secondary)'}} value={editingData.regDate || ''} readOnly placeholder="例如: 2026-01-15"/>
                                         </div>
                                         )}
                                         <div className="col-span-1">
@@ -11588,9 +12232,6 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                             ⚠️⚠️ 送出走同一支 handleSave → saveRequirement（PUT），樂觀鎖、欄位異動稽核列全部照舊；
                                                這不是第二條寫入路徑（第 92 批）。 */}
                                         {(editingData.isNew || infoMode) && (() => {
-                                            // ⚠️ quickDateChoices() 一定要在 render 當下呼叫，不可以提成模組層常數
-                                            //    （第 67 批「今天」那個坑：分頁開過午夜就會算錯一天）
-                                            const quicks = quickDateChoices();
                                             const endIso = editingData.spec?.end || '';
                                             const setEnd = (iso) => setEditingData({ ...editingData, spec:{ ...editingData.spec, end: iso } });
                                             return (
@@ -11687,10 +12328,11 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                     <label className="block text-sm font-bold mb-1.5" style={{color:'var(--text-primary)'}}>MSD 負責人 <span className="text-[11px] font-normal" style={{color:'var(--text-muted)'}}>選填（① 標記完成前要指定）</span></label>
                                                     {/* 「還不確定」就是空值 —— 建單當下多半真的還沒指定人，
                                                         「請選擇」會讀成「你漏了這一欄」 */}
-                                                    <select className="w-full px-3 py-2.5 rounded-lg text-sm border outline-none focus:ring-2 ring-indigo-500/50" style={{background:'var(--bg-main)', borderColor:'var(--border-table)'}} value={editingData.msdOwner||''} onChange={e=>setEditingData({...editingData, msdOwner:e.target.value})}>
+                                                    <select className="w-full px-3 py-2.5 rounded-lg text-sm border outline-none focus:ring-2 ring-indigo-500/50" style={{background:'var(--bg-main)', borderColor:errBorder('msdOwner')}} value={editingData.msdOwner||''} onChange={e=>setEditingData({...editingData, msdOwner:e.target.value})}>
                                                         <option value="">還不確定</option>
                                                         {ownerSelectOptions('MSD', editingData.msdOwner).map(name => <option key={name} value={name}>{name}</option>)}
                                                     </select>
+                                                    <FieldErrorHint msg={errOf('msdOwner')} />
                                                     <OwnerEmailHint dept="MSD" name={editingData.msdOwner} />
                                                     <AssigneeErrorHint error={assigneeError} />
                                                 </div>
@@ -11717,13 +12359,9 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 </label>
                                                 <textarea rows="3" className="w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 ring-indigo-500/50" style={{background:'var(--bg-main)', borderColor:'var(--border-table)'}} value={editingData.remark||''} onChange={e=>setEditingData({...editingData, remark:e.target.value})} placeholder="上面兩個分類說不清楚的，補在這裡" />
                                             </div>
-                                            {/* ─── 第二區：① 的結束日，一排晶片（第 96 批，第 107 批改成四顆）───
+                                            {/* ─── 第二區：① 的結束日（第 96 批；第 239 批起是一個日期框）───
                                                 ⚠️⚠️ 區標題**就是那個問句本身**，所以底下那個 `<div>` 裡
                                                    **不可以再印一次** —— 同一個概念只能有一組字（第 37 批）。
-                                                ⚠️⚠️ 四顆快速日期與「我的待辦」（壓日期、延後）用的是**同一支**
-                                                   quickDateChoices()（下週一／兩週後／三週後／月底，以「下一個
-                                                   週一」為錨點；月底落在週六日往前挪到週五；≤ 今天或與前一顆
-                                                   撞同一天就不印）—— **不要在這裡另外寫一份日期算法**。
                                                 ⚠️ Start Date 刻意不出現：沒填的話存檔時 applyStartDefaults() 會補成
                                                    與 End 同一天（前後端同一套規則），建單當下問他「哪天開始」沒有意義。
                                                 ⚠️ 「先不壓」＝ End 留空，**這是預設**。留空的那一刻這筆就是
@@ -11733,42 +12371,29 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 而這裡寫 spec.end 會撞上解鎖與異動理由那一整套（那只在完整編輯裡有） */}
                                             {editingData.isNew && (<>
                                             <SectionHead title="Spec 預計哪天給 MSD？" />
+                                            {/* 第 239 批（使用者：「新增需求視窗那排也改成日期框」）：四顆快速日期＋🗓 自選＋先不壓 →
+                                                **一個日期框**，與「我的待辦」卡片同一種（cardDateInput：點哪裡都開月曆）。
+                                                ⚠️ 空著＝「先不壓」（仍然是預設），底下那行灰字講後果、不可以拿掉（第 57 批）；
+                                                填了之後旁邊給「清除（先不壓）」—— 原生日期框沒有清除鈕，沒有它就回不到先不壓。
+                                                一年以後的日期照舊在存檔前由 farDateChanges() 問一次（第 224 批）。 */}
                                             <div>
-                                                <div className="flex flex-wrap items-center gap-2">
-                                                    {quicks.map(q => (
-                                                        <button key={q.iso} type="button"
-                                                                onClick={()=>{ setEnd(q.iso); setSpecCustom(false); }}
-                                                                className={`ctl px-3 text-[13px]${(endIso === q.iso && !specCustom) ? ' ctl-on' : ''}`}
-                                                                style={{whiteSpace:'nowrap'}}
-                                                                title={`把 ① EMS規格確認 的結束日填成 ${q.iso}`}>
-                                                            {q.label}
-                                                            <span className="font-mono ml-2 text-[12px]">{q.iso.slice(5).replace('-', '/')}</span>
+                                                <div className="flex flex-wrap items-center gap-3">
+                                                    {cardDateInput({ value: endIso, onChange: v => setEnd(v),
+                                                                     label: 'Spec 預計哪天給 MSD（① EMS規格確認的結束日）' })}
+                                                    {endIso ? (<>
+                                                        <span className="text-[13px]" style={{color:'var(--text-secondary)'}}>{ymdWeek(endIso)}</span>
+                                                        <button type="button" onClick={()=>setEnd('')}
+                                                                className="text-[12px] hover:underline" style={{color:'var(--text-muted)'}}
+                                                                title="清掉這個日期，改成先不壓（之後在「我的待辦」壓）">
+                                                            清除（先不壓）
                                                         </button>
-                                                    ))}
-                                                    <button type="button" onClick={()=>setSpecCustom(true)}
-                                                            className={`ctl px-3 text-[13px]${specCustom ? ' ctl-on' : ''}`}
-                                                            style={{whiteSpace:'nowrap'}} title="自己挑一個日期">
-                                                        🗓 自選
-                                                    </button>
-                                                    {/* ⚠️ 第 103 批：「先不壓」收進同一排（原本自己一行）——
-                                                        它是這一題的第五個答案，不是另一題。它仍然是**預設值** */}
-                                                    <button type="button" onClick={()=>{ setEnd(''); setSpecCustom(false); }}
-                                                            className={`ctl px-3 text-[13px]${(!endIso && !specCustom) ? ' ctl-on' : ''}`}
-                                                            style={{whiteSpace:'nowrap'}} title="現在還排不出日子，之後再回來壓">
-                                                        先不壓
-                                                    </button>
+                                                    </>) : (
+                                                        <span className="text-[12px]" style={{color:'var(--text-muted)'}}>
+                                                            不填＝先不壓，之後會出現在「我的待辦」提醒你壓。
+                                                        </span>
+                                                    )}
                                                 </div>
-                                                {specCustom && (
-                                                    <input type="date" value={endIso} onChange={e=>setEnd(e.target.value)}
-                                                           className="mt-2 w-[170px] px-3 py-1.5 rounded text-sm border outline-none focus:ring-2 ring-amber-500/50"
-                                                           style={{background:'var(--bg-main)', borderColor:errBorder('spec.end')}} />
-                                                )}
                                                 <FieldErrorHint msg={errOf('spec.end')} />
-                                                {!endIso && (
-                                                    <div className="mt-2 text-[11px] leading-relaxed" style={{color:'var(--text-muted)'}}>
-                                                        之後會出現在「我的待辦」提醒你壓。
-                                                    </div>
-                                                )}
                                             </div>
                                             </>)}
                                             {/* ⚠️⚠️ 第 107 批：**現況描述整欄從新增視窗移除**（使用者 2026-10-05：
@@ -11788,10 +12413,11 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         {!editingData.isNew && !infoMode && (<>
                                         <div className="col-span-1">
                                             <label className="block text-xs font-bold mb-1" style={{color:'var(--text-secondary)'}}>MSD 負責人</label>
-                                            <select className="w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 ring-indigo-500/50" style={{background:'var(--bg-main)', borderColor:'var(--border-table)'}} value={editingData.msdOwner||''} onChange={e=>setEditingData({...editingData, msdOwner:e.target.value})}>
+                                            <select className="w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 ring-indigo-500/50" style={{background:'var(--bg-main)', borderColor:errBorder('msdOwner')}} value={editingData.msdOwner||''} onChange={e=>setEditingData({...editingData, msdOwner:e.target.value})}>
                                                 <option value="">請選擇</option>
                                                 {ownerSelectOptions('MSD', editingData.msdOwner).map(name => <option key={name} value={name}>{name}</option>)}
                                             </select>
+                                            <FieldErrorHint msg={errOf('msdOwner')} />
                                             <OwnerEmailHint dept="MSD" name={editingData.msdOwner} />
                                             <AssigneeErrorHint error={assigneeError} />
                                         </div>
@@ -11822,7 +12448,8 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         {!editingData.isNew && !infoMode && (
                                         <div className="col-span-1 md:col-span-3">
                                             <label className="block text-xs font-bold mb-1" style={{color:'var(--text-secondary)'}}>規格文件 <span className="font-normal" style={{color:'var(--text-muted)'}}>(超連結，例如 Notes://... 或 https://...)</span><LenHint value={editingData.notesLink} max={FIELD_MAX.notesLink} /></label>
-                                            <input type="text" className="w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 ring-indigo-500/50" style={{background:'var(--bg-main)', borderColor:'var(--border-table)'}} value={editingData.notesLink||''} onChange={e=>setEditingData({...editingData, notesLink:e.target.value})} placeholder="Notes://...、https://... 或 http://..." />
+                                            <input type="text" className="w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 ring-indigo-500/50" style={{background:'var(--bg-main)', borderColor:errBorder('notesLink')}} value={editingData.notesLink||''} onChange={e=>setEditingData({...editingData, notesLink:e.target.value})} placeholder="Notes://...、https://... 或 http://..." />
+                                            <FieldErrorHint msg={errOf('notesLink')} />
                                         </div>
                                         )}
 
@@ -12033,7 +12660,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
 
                                         {/* ═══ 進階：階段與狀態（第 86 批，2026-09-29）═══
                                             使用者要求：「EMS 人員完全不懂網頁這些功能操作…他們也不想了解這麼多東西」。
-                                            這三樣（Status／目前階段／🔄 規格回退）原本擺在視窗**最上面、NID 旁邊**，
+                                            這三樣（Status／目前階段／退回重做）原本擺在視窗**最上面、NID 旁邊**，
                                             也就是每一個打開編輯視窗的人第一眼看到的東西 —— 而它們正好是
                                             **最不該隨手動、動錯了最難救**的三個：
                                               ・目前階段手動改會繞過「標記完成…」整套機制（不寫完成紀錄、不計提早／延期）
@@ -12067,14 +12694,14 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                             <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-4">
                                                 <div className="col-span-1 md:col-span-3 text-[11px] leading-relaxed" style={{color:'var(--text-muted)'}}>
                                                     一般情況不用動這一區 —— 階段由各階段的「標記完成…」自動推進，走那條路才會寫完成紀錄、算提早／延期。
-                                                    需要重做某一階段（規格變了、驗收沒過）時用「🔄 退回重做」；只有階段代號本身填錯了（多半是匯入來的）才用「✎ 手動修正目前階段」。
+                                                    需要重做某一階段（規格變了、驗收沒過）時用「退回重做」；只有階段代號本身填錯了（多半是匯入來的）才用「✎ 手動修正目前階段」。
                                                 </div>
                                             {!editingData.isNew && !infoMode && (
                                             <div className="col-span-1">
                                                 <label className="block text-xs font-bold mb-1" style={{color:'var(--text-secondary)'}}>Status <span className="font-normal" style={{color:'var(--text-muted)'}}>(OverallStatus)</span></label>
                                                 {/* Done ⇔ 目前階段 5（第 67 批）：矛盾時就地標紅，理由見 validateEdit */}
                                                 <select className="w-full px-3 py-2 rounded-lg text-sm border outline-none focus:ring-2 ring-indigo-500/50" style={{background:'var(--bg-main)', borderColor:errBorder('status')}} value={normStatus(editingData.status)} onChange={e=>setEditingData({...editingData, status:e.target.value})}
-                                                        title="Done 只能配目前階段 ⑤ 結案。正常流程是由 ④ 的「標記完成…」自動改成 Done；重開請用「🔄 退回重做」">
+                                                        title="Done 只能配目前階段 ⑤ 結案。正常流程是由 ④ 的「標記完成…」自動改成 Done；重開請用「退回重做」">
                                                     {Object.entries(STATUSES).map(([k,v])=><option key={k} value={k}>{v.label}</option>)}
                                                 </select>
                                                 <FieldErrorHint msg={errOf('status')} />
@@ -12093,7 +12720,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                             <div className="col-span-1">
                                                 <label className="block text-xs font-bold mb-1" style={{color:'var(--text-secondary)'}}>目前階段 <span className="font-normal" style={{color:'var(--text-muted)'}}>(1~5)</span></label>
                                                 {/* ─── A5：目前階段預設唯讀（第 19 批）───
-                                                    正常推進只走「標記完成…」與「🔄 規格回退」—— 那兩條路會寫稽核列、
+                                                    正常推進只走「標記完成…」與「退回重做」—— 那兩條路會寫稽核列、
                                                     維護 DelayCount / EarlyCount / RollbackCount，並依「今天 vs 原訂 End」
                                                     判定提早或延期。直接用下拉跳階段等於繞過整套機制，
                                                     主管看到的「延期 0 次」就可能只是有人手動跳過去的結果。
@@ -12102,7 +12729,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 {stageUnlocked ? (() => {
                                                     // ─── 只能往前（第 66 批 H2，2026-09-11 使用者要求）───
                                                     // 往回改而不經回退會留下已走完階段的 ActualEnd 與完成紀錄。
-                                                    // 往回只有兩條路：「🔄 規格回退」（規格變了、要重做）與
+                                                    // 往回只有兩條路：「退回重做」（規格變了、要重做）與
                                                     // 「撤銷」（誤按了標記完成，在該階段的 ✓ 標籤旁）。
                                                     // 「未設定」那個選項也拿掉了（H3：StageCode 已是 NOT NULL）
                                                     const savedN = savedStage(requirementsData.find(d => d.id === editingData.id));
@@ -12111,7 +12738,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                             // 調到 5 結案就一併把 Status 改成 Done（第 67 批：Done ⇔ 5）。改在旁邊那顆看得見的下拉上，
                                                             // 且 Status 欄底下會寫「已一併改成 Done」—— 不是靜靜做。往回本來就 disabled，不會有「離開 5 要改回什麼」的問題
                                                             onChange={e=>setEditingData({...editingData, stageCode:e.target.value, ...(e.target.value === '5' ? { status:'Done' } : {})})}
-                                                            title={savedN > 1 ? `只能往前調。要退回「${STAGE_CODES[String(savedN)]?.label}」之前的階段請用「🔄 退回重做」或該階段的「撤銷」` : undefined}>
+                                                            title={savedN > 1 ? `只能往前調。要退回「${STAGE_CODES[String(savedN)]?.label}」之前的階段請用「退回重做」或該階段的「撤銷」` : undefined}>
                                                         {Object.entries(STAGE_CODES).map(([k,v]) => {
                                                             const back = savedN > 0 && parseInt(k, 10) < savedN;
                                                             return <option key={k} value={k} disabled={back}>{v.label}{back ? '（往回請用退回重做／撤銷）' : ''}</option>;
@@ -12124,7 +12751,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                     return (
                                                         <div className="w-full px-3 py-2 rounded-lg text-sm border flex items-center gap-1.5"
                                                              style={{background:'var(--bg-header-border)', borderColor:'var(--border-table)', color:'var(--text-secondary)'}}
-                                                             title="目前階段由「標記完成…」與「🔄 退回重做」自動推進，不直接編輯">
+                                                             title="目前階段由「標記完成…」與「退回重做」自動推進，不直接編輯">
                                                             {sc
                                                                 ? <><span className="w-2 h-2 rounded-full flex-shrink-0" style={{background:sc.color}}></span>{sc.label}</>
                                                                 : <span style={{color:'var(--text-muted)'}}>{c || '未設定'}</span>}
@@ -12164,7 +12791,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                                 className="mt-1.5 w-full px-2 py-1 rounded text-[11px] font-bold border transition-colors"
                                                                 style={{color:'var(--c-violet)', background:'rgba(139,92,246,0.08)', borderColor:'rgba(139,92,246,0.3)'}}
                                                                 title="規格變了、驗收沒過等需要重做目前或前面的階段時使用（清掉目標階段（含）以後的日期、退回次數 +1）">
-                                                            🔄 退回重做
+                                                            退回重做
                                                         </button>
                                                     );
                                                 })()}
@@ -12205,7 +12832,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                             ✎ 手動調整目前階段：{from} → {to}
                                                         </div>
                                                         <div className="text-[11px] mb-2.5" style={{color:'var(--text-tertiary)'}}>
-                                                            這是繞過「標記完成…」與「🔄 退回重做」的直接修改，<span className="font-bold">不會計入延期／提早／退回次數</span>，
+                                                            這是繞過「標記完成…」與「退回重做」的直接修改，<span className="font-bold">不會計入延期／提早／退回次數</span>，
                                                             也不會補寫該階段的完成紀錄。儲存後會在這筆需求的軌跡留下一筆「手動調整」。
                                                         </div>
                                                         <ReasonFields phaseKey="stage" categories={unlockCategories} setCategories={setUnlockCategories}
@@ -12222,7 +12849,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                     <div className="p-4 border-t flex justify-end items-center gap-3 shrink-0" style={{borderColor:'var(--border-table)'}}>
                                         {/* ⚠️⚠️ 第 120 批（2026-10-06 使用者要求）：左下角「要改日期或其他欄位？完整編輯 ↗」**拿掉了**。
                                             「我的待辦」因此**沒有**進完整編輯視窗的入口 —— 與第 119 批「EMS 只能在我的待辦做自己階段的事、其餘只能瀏覽」一致：
-                                            改日期走卡片上的晶片／延後／🗓 自選（第 138 批起也能往前拉），改 Notes Link 以外的欄位、⚙ 進階都交給 MSD 在需求列表做。
+                                            改日期走卡片上的日期框（未壓日期那一排、「還沒，要改日期」那一層，第 238 批；改早改晚都收），改 Notes Link 以外的欄位、⚙ 進階都交給 MSD 在需求列表做。
                                             ⚠️ 第 131 批起 handleSave 遇到「錯誤落在這個視窗畫不出來的欄位」也**不再** setInfoMode(false) 切回完整編輯，
                                                改成彈窗講明這次存不了、請 MSD 在需求列表修正（「我的待辦」整頁不開完整編輯視窗）。 */}
                                         {/* ⚠️ 第 103 批：新增時的 NID 從這裡搬到視窗左上角（第一列最左邊）——
@@ -12255,7 +12882,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                     <div className="p-4 border-b" style={{borderColor:'var(--border-table)'}}>
                                         <h3 className="text-base font-bold">模擬 Windows 帳號</h3>
                                         <p className="text-[11px] mt-1" style={{color:'var(--text-muted)'}}>
-                                            用來測試稽核紀錄的「異動人員」。模擬期間寫入的紀錄會標成「模擬」，不會冒充真實登入者。
+                                            模擬＝這個人用 Windows 帳號登入：瀏覽權限、管理者、寄信規則都跟他一樣。重新整理、從信裡的連結進來仍維持模擬，按「還原真實帳號」才結束。只有測試區開放。
                                         </p>
                                     </div>
                                     <div className="p-4 space-y-3">
@@ -12269,7 +12896,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                    // ⚠️ preventDefault（第 130 批）：視窗關掉時焦點會還給頁首那顆 🖥️ 鈕（第 29 批），
                                                    //    同一次 Enter 的 keypress 接著落在那顆鈕上 → 視窗又被打開一次
                                                    onKeyDown={e=>{ if(e.key==='Enter'){ e.preventDefault(); const v=stripDomain(e.target.value);
-                                                       if(v){ resetForIdentitySwitch(); setActor({...actor, empId:v, source:'simulated'}); setIsActorModalOpen(false); showToast(`已切換為模擬帳號：${v}（篩選與排序已回到預設）`); } } }}
+                                                       if(v) simulateAs(v); } }}
                                                    id="sim-actor-input" />
                                         </div>
                                         {/* 直接從指派人員名單挑，省得手打。
@@ -12279,7 +12906,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                 {assigneeList.filter(a=>a.isActive).map(a => (
                                                     <button key={a.id}
                                                             title={`${a.dept}${a.empNo ? ' · '+a.empNo : ''}`}
-                                                            onClick={()=>{ const v=stripDomain(a.empNo)||a.name; resetForIdentitySwitch(); setActor({...actor, empId:v, source:'simulated'}); setIsActorModalOpen(false); showToast(`已切換為模擬帳號：${v}（篩選與排序已回到預設）`); }}
+                                                            onClick={()=>simulateAs(stripDomain(a.empNo)||a.name)}
                                                             className="px-2 py-1 rounded text-[11px] font-bold border transition-colors"
                                                             style={{background:'var(--bg-input)', color:'var(--text-tertiary)', borderColor:'var(--bg-input-border)'}}>
                                                         {a.name}
@@ -12289,13 +12916,13 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         )}
                                     </div>
                                     <div className="p-4 flex justify-end gap-2 border-t" style={{borderColor:'var(--border-table)'}}>
-                                        <button onClick={()=>{ resetForIdentitySwitch(); detectActor(); setIsActorModalOpen(false); showToast('已還原為 Windows 登入帳號（篩選與排序已回到預設）'); }}
+                                        <button onClick={()=>simulateAs('')}
                                                 className="px-3 py-1.5 rounded-lg text-[11px] font-bold border"
                                                 style={{background:'var(--bg-input)', color:'var(--text-secondary)', borderColor:'var(--bg-input-border)'}}>
                                             還原真實帳號
                                         </button>
                                         <button onClick={()=>{ const el=document.getElementById('sim-actor-input'); const v=stripDomain(el?.value);
-                                                    if(v){ resetForIdentitySwitch(); setActor({...actor, empId:v, source:'simulated'}); setIsActorModalOpen(false); showToast(`已切換為模擬帳號：${v}（篩選與排序已回到預設）`); } }}
+                                                    if(v) simulateAs(v); }}
                                                 className="px-4 py-1.5 rounded-lg text-[11px] font-bold bg-indigo-500 text-white hover:bg-indigo-600 transition-colors">
                                             套用
                                         </button>
@@ -12452,7 +13079,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         <div>
                                             <label htmlFor="ct-done-msd-owner" className="block text-xs font-bold mb-1.5" style={{color:'var(--text-secondary)'}}>
                                                 MSD 負責人 <span style={{color:'var(--tone-alert)'}}>*</span>
-                                                <span className="font-normal ml-1" style={{color:'var(--text-muted)'}}>這筆還沒指定，完成前要先選</span>
+                                                <span className="font-normal ml-1" style={{color:'var(--text-muted)'}}>{m.ownerWhy || '這筆還沒指定，完成前要先選'}</span>
                                             </label>
                                             <select id="ct-done-msd-owner" value={m.msdOwner || ''}
                                                     onChange={e=>setDoneModal({...m, msdOwner:e.target.value})}
@@ -12594,7 +13221,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                             </div>
                             );
                         })()}
-                        {/* ─── 「🗓 自選」的改日期視窗（第 111 批，2026-10-05 使用者要求）───
+                        {/* ─── 改日期小視窗 dateModal（第 111 批，2026-10-05 使用者要求；第 238 批起卡片上沒有「🗓 自選」了，只剩按不了完成的卡的「🗓 改日期…」開它）───
                             「純要調整日期，負責人不需要進到需求列表內的編輯視窗。」
                             ⚠️⚠️ 這個視窗**只負責收三樣東西**（日期／原因分類／文字說明），
                                寫入一律交給 quickSetDate / quickDelayDate（第 92 批：呼叫既有那一支，
@@ -12608,45 +13235,9 @@ const { useState, useMemo, Fragment, useEffect } = React;
                             const word = phaseEndWord(m.ph);
                             const maxIso = m.next ? m.next.end : '';
                             const who = [m.row.nid && `NID ${m.row.nid}`, m.row.mainCat, m.row.subCat].filter(Boolean).join(' / ');
-                            // ⚠️ 上下限與卡片上那排晶片**同一組來源**（第 94 批的兩道），訊息也照抄 ——
-                            //    「晶片不給按、自選卻存得進去」是兩邊各算一份必然的結果
-                            // ⚠️⚠️ 第 138 批（使用者：「選了 2029 要改成 2027 不就不能調整」）：**改日期也收比原訂早的**。
-                            //    在此之前這裡擋「這是提前不是延後」，唯一的理由是 ApplyStartDefaults() 把 Start 存成 = End，
-                            //    End 往前拉必定 End < Start 存不進去（實測 NID 61）。現在 Start 晚於新 End 時一起拉過來
-                            //    （withPhaseEndClampStart，畫面上會講），所以那道擋掉了。往前拉一樣算「日期異動」、要分類＋說明。
-                            //    ⚠️ 卡片上「延到哪天？」那排晶片仍然只列比原訂晚的（那一排的問題就是「延到哪天」）。
-                            const bad = !isDateVal(m.date)
-                                ? `請選一個${word}`
-                                : (m.min && m.date < m.min)
-                                ? `不可早於前一階段「${m.prevPh ? m.prevPh.label : ''}」的 ${m.min}（四個階段是依序進行的）`
-                                : (maxIso && m.date > maxIso)
-                                ? `不可晚於「${m.next.label}」已經壓好的${m.next.word} ${maxIso}（四個階段是依序進行的）`
-                                : (m.date === m.cur)
-                                ? `日期沒有變，目前就是 ${m.cur}`
-                                : '';
-                            const dateOk = !bad;
-                            // ⚠️⚠️ 每次 render 重算，而且跑的是**真正會送出去的那一份**（第 92 批那條
-                            //    「validateEdit 裡任何隱性讀 editingData 的 helper 都要收 rec」的同一面）
-                            const rec = dateOk ? withPhaseEndClampStart(m.row, m.ph.key, m.date) : null;
-                            // 開始日會不會被一起拉過來（要在畫面上講，第 57 批：系統替他改的東西要看得見）
-                            const pObj = PHASES[m.ph.key];
-                            const oldStart = (pObj && pObj.fields.includes('start')) ? String((m.row[pObj.obj] || {}).start || '').trim() : '';
-                            const startMoved = !!rec && isDateVal(oldStart) && oldStart !== String((rec[pObj.obj] || {}).start || '').trim();
-                            // ─── 第 138 批：日期離今天超過一年 → 存檔前要他再確認一次（防「2027 打成 2029」）───
-                            // ⚠️ 確認綁在**那一個日期**上（farOk 存 iso）：確認完又改日期就要重新確認
-                            const farDays = dateOk ? dayDiff(TODAY_ISO, m.date) : null;
-                            const far = farDays !== null && farDays > 365;
-                            const farConfirmed = far && m.farOk === m.date;
-                            const probs = rec
-                                ? (delay ? validateEdit(rec, { [m.ph.key]: m.note }, { [m.ph.key]: m.cat }, { [m.ph.key]: true })
-                                         : validateEdit(rec, {}, {}, {}))
-                                : { groups: [] };
-                            // ⚠️ 分類／說明沒填時底下兩欄自己會標，這裡**不要再列一次**（第 37 批）
-                            const otherProbs = probs.groups.filter(g => !/異動原因/.test(g.title));
-                            // ⚠️ 第 130 批：其他欄位有問題時直接不給存（驗證沒過不再退回完整編輯視窗，按下去只會換來一個彈窗）
-                            const noteLong = delay && isOverLimit(m.note, NOTE_MAX);   // 第 178 批：輸入框不再 maxLength
-                            const ready = dateOk && (!delay || (!!m.cat && !!m.note.trim())) && !noteLong && otherProbs.length === 0 && (!far || farConfirmed);
-                            const diff = (dateOk && delay) ? dayDiff(m.cur, m.date) : null;
+                            // 第 238 批：檢查抽成 dateCheckOf()，與卡片上的日期框共用（規則見那一支）
+                            const { bad, rec, oldStart, startMoved, farDays, far, farConfirmed, otherProbs, noteLong, ready, diff }
+                                = dateCheckOf(m, { withProbs: true });
                             const submit = () => {
                                 const row = m.row, key = m.ph.key, iso = m.date, cat = m.cat, note = m.note.trim();
                                 // ⚠️ 先關視窗再送：驗證沒過時那兩支會跳提示彈窗（第 130 批起不再 openEdit），
@@ -12819,9 +13410,9 @@ const { useState, useMemo, Fragment, useEffect } = React;
                             //    myStatusEdit／myLinkEdit（「我的全部」裡的那一筆可能同時有一張卡）。
                             const ed = viewModal.edit || null;
                             const setEd = (e) => setViewModal(p => p ? { ...p, edit:e } : p);
-                            const editBtn = (field, label, start, tip) => (ed && ed.field === field) ? null : (
+                            const editBtn = (field, label, start, tip, seed) => (ed && ed.field === field) ? null : (
                                 // ⚠️ 第 128 批：貼在標題右邊（不再 justify-between 推到最右），鉛筆改 SVG 放在字前面
-                                <button type="button" onClick={()=>setEd({ field, value:start })}
+                                <button type="button" onClick={()=>setEd({ field, value:start, seed:seed || '' })}
                                         className="inline-flex items-center gap-1 text-[12px] hover:underline flex-shrink-0"
                                         style={{color:'var(--text-muted)'}} title={tip}>
                                     <PencilIcon size={12} />{label}
@@ -12873,31 +13464,31 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                         <div>
                                             <div className="flex items-center gap-3 mb-1">
                                                 <div className="text-xs font-bold" style={{color:'var(--text-secondary)'}}>現況描述</div>
-                                                {editBtn('status', cur ? '更新' : '填寫', r.currentStatus || '',
-                                                    '就地更新這筆需求的現況描述，按「儲存」才會寫入（會記在變更軌跡裡）。\nEMS 與 MSD 兩邊都看得到。')}
+                                                {editBtn('status', cur ? '更新' : '填寫', statusEditStart(r.currentStatus).value,
+                                                    '就地更新這筆需求的現況描述，按「儲存」才會寫入（會記在變更軌跡裡）。\nEMS 與 MSD 兩邊都看得到。', statusEditStart(r.currentStatus).seed)}
                                             </div>
                                             {ed && ed.field === 'status' && (
                                             <div className="mb-2">
-                                                <textarea rows="5" autoFocus value={ed.value}
+                                                <textarea rows="5" autoFocus ref={caretToEnd} value={ed.value}
                                                           onChange={e=>{ const v = e.target.value; setViewModal(p => p ? { ...p, edit:{ ...p.edit, value:v } } : p); }}
                                                           onKeyDown={e=>{ if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-                                                                              const v = ed.value; setEd(null); quickSaveStatus(r, v, { fromView:true }); } }}
+                                                                              const v = statusEditFinal(ed.value, ed.seed); setEd(null); quickSaveStatus(r, v, { fromView:true }); } }}
                                                           className="w-full px-3 py-2 rounded text-sm border outline-none focus:ring-2 ring-indigo-500/40"
                                                           style={{background:'var(--bg-main)', borderColor:'var(--border-table)'}}
                                                           placeholder="現在進行到哪裡、結案時補一句說明…" />
                                                 <div className="mt-2 flex items-center gap-2 flex-wrap">
-                                                    <button type="button" disabled={isSubmitting || (ed.value || '').trim() === cur}
-                                                            onClick={()=>{ const v = ed.value; setEd(null); quickSaveStatus(r, v, { fromView:true }); }}
+                                                    <button type="button" disabled={isSubmitting || statusEditFinal(ed.value, ed.seed).trim() === cur}
+                                                            onClick={()=>{ const v = statusEditFinal(ed.value, ed.seed); setEd(null); quickSaveStatus(r, v, { fromView:true }); }}
                                                             className="ctl px-4 text-[14px] disabled:opacity-40 disabled:cursor-not-allowed"
                                                             style={{whiteSpace:'nowrap'}}
-                                                            title={(ed.value || '').trim() === cur ? '內容沒有變動' : '存進這筆需求的現況描述（會記在變更軌跡裡）。快捷鍵：Ctrl + Enter'}>
+                                                            title={statusEditFinal(ed.value, ed.seed).trim() === cur ? '內容沒有變動' : '存進這筆需求的現況描述（會記在變更軌跡裡）。快捷鍵：Ctrl + Enter'}>
                                                         儲存
                                                     </button>
                                                     <button type="button" onClick={()=>setEd(null)}
                                                             className="text-[12px] hover:underline flex-shrink-0"
                                                             style={{color:'var(--text-muted)'}}>取消</button>
                                                     <span className="text-[12px]" style={{color:'var(--text-muted)'}}>
-                                                        這裡是完整內容；新的一則請接在最後面
+                                                        {cur ? '直接打新的一則就好，前面的內容會留著' : 'EMS 與 MSD 兩邊都看得到'}
                                                     </span>
                                                 </div>
                                             </div>
@@ -12942,7 +13533,7 @@ ${cur}`
                                                     另有 {curLatest.hidden} 則較早的 —— 到需求列表看完整紀錄 <span aria-hidden="true">→</span>
                                                 </button>
                                                 )}
-                                            </>) : <div className="text-[13px]" style={{color:'var(--text-muted)'}}>還沒有人填現況描述。</div>}
+                                            </>) : <div className="text-[13px]" style={{color:'var(--text-muted)'}}>還沒有人填現況描述（選填）。</div>}
                                         </div>
                                         <div>
                                             <div className="flex items-center gap-3 mb-1">
@@ -12950,15 +13541,37 @@ ${cur}`
                                                 {/* ⚠️ 輸入框只能「貼上／換成」一個合法連結，不給清成空白：清空會讓「不另附」與「尚未登錄」
                                                     分不出來。要拿掉連結＝按「不另附」（第 159 批，askNoLink 會留確認列）。
                                                     貼上之後「不另附」的標記自然被蓋掉（第 105 批的反悔路徑） */}
-                                                {editBtn('link', link ? '更換' : '貼上連結', link ? (r.notesLink || '').trim() : '',
+                                                {/* 第 237 批 B：有連結時與卡片同一個樣子 —— 一顆「改…」，按了才攤開「換一個連結／改成不另附」。
+                                                    旗標存 viewModal.linkMenu（視窗關掉就消失；Esc 先收它）。沒有連結時照舊「貼上連結」＋「不另附」。 */}
+                                                {link && !(ed && ed.field === 'link') && (<>
+                                                <button type="button" onClick={()=>setViewModal(p => p ? { ...p, linkMenu: !p.linkMenu } : p)}
+                                                        aria-expanded={!!viewModal.linkMenu}
+                                                        className="inline-flex items-center gap-1 text-[12px] hover:underline flex-shrink-0"
+                                                        style={{color:'var(--text-muted)'}}
+                                                        title="連結貼錯了、或這筆其實不需要規格文件？按這裡選要怎麼改">
+                                                    <PencilIcon size={12} />{viewModal.linkMenu ? '收起' : '改…'}
+                                                </button>
+                                                {viewModal.linkMenu && (<>
+                                                <button type="button" onClick={()=>setViewModal(p => p ? { id:p.id, edit:{ field:'link', value:(r.notesLink || '').trim(), seed:'' } } : p)}
+                                                        className="ctl px-3 text-[12px]" style={{whiteSpace:'nowrap'}}
+                                                        title="連結貼錯了？換成正確的網址，按「儲存」才會寫入（會記在變更軌跡裡）">
+                                                    換一個連結
+                                                </button>
+                                                <button type="button" onClick={()=>{ setViewModal(p => p ? { id:p.id } : p); askNoLink(r); }}
+                                                        className="ctl px-3 text-[12px]" style={{whiteSpace:'nowrap'}}
+                                                        title="這筆其實不需要規格文件：拿掉目前的連結、改記成「不另附」。按下去會再確認一次">
+                                                    改成不另附
+                                                </button>
+                                                </>)}
+                                                </>)}
+                                                {!link && editBtn('link', '貼上連結', '',
                                                     '就地貼上 SPEC 文件的連結，按「儲存」才會寫入（會記在變更軌跡裡）。'
                                                     + (noLink ? '\n貼上之後會取代「不另附」的標記。' : ''))}
-                                                {!noLink && !(ed && ed.field === 'link') && (
+                                                {!link && !noLink && !(ed && ed.field === 'link') && (
                                                 <button type="button" onClick={()=>askNoLink(r)}
                                                         className="text-[12px] underline hover:no-underline flex-shrink-0"
                                                         style={{color:'var(--text-muted)', textUnderlineOffset:'3px'}}
-                                                        title={link ? '這筆其實不需要規格文件：拿掉目前的連結、改記成「不另附」。按下去會再確認一次'
-                                                                    : '需求簡單、不需要另外附規格文件時用（例如看 Sub Cat 就懂）。按下去會再確認一次'}>
+                                                        title="需求簡單、不需要另外附規格文件時用（例如看 Sub Cat 就懂）。按下去會再確認一次">
                                                     不另附
                                                 </button>
                                                 )}
@@ -12991,7 +13604,7 @@ ${cur}`
                                             </div>
                                             )}
                                             {/* ⚠️ 三種狀態與卡片抬頭那一格**同一套語彙**（第 105 批）：
-                                                有連結＝藍色 ↗（開外部文件）／已確認沒有＝灰字「無」／兩者皆非＝尚未登錄。
+                                                有連結＝藍色 ↗（開外部文件）／已確認沒有＝「不另附」（第 147 批起，原本是灰字「無」）／兩者皆非＝尚未登錄。
                                                 ⚠️ 一定要經過 isLinkVal 才掛進 href（自由文字欄，javascript: 不可以進來），
                                                    而且 Notes:// 這種按下去可能沒反應 —— title 要寫出完整網址讓他複製得走 */}
                                             {(ed && ed.field === 'link') ? null : link ? (
@@ -13049,8 +13662,11 @@ ${cur}`
                                                d.unset ? { t:`未壓日期 ${d.unset}`, c:'var(--tone-alert)' } : null,
                                                d.soon ? { t:`${DUE_WINDOW_DEFAULT} 日內 ${d.soon}`, c:'var(--tone-warn)' } : null].filter(Boolean) : [];
                             const sendTitle = blocked ? '郵件伺服器或寄件的系統信箱沒有設定好，寄不出去'
-                                            : !d || d.total === 0 ? '目前沒有需關注的需求'
-                                            : to.length === 0 ? '至少要有一位收件者' : '';
+                                            : !d ? '讀取中'
+                                            : to.length === 0 ? '至少要有一位收件者'
+                                            : d.test && !d.testTo ? '試寄中，但試寄收件人還沒設定，寄不出去' : '';
+                            // 第 223 批（健檢 A7）：試寄中批次提醒也只寄試寄收件人（後端自己判斷；這裡是預告）
+                            const attnTest = !!(d && d.test);
                             return (
                             <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4"
                                  data-ct-modal role="dialog" aria-modal="true" aria-label="寄出需關注提醒" tabIndex={-1}>
@@ -13063,8 +13679,9 @@ ${cur}`
                                             <div className="flex items-center gap-1.5"><h3 className="text-base font-bold">寄出需關注提醒</h3><ManualLink anchor="h-attn-mail" label="需關注批次提醒" /></div>
                                             {d && (
                                                 <p className="text-xs" style={{color:'var(--text-secondary)'}}>
-                                                    {d.total} 筆
+                                                    需關注 {d.total} 筆
                                                     {parts.map(x => <span key={x.t}> · <span className="font-bold" style={{color:x.c}}>{x.t}</span></span>)}
+                                                    {d.next > 0 && <span> · <span className="font-bold" style={{color:'var(--text-secondary)'}}>下週到期 {d.next}</span></span>}
                                                     <span style={{color:'var(--text-muted)'}}>　寄一封信給下面的名單</span>
                                                 </p>
                                             )}
@@ -13076,7 +13693,7 @@ ${cur}`
                                         {a.result && (
                                             <div className="p-3 rounded-lg border text-[13px]" style={{borderColor:'var(--border-table)'}}>
                                                 <div className="font-bold" style={{color: a.result.status === 'uncertain' ? 'var(--tone-warn)' : 'var(--tone-good)'}}>
-                                                    {a.result.status === 'uncertain' ? '⚠ 未確認送出' : '✓ 已寄出'}
+                                                    {a.result.status === 'uncertain' ? '⚠ 未確認送出' : a.result.test ? '✓ 試寄信已寄出' : '✓ 已寄出'}
                                                 </div>
                                                 <div className="mt-1 text-[12px] whitespace-pre-wrap" style={{color:'var(--text-secondary)'}}>{a.result.message}</div>
                                                 {a.result.status === 'uncertain' && (
@@ -13100,10 +13717,17 @@ ${cur}`
                                             {d.recipientsError && (
                                                 <div className="p-2.5 rounded-lg text-[12px]" style={{background:'var(--tone-warn-bg)', color:'var(--tone-warn)'}}>{d.recipientsError}</div>
                                             )}
+                                            {attnTest && !a.result && (
+                                                <div className="p-2.5 rounded-lg text-[13px]" style={{background:'var(--tone-warn-bg)', color:'var(--tone-warn)'}}>
+                                                    {d.testTo
+                                                        ? <>試寄中：只會寄到 <b className="break-all">{d.testTo}</b>，下面的名單都收不到（信最上面會寫正式時寄給誰）</>
+                                                        : <>試寄中，但試寄收件人還沒設定，寄不出去。請管理者到 🔐 管理設定 →「信件通知」填好試寄收件人</>}
+                                                </div>
+                                            )}
                                             <div className="rounded-lg border text-[12px]" style={{borderColor:'var(--border-table)'}}>
-                                                {[{t:'收件者', l:to, e:'還沒有設定收件者'}, {t:'副本', l:cc, e:'沒有副本'}].map((r, i) => (
+                                                {[{t: attnTest ? '正式時收件者' : '收件者', l:to, e:'還沒有設定收件者'}, {t: attnTest ? '正式時副本' : '副本', l:cc, e:'沒有副本'}].map((r, i) => (
                                                     <div key={r.t} className={`px-3 py-2 grid gap-2.5 items-start${i === 0 ? ' border-b' : ''}`}
-                                                         style={{gridTemplateColumns:'48px minmax(0,1fr)', borderColor:'var(--border-table)', lineHeight:1.7}}>
+                                                         style={{gridTemplateColumns: attnTest ? '84px minmax(0,1fr)' : '48px minmax(0,1fr)', borderColor:'var(--border-table)', lineHeight:1.7}}>
                                                         <span style={{color:'var(--text-secondary)'}}>{r.t}</span>
                                                         {addrText(r.l, r.e)}
                                                     </div>
@@ -13121,14 +13745,17 @@ ${cur}`
                                                 <div className="text-[12px]" style={{color:'var(--tone-warn)'}}>其中 {d.notifiedToday} 筆今天已經提醒過（照樣會列進信裡）。</div>
                                             )}
                                             {d.total === 0 ? (
-                                                <div className="text-[13px]" style={{color:'var(--text-muted)'}}>目前沒有需關注的需求。</div>
+                                                <div className="p-2.5 rounded-lg text-[12px]" style={{background:'var(--bg-exp-panel)', color:'var(--text-secondary)'}}>
+                                                    {d.next > 0 ? '目前沒有需關注的需求（逾期、未壓日期、7 日內到期都是 0）。信裡會寫這一句，再列出下週到期的與最近 7 天的變化。'
+                                                                : '目前沒有需關注、下週也沒有到期的需求。信裡會寫這一句讓大家知道一切正常，再附上最近 7 天的變化。'}
+                                                </div>
                                             ) : (
                                                 <div className="rounded-lg border" style={{borderColor:'var(--border-table)'}}>
                                                     <button type="button" aria-expanded={!!a.listOpen}
                                                             onClick={() => setAttnModal(p => p ? { ...p, listOpen: !p.listOpen } : p)}
                                                             className="w-full px-3 py-2 text-left text-[13px] font-bold flex items-center gap-1.5">
                                                         <span style={{display:'inline-block', transform: a.listOpen ? 'rotate(90deg)' : 'none', transition:'transform 0.15s'}}>▸</span>
-                                                        看信裡會列的 {d.total} 筆
+                                                        需關注 {d.total} 筆
                                                     </button>
                                                     {a.listOpen && (
                                                         <div className="px-3 pb-2 space-y-2 border-t" style={{borderColor:'var(--border-table)'}}>
@@ -13152,6 +13779,50 @@ ${cur}`
                                                     )}
                                                 </div>
                                             )}
+                                            {/* 第 206 批：下週到期（預設收合；使用者看過示意圖）。依負責人分組、組內依到期日 —— 與需關注那一區同一個樣子。
+                                                日期一律灰字：顏色只給「急」（紅＝逾期／未壓、橘＝7 日內）。
+                                                日期用 YYYY-MM-DD（不用 fmtYmd）：與上面需關注那一區、與寄出去的信同一種寫法（視窗是信的預覽） */}
+                                            {d.next > 0 && (() => {
+                                                const ng = [];
+                                                (d.nextItems || []).forEach(it => {
+                                                    const k = it.side + '|' + (it.name || '');
+                                                    let g = ng.find(x => x.k === k);
+                                                    if (!g) { g = { k, side: it.side, name: it.name, items: [] }; ng.push(g); }
+                                                    g.items.push(it);
+                                                });
+                                                ng.sort((x, y) => x.side.localeCompare(y.side) || (x.name || '').localeCompare(y.name || ''));
+                                                return (
+                                                <div className="rounded-lg border" style={{borderColor:'var(--border-table)'}}>
+                                                    <button type="button" aria-expanded={!!a.nextOpen}
+                                                            onClick={() => setAttnModal(p => p ? { ...p, nextOpen: !p.nextOpen } : p)}
+                                                            title="下週到期＝不在需關注裡、最近要到期的那一階段剩 8～14 天。只列在信尾，不算進畫面的「需關注」，也不會記成「已通知」"
+                                                            className="w-full px-3 py-2 text-left text-[13px] font-bold flex items-center gap-1.5">
+                                                        <span style={{display:'inline-block', transform: a.nextOpen ? 'rotate(90deg)' : 'none', transition:'transform 0.15s'}}>▸</span>
+                                                        下週到期 {d.next} 筆
+                                                        {!a.nextOpen && <span className="font-normal text-[12px]" style={{color:'var(--text-muted)'}}>（點開看明細）</span>}
+                                                    </button>
+                                                    {a.nextOpen && (
+                                                        <div className="px-3 pb-2 space-y-2 border-t" style={{borderColor:'var(--border-table)'}}>
+                                                            {ng.map(g => (
+                                                                <div key={g.k} className="pt-2">
+                                                                    <div className="text-[12px] font-bold" style={{color:'var(--text-secondary)'}}>
+                                                                        ■ {g.side} {g.name || '（未指派負責人）'}（{g.items.length} 筆）
+                                                                    </div>
+                                                                    {g.items.map(it => (
+                                                                        <div key={it.id} className="pl-3 py-0.5 text-[12px]">
+                                                                            <span className="font-mono text-[11px]" style={{color:'var(--text-muted)'}}>NID {it.nid || '—'}</span>{' '}
+                                                                            <span className="break-words">{it.title || '—'}</span>
+                                                                            <span style={{color:'var(--text-secondary)'}}>　{it.phaseLabel}　</span>
+                                                                            <span className="font-bold" style={{color:'var(--text-secondary)'}}>{it.date} 到期（剩 {it.days} 天）</span>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                                );
+                                            })()}
                                         </>)}
                                     </div>
                                     <div className="p-4 flex justify-end items-center gap-2 border-t" style={{borderColor:'var(--border-table)'}}>
@@ -13169,7 +13840,7 @@ ${cur}`
                                                     disabled={!!a.sending || isSubmitting || !!sendTitle}
                                                     className="px-5 py-2 rounded-lg text-sm font-bold text-white shadow-md disabled:opacity-40 disabled:cursor-not-allowed"
                                                     style={{background:'var(--brand)'}} title={sendTitle}>
-                                                {a.sending ? '寄送中…' : '寄出提醒'}
+                                                {a.sending ? '寄送中…' : attnTest ? '寄出試寄信' : '寄出提醒'}
                                             </button>
                                         )}
                                     </div>
@@ -13183,7 +13854,7 @@ ${cur}`
                                  aria-label={`退回重做 NID ${rollbackModal.nid}`} tabIndex={-1}>
                                 <div className="rounded-xl shadow-2xl w-full max-w-lg" style={{background:'var(--bg-card)', color:'var(--text-primary)'}} onClick={e=>e.stopPropagation()}>
                                     <div className="p-4 border-b" style={{borderColor:'var(--border-table)'}}>
-                                        <div className="flex items-center gap-1.5"><h3 className="text-base font-bold">🔄 退回重做（NID {rollbackModal.nid}）</h3><ManualLink anchor="c6" label="退回重做" /></div>
+                                        <div className="flex items-center gap-1.5"><h3 className="text-base font-bold">退回重做（NID {rollbackModal.nid}）</h3><ManualLink anchor="c6" label="退回重做" /></div>
                                         <p className="mt-1 text-[11px]" style={{color:'var(--text-muted)'}}>
                                             目前階段為 {STAGE_CODES[String(rollbackModal.curStage)]?.label || rollbackModal.curStage}。
                                             退回後<span className="font-bold">目標階段（含）以後的日期會全部清空</span>，需要重新填寫；
@@ -13290,7 +13961,7 @@ ${cur}`
                                         <p className="mt-1 text-[11px]" style={{color:'var(--text-muted)'}}>
                                             要撤銷的是 {d.changedAt}{d.changedBy ? ` · ${whoOf(d.changedBy)}` : ''} 記下的「{entryLabelOf(d)}」
                                             {isDateVal(doneDate) && <>（完成日 {doneDate}）</>}。
-                                            誤按了「標記完成…」時用這個；真的要重做前面的階段（規格變了、驗收沒過），請改用「🔄 退回重做」。
+                                            誤按了「標記完成…」時用這個；真的要重做前面的階段（規格變了、驗收沒過），請改用「退回重做」。
                                         </p>
                                     </div>
                                     <div className="p-4 space-y-3">
@@ -13349,7 +14020,7 @@ ${cur}`
                                                     撤銷會把「{ph.label}」的{ph.endKey === 'confirm' ? '確認日' : '結束日'}由 {doneDate} 還原為原訂 <span className="font-bold">{nc.restored}</span>，
                                                     但下一階段「{nc.label}」的{nc.word}已經壓在 <span className="font-bold">{nc.end}</span> —— 後面的階段會比前面早，之後那兩欄連改都改不動。
                                                 </div>
-                                                <div>請先把「{nc.label}」的{nc.word}改到 {nc.restored} 之後（或先清掉）再回來撤銷；若「{ph.label}」真的要重做，請改用「🔄 退回重做」。</div>
+                                                <div>請先把「{nc.label}」的{nc.word}改到 {nc.restored} 之後（或先清掉）再回來撤銷；若「{ph.label}」真的要重做，請改用「退回重做」。</div>
                                             </div>
                                         )}
                                         <div>
@@ -13430,7 +14101,8 @@ ${cur}`
                                         ? <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{background:dot}}></span>
                                         : <span aria-hidden="true" className="w-1.5 flex-shrink-0 inline-flex justify-center font-bold" style={{color:dot}}>{open ? '▾' : '▸'}</span>}
                                     <span className="font-semibold tabular-nums whitespace-nowrap" style={{color:'var(--text-secondary)'}}>{whenOf(at)}</span>
-                                    {by && <span className="whitespace-nowrap" style={{color:'var(--text-muted)'}}>· {whoOf(by)}{sim && <span title="這筆是用模擬帳號寫入的">（模擬）</span>}</span>}
+                                    {/* 第 221 批：不再印「（模擬）」—— 模擬要與真實登入看到的一樣；DB 的 ChangedBySource 照樣記 simulated */}
+                                    {by && <span className="whitespace-nowrap" style={{color:'var(--text-muted)'}}>· {whoOf(by)}</span>}
                                 </span>
                             );
                             // ─── 每一組可以收合（第 169 批，使用者：「修改時間底下用展開的方式顯示修改項目」）───
@@ -13762,7 +14434,9 @@ ${cur}`
                                  aria-label={confirmModal.title || '請確認'} tabIndex={-1}>
                                 <div className="rounded-xl shadow-2xl w-full max-w-md" style={{background:'var(--bg-card)', color:'var(--text-primary)'}} onClick={e=>e.stopPropagation()}>
                                     <div className="p-4 flex items-start gap-3 border-b" style={{borderColor:'var(--border-table)'}}>
-                                        <span className="flex items-center justify-center w-8 h-8 rounded-full shrink-0 text-lg" style={{background:'rgba(239,68,68,0.1)', color:'#ef4444'}} aria-hidden="true">?</span>
+                                        {/* tone:'warn'（第 224 批：年份確認）＝黃色問號＋品牌色按鈕；沒帶＝原本的紅色（刪除用） */}
+                                        <span className="flex items-center justify-center w-8 h-8 rounded-full shrink-0 text-lg"
+                                              style={confirmModal.tone === 'warn' ? {background:'var(--tone-warn-bg)', color:'var(--tone-warn)'} : {background:'rgba(239,68,68,0.1)', color:'#ef4444'}} aria-hidden="true">?</span>
                                         <div className="min-w-0">
                                             <h3 className="text-base font-bold">{confirmModal.title}</h3>
                                             <p className="mt-1 text-sm whitespace-pre-wrap" style={{color:'var(--text-secondary)'}}>{confirmModal.message}</p>
@@ -13786,6 +14460,12 @@ ${cur}`
                                         </div>
                                     )}
                                     <div className="p-3 flex justify-end gap-2">
+                                        {/* 選填的第三顆（第 217 批：停用人員前「在需求列表看這 N 筆」）。不是確認，所以不用紅色、放最左邊 */}
+                                        {confirmModal.extra && (
+                                            <button type="button" onClick={()=>{ const x = confirmModal.extra; setConfirmModal(null); x.onClick(); }}
+                                                    className="mr-auto px-3 py-2 rounded-lg text-sm font-bold hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+                                                    style={{color:'var(--brand)'}}>{confirmModal.extra.label}</button>
+                                        )}
                                         <button onClick={()=>setConfirmModal(null)} className="px-5 py-2 rounded-lg text-sm font-bold hover:bg-black/5 dark:hover:bg-white/5 transition-colors">取消</button>
                                         {/* 有原因欄時沒填就不給按 —— 按了才跳「請先填寫」是多一次來回。
                                             後端一樣會擋（不是只有前端擋，繞過畫面就會寫出沒有理由的刪除） */}
@@ -13795,7 +14475,10 @@ ${cur}`
                                         <button onClick={()=>{ const v = confirmModal.value || ''; setConfirmModal(null); confirmModal.onConfirm(v); }}
                                             disabled={isSubmitting || (!!confirmModal.prompt && (!String(confirmModal.value||'').trim() || isOverLimit(confirmModal.value, NOTE_MAX)))}
                                             title={confirmModal.prompt && isOverLimit(confirmModal.value, NOTE_MAX) ? overLimitMsg('說明', confirmModal.value, NOTE_MAX) : undefined}
-                                            className="px-5 py-2 rounded-lg text-sm font-bold bg-red-500 text-white hover:bg-red-600 shadow-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-red-500">確認</button>
+                                            className={confirmModal.tone === 'warn'
+                                                ? 'px-5 py-2 rounded-lg text-sm font-bold text-white shadow-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed'
+                                                : 'px-5 py-2 rounded-lg text-sm font-bold bg-red-500 text-white hover:bg-red-600 shadow-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-red-500'}
+                                            style={confirmModal.tone === 'warn' ? {background:'var(--brand)'} : undefined}>{confirmModal.confirmLabel || '確認'}</button>
                                     </div>
                                 </div>
                             </div>
@@ -13807,7 +14490,13 @@ ${cur}`
                             ⚠️ 只留「寄給、副本」：寄件者一律系統信箱不寫；信箱地址收在名字的 title（查問題的人才需要）。
                             ⚠️ 黃字「已寄過」只告知不擋（第 43 批），按鈕字跟著換成「再寄一次」 */}
                         {notifyModal && (() => {
-                            const { item, p, isOd, prev } = notifyModal;
+                            const { item, p, isOd } = notifyModal;
+                            // 第 211 批（使用者看過示意圖：「照這版改」）：模擬帳號一律、或自動寄信是「試寄」時，只寄到試寄收件人。
+                            // 真正寄到哪由後端決定（/notify-unset 自己讀 NotifySettings）；這裡只是預告。試寄時「已寄過」那行不出現（試寄不寫軌跡）
+                            // 第 221 批：拿掉「模擬帳號一律試寄」—— 模擬與真實帳號完全相同，只看自動寄信模式（後端 /notify-unset 鏡像）
+                            const testWhy = autoNotify && autoNotify.mode === 'test' ? '試寄中' : '';
+                            const testTo = (autoNotify && autoNotify.testTo) || '';
+                            const prev = testWhy ? null : notifyModal.prev;
                             const prevAt = prev && prev.changedAt
                                 ? (prev.changedAt.slice(0, 10) === TODAY_ISO ? `今天 ${prev.changedAt.slice(11, 16)}` : prev.changedAt)
                                 : '';
@@ -13831,13 +14520,20 @@ ${cur}`
                                             </p>
                                         </div>
                                     </div>
+                                    {testWhy && (
+                                        <div className="mx-5 mt-4 px-3 py-2 rounded-lg text-[13px]"
+                                             style={{background:'var(--tone-warn-bg)', color:'var(--tone-warn)'}}>
+                                            {testWhy}：只會寄到 {testTo ? <b className="break-all">{testTo}</b> : '試寄收件人'}，
+                                            {p.toName}{p.ccEmail ? `、${p.ccName}` : ''}都收不到
+                                        </div>
+                                    )}
                                     <div className="mx-5 mt-4 grid gap-x-3 gap-y-1.5 text-sm" style={{gridTemplateColumns:'auto minmax(0,1fr)'}}>
-                                        <span style={{color:'var(--text-secondary)'}}>寄給</span>
+                                        <span style={{color:'var(--text-secondary)'}}>{testWhy ? '正式時寄給' : '寄給'}</span>
                                         <span title={p.toEmail}>
                                             <b>{p.toName}</b>
                                             <span className="ml-1.5 text-xs" style={{color:'var(--text-muted)'}}>{p.side} 負責人</span>
                                         </span>
-                                        <span style={{color:'var(--text-secondary)'}}>副本</span>
+                                        <span style={{color:'var(--text-secondary)'}}>{testWhy ? '正式時副本' : '副本'}</span>
                                         {ccNote
                                             ? <span style={{color:'var(--text-muted)'}}>{ccNote}</span>
                                             : <span title={p.ccEmail}>
@@ -13845,6 +14541,13 @@ ${cur}`
                                                   <span className="ml-1.5 text-xs" style={{color:'var(--text-muted)'}}>{p.ccDept} 負責人</span>
                                               </span>}
                                     </div>
+                                    {p.toInactive && (
+                                        <div className="mx-5 mt-3 px-3 py-2 rounded-lg text-[13px] flex items-start gap-1.5"
+                                             style={{background:'var(--tone-warn-bg)', color:'var(--tone-warn)'}}>
+                                            <span aria-hidden="true">⚠</span>
+                                            <span>{p.toName} 在指派名單裡已停用（可能已離職或轉調），這封可能沒人看。建議先把 {p.side} 負責人換成別人。</span>
+                                        </div>
+                                    )}
                                     {prev && (
                                         <div className="mx-5 mt-3 px-3 py-2 rounded-lg text-sm flex items-center gap-1.5"
                                              style={{background:'var(--tone-warn-bg)', color:'var(--tone-warn)'}}>
@@ -13858,7 +14561,7 @@ ${cur}`
                                                 onClick={()=>{ const m = notifyModal; setNotifyModal(null); m.onConfirm(); }}
                                                 className="px-5 py-2 rounded-lg text-sm font-bold text-white shadow-md disabled:opacity-40 disabled:cursor-not-allowed"
                                                 style={{background:'var(--brand)'}}>
-                                            {prev ? '再寄一次' : '寄出提醒'}
+                                            {testWhy ? '寄出試寄信' : prev ? '再寄一次' : '寄出提醒'}
                                         </button>
                                     </div>
                                 </div>

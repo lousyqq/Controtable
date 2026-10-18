@@ -1784,16 +1784,16 @@ select.ctl {
   width: 160px;
 }
 
-.w-\[170px\] {
-  width: 170px;
-}
-
 .w-\[180px\] {
   width: 180px;
 }
 
 .w-\[240px\] {
   width: 240px;
+}
+
+.w-\[280px\] {
+  width: 280px;
 }
 
 .w-\[74px\] {
@@ -2436,6 +2436,11 @@ select.ctl {
 .py-\[3px\] {
   padding-top: 3px;
   padding-bottom: 3px;
+}
+
+.py-px {
+  padding-top: 1px;
+  padding-bottom: 1px;
 }
 
 .pb-1 {
@@ -3202,6 +3207,10 @@ html.ct-dark {
   border-bottom-width: 0px;
 }
 
+.hover\:bg-\[var\(--bg-pill-hover\)\]:hover {
+  background-color: var(--bg-pill-hover);
+}
+
 .hover\:bg-black\/10:hover {
   background-color: rgb(0 0 0 / 0.1);
 }
@@ -3332,6 +3341,10 @@ html.ct-dark {
   background-color: rgb(241 245 249 / var(--tw-bg-opacity, 1));
 }
 
+.disabled\:no-underline:disabled {
+  text-decoration-line: none;
+}
+
 .disabled\:opacity-30:disabled {
   opacity: 0.3;
 }
@@ -3446,7 +3459,7 @@ html.ct-dark {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .lg\:grid-cols-5 {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+  .lg\:grid-cols-4 {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }

@@ -1,0 +1,331 @@
+# 系統架構 — Controltable（MSD 需求管控表）
+
+> 這份文件講**東西怎麼組起來、請求怎麼跑**。
+> 欄位定義看 `FIELD_SPEC.md`、資料庫綱要看 `DB_table.md`、開發鐵律看 `CLAUDE.md`、
+> 進度與踩過的坑看 `memory.md`。**四份不重複，有衝突時以那三份專責文件為準。**
+
+建立於 2026-08-23（第 23 批）。在此之前這份文件一直缺席。
+
+---
+
+## 1. 全景
+
+```
+瀏覽器
+  │  index.html（不快取）→ 讀 window.APP_BASE
+  │  app.js / app.css（?v=YYYYMMDDnnn 破快取）
+  ▼
+Kestrel / IIS  ──  Program.cs（.NET 9 Minimal API，單檔）
+  │                  ├─ 中介軟體：回應壓縮（br/gzip，Optimal）→ index.html 的 __BASE__ 置換
+  │                  ├─ Negotiate 驗證（只掛 /api/whoami）
+  │                  └─ 啟動時的 idempotent bootstrap（補欄位／建表，**best-effort**）
+  ▼
+MS SQL Server（ADO.NET Raw SQL，無 EF、無 ORM）
+  ├─ dbo.Controltable          需求主表（一列 = 一張需求單）
+  ├─ dbo.Controltable_History  變更稽核表（一列 = 一個階段的一次日期事件，或第 84 批起的一個非日期欄位異動）
+  └─ dbo.Assignee              指派人員主檔（EMS / MSD 下拉的唯一來源）
+```
+
+**刻意不用的東西**（不要「順手」加回來）：
+
+| 沒有用 | 為什麼 |
+|---|---|
+| EF Core / Migrations | 綱要變更走累加 SQL 腳本 `01_…` ~ `13_…`，見 `DB_table.md` |
+| Vite / Webpack / Next.js | 前端只有 Babel 一步：`app.jsx` → `wwwroot/app.js` |
+| **任何對外的 CDN** | React 自第 82 批起在 `wwwroot/vendor/`，字型自**第 83 批**起走系統字 —— 這個 App 跑在工廠內網，**外部請求實測是 0 支**。兩條規則都寫在 `CLAUDE.md`，不要加回來 |
+| 前端路由 | 兩個頁籤是 `activeView` 這個 state，沒有 URL |
+| 狀態管理套件 | 全部 state 都在 `App()` 這一個元件裡 |
+| 權限模型 | 使用者明示「角色權限暫不實作」。**所有寫入端點都是匿名的** |
+
+---
+
+## 2. 後端：`Program.cs`（單檔，約 2400 行）
+
+單檔是刻意的 —— 這個系統只有一張主表、一組流程，拆成多層之後追一條規則要跳五個檔案。
+檔案內的順序固定為：**啟動設定 → 工具函式 → 驗證函式 → 端點 → 參數／稽核 helper → Model**。
+
+### 端點一覽
+
+| 方法 | 路徑 | 交易 | 備註 |
+|---|---|---|---|
+| GET | `/api/requirements` | — | `WHERE IsDeleted = 0`，**必須 `ORDER BY Id`** |
+| POST | `/api/requirements` | ✅ | 主表 INSERT + `init` 稽核列 |
+| PUT | `/api/requirements/{id}` | ✅ | 整列覆寫，**有樂觀鎖**（`updatedAtToken`，帶秒） |
+| DELETE | `/api/requirements/{id}` | ✅ | 軟刪除，**原因必填**，寫 `ChangeType='刪除'` 稽核列 |
+| POST | `/api/requirements/{id}/done` | ✅ | 階段完成，推進 `StageCode`、維護三個計數欄 |
+| POST | `/api/requirements/{id}/rollback` | ✅ | 規格回退，清 ≥ 目標階段的日期（先寫快照再清） |
+| GET | `/api/history` | — | 稽核表，**排除已軟刪除的需求** |
+| GET/POST/PUT/DELETE | `/api/assignees` | — | 人員主檔；**寫入預設關閉**（`Assignee:EditEnabled`，第 222 批）；開了之後還被指派中的人不可刪（`409`） |
+| GET | `/api/export` | — | ClosedXML 產 .xlsx，同樣 `ORDER BY Id` |
+| POST | `/api/import` | ✅ | **TRUNCATE 重灌**（刻意，見 `CLAUDE.md`）＋跨站請求防護 |
+| GET | `/api/whoami` | — | 要求 Negotiate 驗證（第 74 批起不再是唯一一支） |
+| GET | `/api/authinfo` | — | 只回「有沒有開放模擬帳號」，不驗證 |
+| GET | `/api/access-status` | — | 瀏覽權限**開關**而已，匿名。前端在 `access-check` 拿到 401（非網域）時靠它決定放不放行 |
+| GET | `/api/access-check` | — | **Negotiate**。這個人能不能看；工號由 `ctx.User` 讀、不收參數。`?testEmpId=` 只給管理者（403 otherwise） |
+| GET | `/api/access-rules` | — | **Negotiate ＋ 管理者**。開關、規則清單、最近 30 筆 `AccessLog`、`Access:Admins` |
+| POST | `/api/access-rules` | ✅ | **Negotiate ＋ 管理者 ＋ 跨站防護**。新增規則，相同組合 `409` |
+| DELETE | `/api/access-rules/{id}` | ✅ | 同上，刪除規則 |
+| PUT | `/api/access-control` | ✅ | 同上，切總開關；開著且 0 條規則時回 `warning` |
+| POST | `/api/access-admins` | ✅ | 同上，新增管理者（`dbo.AccessAdmins`，重複 `409`） |
+| DELETE | `/api/access-admins/{id}` | ✅ | 同上，移除管理者；**刪自己／刪最後一位回 `400`** |
+
+### 一支寫入端點的標準骨架
+
+順序是規則本身，不是風格 —— 換順序會做出對不起來的資料：
+
+```
+1. 正規化      ApplyStartDefaults()          ← 要在所有驗證與稽核比對之前
+2. 無狀態驗證  MissingRequiredFields / InvalidDateRanges / IsValidStatus / IsValidStageCode
+3. 開交易      conn.BeginTransaction()
+4. 讀 before   （樂觀鎖、稽核的「異動前的值」、必填的放寬條件都要它）
+5. 有狀態驗證  樂觀鎖 → StagePrereqViolations → PhaseGatingViolations
+               → PhaseOrderViolations → EndChangedWithoutReason
+6. 主表寫入    UPDATE / INSERT
+7. 稽核列      WriteAuditAsync() / InsertHistoryAsync()   ← 一定要帶 tx
+8. Commit
+```
+
+- 早退（`BadRequest` / `Conflict` / `NotFound`）一律走 `return`，交易由 `using` 的
+  `Dispose()` 回捲，**不必自己 rollback**。
+- ⚠️ 交易裡的每一個 `SqlCommand` 都要帶 `tx`，漏一個就拋
+  「ExecuteNonQuery requires the command to have a transaction」。
+
+### 驗證函式與它們各管什麼
+
+一支只管一件事，重疊的部分刻意分開 —— 合併過一次就再也講不清楚是哪條規則擋的：
+
+| 函式 | 管什麼 | 界線 |
+|---|---|---|
+| `MissingRequiredFields` | 必填 | `NID` / `MainCat` / `SubCat` / `EMS` 四欄。**`1_EMSEnd` 只在「原本就有值」時必填**（2026-09-02 / 第 42 批：新增時也不再必填，留空會顯示「⚠ 未壓日期」＋`✉`，存檔後直接問要不要寄信通知） |
+| `InvalidDateRanges` | 每個階段**自己**的 `Start ≤ End` | ② 只有單一日期，不在此列 |
+| `PhaseGatingViolations` | 前置階段有沒有填 | 只擋「本來是空的、這次被填進去」的 End |
+| `PhaseOrderViolations` | 跨階段的 End 遞增 | 只擋這次**被動到**的那一組 |
+| `StagePrereqViolations` | 設 `StatusID = N` 時 1~N-1 的日期齊全 | 只驗前置、不驗目標階段自己 |
+| `EndChangedWithoutReason` | 改 End 一定要有分類 + 說明 | 首次填寫與只改 Start 都不算 |
+
+> ⚠️ 那三個「只擋這次動到的」是同一條界線：**既有資料有階段跳空、日期倒著填的**
+> （匯入來的），照結果狀態一律擋的話那些列會**有值卻永遠改不動**。
+> 這是第 14 批用一次事故換來的規則，不要「順手收緊」。
+
+### 前後端成對的規則（改一邊就要改兩邊）
+
+| 後端（`Program.cs`） | 前端（`app.jsx`） |
+|---|---|
+| `StagePrereqViolations()` | `stagePrereqMissing()` |
+| `PhaseGatingViolations()` | `isPhaseOpen()` / `fieldLockReason()` |
+| `PhaseOrderViolations()` | `handleSave()` 裡的 `orderChain` |
+| `PrevPhaseEndOf()` | `prevPhaseEndOf()` |
+| `/done` 的重複檢查 SQL | `phaseDoneEntry()` |
+| `NormStage()` / `NormStatusWrite()` | `normStageCode()` / `normStatus()` |
+| `ApplyStartDefaults()` | `applyStartDefaults()` |
+
+**前端擋是為了不讓使用者按了才被拒絕；後端擋才是真的把關。**
+兩邊都要有，而且判定要一致 —— 只有前端擋的規則，繞過畫面就會寫出壞資料。
+
+---
+
+## 3. 前端：`ClientApp/app.jsx`（單一 `App()` 元件）
+
+### 建置
+
+```
+ClientApp/app.jsx   --babel-->  wwwroot/app.js
+ClientApp/input.css --tailwind-> wwwroot/app.css
+```
+
+`npm run build` 跑這兩步。**跑完接著把 `wwwroot/index.html` 的 `app.css?v=` 與
+`app.js?v=` 一起往上帶**（格式 `YYYYMMDD` + 三位流水號，兩處必須一致）——
+瀏覽器拿到舊檔是靜默失敗，看起來會像功能壞掉或只改了一半。
+
+⚠️ 這兩個編譯產物**要進版控**（`.gitignore` 裡有註解說明）：專案沒有 CI，
+部署就是把資料夾複製上 IIS，它們沒進去的話伺服器上就沒有東西可以給瀏覽器。
+
+### 資料流
+
+```
+載入：fetchReqs() ─┐
+      fetchHistory()├─→ requirementsData / historyEntries（兩包全域資料）
+      fetchAssignees()                    │
+      detectActor()                       ▼
+                        historyMap（依 requirementId 分組）
+                        analytics / dueInfo / stageFacets（useMemo 衍生）
+                                          ▼
+                        filteredData → sortedData → 表格
+```
+
+- 稽核表**整包載入**後在前端分組。每列展開時才打 API 會讓明細開起來有延遲，
+  而資料量不大（目前 62 筆需求 / 222 列稽核）。
+- **篩選與排序另有一條單向的網址通道**（第 28 批）：載入時從 query string 讀**一次**當作
+  各個 state 的初始值，之後每次變更用 `replaceState` 把網址覆寫回去。
+  ⚠️ 方向是固定的（state → 網址），**不會**反過來監聽網址變更 ——
+  兩邊互相寫會在打字時互相蓋。參數表與白名單見 `FIELD_SPEC.md`。
+- ⚠️ **任何會動到需求的操作，`fetchReqs()` 與 `fetchHistory()` 都要一起重抓**
+  （`Promise.all`）。只抓一邊的話，統計卡上「時程異動 N」與「涉及 M 件」就會對不起來 ——
+  這個坑在匯入與刪除各踩過一次。**頁首的重新整理鈕（`handleRefresh`，第 27 批）
+  也在這條規則裡**，它同樣是兩支一起抓。
+- `fetchReqs()` 分兩條路（第 26 批的 `loadedOnceRef`）：**首次**載入才 `isLoading`
+  （tbody 換成「資料載入中…」），之後一律走 `refreshing`（表格淡化 + 頁首「更新中…」）。
+  手動重新整理走的是後者，所以按下去**不會**把 62 列換掉，篩選／排序／展開的列全部保留。
+- 頁首有兩個時間，**不是同一件事**：「資料更新」＝所有資料列裡最晚的 `UpdatedAt`
+  （資料本身多新，由 `lastDataUpdate` 算），「畫面」＝`lastFetchedAt`
+  （這份畫面何時抓回來的，只在抓取**成功**時更新）。別人存了檔而你的分頁開著時，
+  只有後者看得出「我手上這份已經舊了」。
+
+### 三組容易搞混的「同名不同事」
+
+| 名字 | 資料列上 | 統計／篩選 |
+|---|---|---|
+| 進行中 | — | `normStatus(status) !== 'Done'`（含 `Init`），不是「剛好等於 Ongoing」 |
+| 時程異動 | ⚠N＝該階段的 `日期異動` **筆數** | KPI 主數字是**事件筆數**、副標「涉及 N 件」是**需求件數** |
+| 逾期 | 四格各自判（`isPhasePassed()`） | 「需關注」= 每列**一件**，取未走完階段裡最急的那一個 |
+
+「逾期」那一列是第 23 批才收斂成單一規則的（第 24 批再補上「有 `*ActualEnd` 也算走完」
+這最後一個維度），兩份規則的歷史事故見 `FIELD_SPEC.md`「資料列上的逾期標示」那張表。
+
+### 讀取失敗要看得出來，不能長得像「沒有資料」
+
+| 端點 | 失敗時前端的樣子 |
+|---|---|
+| `GET /api/requirements` | 表格中央顯示 `loadError` + 「重新載入」鈕 |
+| `GET /api/history` | `historyError`：KPI 卡「時程異動」顯示 **`—`**（不是 `0`）、圖例列紅字、展開的軌跡面板寫「軌跡讀取失敗，這不代表沒有變更」 |
+| `GET /api/assignees` | `assigneeError`：編輯視窗 EMS／MSD 負責人下拉底下各一行紅字「指派人員名單讀取失敗，下拉選單只會顯示這筆目前指到的人」 |
+| `GET /api/export` | 後端回帶訊息的 500（前端是 `window.open`，看到的是那句訊息而不是空白頁） |
+
+### 最後一道：`AppErrorBoundary`（第 83 批）
+
+上面那張表講的是「某一支 API 失敗」。**畫面自己炸掉**是另一件事：`App()` 底下任何一次 render 例外，
+React 18 會把整棵樹卸載，`#root` 變成空的 —— 在此之前畫面上只剩 `index.html` 那個 error 監聽器
+印出的一句英文，而且行號指向 `react-dom…js`。現在 `<App/>` 包在 `AppErrorBoundary`（`app.jsx` 檔尾）裡，
+改成一張中文卡（「資料庫沒有任何變動」＋「重新整理」＋網址有 query 時多一顆「清掉篩選條件再重新整理」
+＋可展開的堆疊）。⚠️ 它只負責**讓失敗看得懂**，不做任何補救 —— 細節與界線見 `CLAUDE.md`。
+
+第二列是第 24 批補的。在此之前 `fetchHistory()` 的 catch 只 `console.error` 然後清空清單 ——
+畫面上與「這批需求從來沒被改過」**完全無法區分**，而那正是稽核表存在要防的事。
+
+三、四列是**第 25 批**補的，同批為 `/api/assignees` 與 `/api/export` 加上 try/catch。
+⚠️ 這份文件上一版寫著「`GET /api/history` 是唯一沒有 try/catch 的查詢端點」——**那句話當時就不成立**。
+`fetchAssignees()` 甚至更安靜：它是 `if (res.ok) { … }`，非 200 時連 `console.error` 都沒有。
+後果比稽核表那個更硬：`assigneeList` 留在空陣列，編輯視窗的負責人下拉一個名字都沒有
+（`ownerSelectOptions()` 只補得回「這筆目前指到的人」），而 **EMS 負責人是必填** ——
+新增需求時下拉是空的，那筆需求根本存不進去，使用者看到的卻只有「必填欄位未完成」。
+⚠️ 失敗時**不清空 `assigneeList`**（與 `historyEntries` 相反）：舊名單過期了還能用，
+而錯的異動次數會騙人。
+
+### 兩把鎖，語意完全不同
+
+| 圖示 | 元件 | 意思 | 可不可以解 |
+|---|---|---|---|
+| 🔒 灰色實心 | `GateLock` | 前置階段還沒填完 | **不可解**，把前面補完就自動開放 |
+| 🔓 線條鎖 | `UnlockButton` | 已有值防誤改 | 點一下就解，解完改 End 要填理由 |
+
+icon 與顏色刻意分開，否則使用者會一直去點解不開的那把。
+
+---
+
+## 4. 子路徑部署（IIS 虛擬應用程式）
+
+這個 App 會掛在 `http://host/Controltable/` 底下，所以**前端不可寫死開頭的 `/`**：
+
+| 對象 | 正確寫法 | 寫錯會怎樣 |
+|---|---|---|
+| API 呼叫 | `api('/api/xxx')`（helper 在 `app.jsx` 最上方） | 直接 `fetch('/api/xxx')` 在子路徑底下必定 404 |
+| 靜態資源 | `index.html` 用 `__BASE__app.css` / `__BASE__app.js` | 解析到站台根目錄，整個畫面空白 |
+| 後端路由 | 維持 `/api/...` | 不用改，ASP.NET Core 的路由本來就相對 `PathBase` |
+
+`__BASE__` 由 `Program.cs` 最上面那段中介軟體在回傳 index.html 時換成實際的
+`Request.PathBase`（根站台是 `/`）。**所以 index.html 不走 `UseDefaultFiles`**，
+是被那段中介軟體攔下來的，而且刻意回 `no-store` —— 否則舊的 `?v=` 會被瀏覽器留住。
+
+---
+
+## 5. 身分與稽核
+
+```
+前端載入 → GET /api/whoami（Negotiate）→ 取得 Windows 帳號
+        → 寫入端點掛 Negotiate，後端 ResolveActor(ctx) 自己讀 Windows 帳號（第 222 批）
+        → 收斂成 (ChangedBy, ChangedBySource)；前端送的 actorEmpId / actorSource 不再採用
+```
+
+- 非網域環境會回 `401`：讀取照常；**寫入第 222 批起存不了**（前端講「無法確認你的 Windows 帳號，這次的變更沒有存」）。
+  在此之前是「帳號取不到不擋存檔、ChangedBy 留空」。
+- `ChangedBySource` 有四種：`windows` / `simulated` / `import` / `unknown`。
+  ⚠️ **模擬帳號一定要標成 `simulated`** —— 讓假身分靜靜混進稽核紀錄，
+  正是稽核表存在要防的事。模擬功能由 `Auth:AllowSimulation` 控制（只在測試區開，正式區關）。
+- **第 221 批：模擬＝那個人用 Windows 帳號登入**。模擬中前端在每個本站請求帶 `X-CT-Sim-EmpId`（存在 localStorage，
+  重新整理仍保留），後端 `WindowsEmpId()` 在 `AllowSimulation=true` 時改回傳它 —— 瀏覽權限閘門、管理者、批次提醒門檻
+  全部看被模擬的人；寄信只看自動寄信模式。正式區不看這個標頭，安全邊界不變。
+- ~~帳號由前端帶上來，是可以被偽造的~~ → **第 222 批（健檢 A1）改由伺服器讀**：健檢實測過繞過畫面送「CEO001／windows」會照記。
+  現在寫入、瀏覽權限、管理者、批次提醒全部走同一支 `WindowsEmpId()`。只改「記成誰」，沒有加「誰可以改」的檢查。
+
+### 頁面瀏覽權限（第 74 批，2026-09-21，做法對齊 `C:\Gantt`）
+
+```
+前端載入 → GET /api/access-check（Negotiate）
+        → 後端：ctx.User 的工號 → Access:Admins？→ 一律放行
+                                 → 開關關著？→ 放行
+                                 → 查 [WEB].[dbo].[notes_person] 拿部門 → 比對 dbo.AccessRules
+        → 通過 → 才 fetchReqs()／fetchAssignees()／fetchHistory()
+        → 沒過 → AccessDeniedScreen 取代整個 App（沒有頁首、沒有資料）
+        → 401（非網域拿不到工號）→ GET /api/access-status：開關關著放行、開著擋
+        → 逾時／4xx／5xx → 錯誤畫面＋重試，**不放行**（fail-closed）
+```
+
+- 規則：同一條內有填的欄位**全部符合**（AND）；多條之間**任一符合**即放行（OR）；只填工號＝白名單不查名冊。
+- 管理者 = **`dbo.AccessAdmins` ∪ `appsettings` 的 `Access:Admins`**（第 75 批起 DB 是正式的、面板維護；設定檔那份是後備、正式主機平常留空）。**一律可瀏覽、不受規則限制**，也是唯一能開 🔐 面板的人。不能刪自己、不能刪最後一位。
+  ⚠️ `Access:Admins` 不要寫進 `appsettings.Development.json`：JSON 陣列跨設定檔是依索引覆寫不是合併（2026-09-21 踩到，也是搬進 DB 的原因）。
+- 與 Gantt 刻意不同：工號後端自己讀（Gantt 收 `?empId=`）、管理者走設定檔（Gantt 是自選「主管登入」）、
+  沒有 SP（本專案一律 raw SQL + 交易）。**只擋畫面**這一點與 Gantt 相同。
+- 名冊查詢失敗 → 含部門條件的規則不成立、純工號規則照常；訊息要講「名冊查詢失敗」不是「你不在名單上」。
+
+---
+
+## 6. 安全現況（誠實版）
+
+| 項目 | 現況 |
+|---|---|
+| 寫入端點的驗證 | **第 222 批起**：需求的七支寫入掛 Negotiate（身分由伺服器讀，不檢查角色）；指派名單的寫入 `Assignee:EditEnabled` 預設關閉（403）。以下是改之前的描述 —— 需求相關的寫入**全部匿名**。要求 Negotiate 的只有 `/api/whoami` 與瀏覽權限那五支（`access-check` / `access-rules` ×3 / `access-control`），後四支還要在 `Access:Admins` 裡 |
+| 頁面瀏覽權限 | **只擋畫面**（第 74 批，使用者選的）：卡控開著時不符合規則的人看不到任何一列，但 `/api/requirements` 直接打仍回資料。要連 API 一起擋是另一件事（所有端點都要 Negotiate，curl／測試腳本／寄信路徑全部要跟著改） |
+| CORS | 政策已整個移除（前後端同源）。JSON 端點靠 preflight 擋跨站 |
+| `/api/import` | **預設關閉**（第 149 批：`Import:Enabled` 不是 true 一律 403，擋在最前面）。打開時它是**唯一擋不住 preflight 的寫入端點**（`multipart/form-data` 是 simple request），所以另外有 `IsCrossSiteRequest()` 把關，**不可拿掉** |
+| SQL Injection | 一律參數化。少數串接進 SQL 的欄名來自 `DoneColumnsOf()` / `StageDatesOf()` 這種**固定表**，不是使用者輸入 |
+| 連線字串 | `appsettings.json`。版控裡這份是開發機的（`Sariel`）；公司桌機與 IIS 主機連 `P58ESIAP08`，由使用者在公司端自己改 |
+
+---
+
+## 7. 本機開發
+
+```bash
+dotnet run
+```
+
+預設 `http://localhost:5146`（`.claude/launch.json` 的 `controltable`）。
+
+```bash
+npm run build
+```
+
+改完 `app.jsx` / `input.css` **一定要跑**，然後把 `index.html` 的 `?v=` 往上帶。
+
+- `Controltable.exe` 被鎖住（CS86xx / MSB3026）時：`taskkill /F /IM Controltable.exe`。
+- 連 DB：`sqlcmd -S Sariel -d Controltable -U testuser -P test -C -f 65001`。
+  ⚠️ **驗中文不要看 sqlcmd 的畫面輸出**（這台機器的 console 是 Big5，一定是亂碼、
+  看起來像資料壞了）—— 用 `UNICODE(SUBSTRING(...))` 驗碼位。
+- ⚠️ **累加 SQL 腳本的每個批次都要自己帶 `SET QUOTED_IDENTIFIER ON;`** ——
+  主表有篩選索引，對它的任何 DML 都要求這個設定，而 sqlcmd 預設是 OFF
+  （ADO.NET 預設是 ON，所以只有腳本會中）。
+
+---
+
+## 8. 部署到 IIS（第 148 批，2026-10-09）
+
+- **部署＝把 `dotnet publish` 的輸出資料夾整包複製到 IIS 網站資料夾**（覆蓋同名檔）。
+- **三台機器**（2026-10-09 使用者說明）：
+  1. **開發機**（改程式的這台）：連 `Sariel`、`Mail:Host` 空 → push 到 GitHub
+  2. **公司桌機**：從 GitHub 拉下來、測試、`dotnet publish`；連**測試區 DB**（開模擬帳號）
+  3. **IIS 主機**（p58esiap12）：放發佈檔；連**正式區 DB**（不開模擬）、`Mail:Host=10.13.2.221`、`Mail:AppUrl=http://p58esiap12/Controltable/`
+  ⚠️ 2026-10-17 使用者更正：**測試區與正式區是不同資料庫**（原本這裡寫「同一個 DB、桌機測試＝寫進正式資料」是錯的）。連線字串由使用者在公司端處理，程式與部署流程不另外管。
+- `appsettings.Development.json` 只在開發機生效（IIS 沒設 `ASPNETCORE_ENVIRONMENT` 就是 Production，不讀它）：
+  模擬帳號開著、**`Mail:Host` 蓋回空值**（開發機測 ✉ 不會真的寄出去）。
+- 每次啟動 `logs/stdout_*.log` 第一行會印：環境、連到哪台 DB（不印帳密）、寄信主機有沒有設 —— 部署後看一眼就知道設定對不對。
+- ⚠️ 曾考慮過「正式機設定放主機上的 `appsettings.Production.json`」與「publish 不輸出 `appsettings.json`」，
+  使用者選擇自己在主機上維護，**不要再提**。
