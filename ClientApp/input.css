@@ -240,6 +240,10 @@
     border-color: var(--pill-active-border);
     color: var(--pill-active-text);
   }
+  /* 第 243 批：我的待辦「還差一步：哪一天做完的？」那三顆 —— 品牌色框字，讀起來是要按的動作、不像結果標籤。
+     底色是不透明的卡片色（外框那塊是淡品牌色底）；hover 才疊一層淡品牌色 */
+  .ctl-pick { background: var(--bg-card); border-color: var(--brand); color: var(--brand); }
+  .ctl-pick:hover { background: color-mix(in srgb, var(--brand) 12%, var(--bg-card)); border-color: var(--brand); color: var(--brand); }
   /* 純圖示的方形版本，維持與同排控制項一樣的高度 */
   .ctl-icon { width: 34px; padding: 0; justify-content: center; }
   /* <select> 是替換元素，套 inline-flex 在部分瀏覽器會讓選項文字錯位。

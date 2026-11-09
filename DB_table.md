@@ -108,7 +108,7 @@
 | `OldStart` `OldEnd` `OldConfirm` / `NewStart` `NewEnd` `NewConfirm` | DATE | 異動前後的日期 |
 | `Note` | NVARCHAR(1000) | 文字說明。使用者打的理由只開 500，另一半留給系統前綴；`InsertHistoryAsync()` 另有「夾到 1000」的保險 |
 | `ChangedBy` | NVARCHAR(100) | Windows 帳號（剝網域）。**第 222 批起由伺服器讀**，前端送的不採用 |
-| `ChangedBySource` | NVARCHAR(20) | `windows` / `simulated` / `import` / `unknown`。**模擬帳號一定標 `simulated`** |
+| `ChangedBySource` | NVARCHAR(20) | `windows` / `simulated` / `import` / `system`（第 241 批：到期提醒的 `通知寄送`，`ChangedBy`＝「系統」）/ `unknown`。**模擬帳號一定標 `simulated`** |
 | `ChangedAt` | DATETIME2(0) NOT NULL DEFAULT SYSDATETIME() | |
 | `FieldKey` | NVARCHAR(50) | 只有 `欄位異動` 帶：`nid` / `regDate` / `mainCat` / `subCat` / `emsOwner` / `msdOwner` / `mpSaving` / `remark` / `notesLink` / `currentStatus` / `msd.confirmNote`（`Program.cs` 的 `AuditFields` ↔ 前端 `FIELD_AUDIT_LABELS`，鏡像） |
 | `OldValue` / `NewValue` | NVARCHAR(MAX) | 非日期欄位的**完整**前後值（刻意不塞進 `Note`：`CurrentStatus` 沒有上限，塞進去必然截斷）。截的是顯示，不是紀錄 |
@@ -210,6 +210,8 @@
 | `AutoMode` | `off` | `off`／`test`／`on`；認不得的值也當 off。**單筆 ✉、自動信、批次提醒的試寄改道都看它** |
 | `AutoHandoff` / `AutoRollback` | **開** | 只有明寫 `false` 才關 |
 | `AutoClose` | **關** | 結案通知，方向相反：只有明寫 `true` 才開 |
+| `AutoDue` | **關** | 到期日提醒（第 241 批），與結案同方向：只有明寫 `true` 才開 |
+| `AutoDueLastRun` | — | 到期日提醒最後一次檢查「`yyyy-MM-dd HH:mm｜來源`」（每日定時檢查／外部排程呼叫／管理設定「現在檢查一次」），只給畫面看 |
 | `AutoTestTo` | — | 試寄收件人；沒設時試寄一封都不寄 |
 | `AutoFailAckId` | 0 | 管理者按「知道了」那一刻 `NotifyLog` 的 MAX(Id)；紅點只算比它大的 failed（用 Id 不用時間：網站與 DB 主機時鐘可能對不上） |
 
@@ -219,7 +221,7 @@
 |---|---|---|
 | `Id` / `SentAt` | INT IDENTITY PK / DATETIME2(0) | `IX_NotifyLog_SentAt` |
 | `RequirementId` / `NID` | INT NULL / NVARCHAR(50) NULL | 樣本是 NULL |
-| `TriggerType` | NVARCHAR(20) | `handoff`／`rollback`／`close`／`sample` |
+| `TriggerType` | NVARCHAR(20) | `handoff`／`rollback`／`close`／`due`（到期提醒，第 241 批；一天只寄一次＝同一筆、同一關、同一個 Mode 在 DB 主機的今天已經有一列 due 就不寄）／`sample` |
 | `Mode` | NVARCHAR(10) | 寄的當下是 `test` 還是 `on` |
 | `Phase` / `ToName` | | 請誰處理哪一階段 |
 | `ToEmail` / `CcEmail` | NVARCHAR(400) | **實際**寄到的信箱（試寄＝試寄收件人、沒有副本） |

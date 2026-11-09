@@ -4293,6 +4293,27 @@ static (string Phase, string Label, string Side, string Date, int Days)? Overdue
     return (phase, label, side, d, days);
 }
 
+// ─── 到期日提醒（第 241 批，2026-11-09 使用者：「在各階段到期日，也要自動發Mail通知該階段的負責人
+//     回來網頁重新確認該階段是否已完成或需要再延期」；選「到期日＋逾期後每日都寄一次，直到修改日期」、
+//     週末照寄、不帶副本）───
+// 與 OverduePhaseOf() 同一條（只看目前階段那一關、有 End、沒走完），差別只在**今天到期也算**（Days = 0）。
+// ⚠️ 不另寫一套「走完了沒」：一律 StagePassed()。標記完成／改日期之後隔天自然就不在名單裡。
+static (string Phase, string Label, string Side, string Date, int Days)? DuePhaseOf(Requirement r, DateTime today)
+{
+    if (StatusIs(r.status, "Done")) return null;
+    var code = NormStage(r.stageCode);
+    if (code.Length != 1 || code[0] < '1' || code[0] > '4') return null;
+    var stage = code[0] - '0';
+    var (side, end, _) = StageSideOf(r, stage);
+    var d = NormDate(end);
+    if (d == "" || StagePassed(r, stage)) return null;
+    if (!DateTime.TryParse(d, out var due)) return null;
+    var days = (int)(today.Date - due.Date).TotalDays;
+    if (days < 0) return null;                           // 還沒到期
+    var (phase, label, _) = StageDatesOf(stage);
+    return (phase, label, side, d, days);
+}
+
 
 // 指派人員的信箱。⚠️ 與前端 assigneeEmailOf() 同一套：(DEPT, NAME) 兩邊都 trim、
 // **不濾 IsActive** —— 這裡問的是「這個名字的信箱是什麼」，不是「可不可以指派給他」。
@@ -5611,9 +5632,9 @@ static string AppLink(string baseUrl, string query)
     if (b.Contains('?')) return b + "&" + query;
     return (b.EndsWith("/") ? b : b + "/") + "?" + query;
 }
-static string AutoTriggerText(string t) => t switch { "handoff" => "交棒", "rollback" => "退回重做", "close" => "結案", "sample" => "樣本", _ => t };
+static string AutoTriggerText(string t) => t switch { "handoff" => "交棒", "rollback" => "退回重做", "close" => "結案", "due" => "到期提醒", "sample" => "樣本", _ => t };
 
-static async Task<(string Mode, bool Handoff, bool Rollback, bool Close, string TestTo)> ReadAutoNotifySettingsAsync(SqlConnection conn)
+static async Task<(string Mode, bool Handoff, bool Rollback, bool Close, string TestTo, bool Due, string DueLastRun)> ReadAutoNotifySettingsAsync(SqlConnection conn)
 {
     var d = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     using (var cmd = new SqlCommand("SELECT SettingKey, Value FROM dbo.NotifySettings", conn))
@@ -5628,7 +5649,11 @@ static async Task<(string Mode, bool Handoff, bool Rollback, bool Close, string 
     // ⚠️ 結案（第 195 批，使用者選的「預設關閉」）**方向相反**：沒有那一列＝關，只有明寫 true 才開 ——
     //    總開關已經是「開啟」的主機一上線就會開始寄結案信，要管理者自己去勾
     var close = d.TryGetValue("AutoClose", out var cl) && cl.Equals("true", StringComparison.OrdinalIgnoreCase);
-    return (mode, handoff, rollback, close, d.TryGetValue("AutoTestTo", out var t) ? t : "");
+    // 第 241 批：到期日提醒（定時寄）與結案同一個方向 —— **預設關**，只有明寫 true 才開
+    //    （總開關已經是「開啟」的主機一上線，所有逾期中的需求當天就會各寄一封、之後每天一封）
+    var due = d.TryGetValue("AutoDue", out var du) && du.Equals("true", StringComparison.OrdinalIgnoreCase);
+    return (mode, handoff, rollback, close, d.TryGetValue("AutoTestTo", out var t) ? t : "",
+            due, d.TryGetValue("AutoDueLastRun", out var lr) ? lr : "");
 }
 
 // 「知道了」那一刻的 NotifyLog MAX(Id)（第 189 批）。沒按過＝0（全部未寄出都算）
@@ -6259,6 +6284,277 @@ void QueueAutoNotify(int id, string trigger, string? actor, string actorSrc, str
     });
 }
 
+// ─── 到期日提醒（第 241 批，2026-11-09）───
+// 使用者：「在各階段到期日，也要自動發Mail通知該階段的負責人回來網頁重新確認該階段是否已完成或需要再延期」。
+// 使用者選的：**到期日當天寄一封、逾期後每天再寄一封，直到標記完成或改日期**；週末照寄；**不帶副本**。
+// ⚠️ 推翻 memory.md 第 2 節的「不做定時寄」（第 188 批的界線）—— 使用者這次明確要求。
+// 其餘規則與另外三種自動信同一套：
+//   · 模式「關閉／試寄／開啟」＋自己的開關 AutoDue（**預設關**，與結案同方向）；試寄只寄 AutoTestTo、不寫變更軌跡
+//   · 負責人停用：正式時記 skipped（不亮紅點）、試寄時灰框；名字對不上／沒信箱：正式時記 failed、試寄時紅框
+//   · 正式寄出寫一列 `通知寄送`。逾期那種 Note 與單筆 ✉ 逾期提醒同一個格式「已逾期（原訂 YYYY-MM-DD）」——
+//     前端 phaseNotifiedEntry() 因此認得，「追蹤中」的 ✉ 會顯示「今天已寄過一次」；今天到期那種寫「今天到期（原訂 …）」，
+//     phaseNotifiedEntry() 在「未壓日期」那一種排除它（改字兩邊一起改）
+// ⚠️ 一天只寄一次：同一筆、同一關、同一個模式，dbo.NotifyLog 今天（DB 主機的日期）已經有一列 due（不管寄成功、失敗、略過）
+//    就不再寄 —— 失敗的也不在同一天重試，否則每 10 分鐘記一筆失敗。
+// ⚠️ 誰來觸發：①網站自己每 10 分鐘看一次、過了 AutoNotify:DueRunAt（預設 08:30）才動；
+//    ②POST /api/auto-notify/due-run（給 SQL Agent 作業／Windows 工作排程器每天叫一次，也會把閒置被關掉的網站叫醒）；
+//    ③管理設定的「現在檢查一次」（同一支）。三條共用同一個「一天一次」的判斷，重複叫不會重複寄。
+var dueGate = new SemaphoreSlim(1, 1);
+var dueRunAt = TimeSpan.TryParse(builder.Configuration["AutoNotify:DueRunAt"], out var dueRunAtCfg) ? dueRunAtCfg : new TimeSpan(8, 30, 0);
+
+static (string Subject, string Text, string Html) ComposeDueMail(Requirement cur, string phaseLabel, string side, string dueIso, int days,
+    string toName, string[] banner, string bannerTone, string[] tags, string appUrl, DateTime today)
+{
+    var who = string.Join(" / ", new[] { cur.nid == "" ? null : $"NID {cur.nid}", cur.mainCat, cur.subCat }
+                                 .Where(s => !string.IsNullOrWhiteSpace(s)));
+    var stageName = SubjectStageName(phaseLabel);
+    var subject = "[需求管控表] " + string.Concat(tags.Where(t => t != "").Select(t => $"[{t}] "))
+                + (days == 0 ? $"「{stageName}」今天到期：{who}" : $"「{stageName}」已逾期 {days} 天：{who}");
+    var title = string.Join(" / ", new[] { cur.mainCat, cur.subCat }.Where(s => !string.IsNullOrWhiteSpace(s)).Select(s => s!.Trim()));
+    var stageNum = int.TryParse(NormStage(cur.stageCode), out var sn) ? sn : 0;
+    var otherDept = side == "MSD" ? "EMS" : "MSD";
+    var otherName = ((side == "MSD" ? cur.emsOwner : cur.msdOwner) ?? "").Trim();
+    var dueYmd = dueIso.Replace('-', '/');
+    var dueMd = DateTime.TryParse(dueIso, out var dd) ? dd.ToString("MM/dd") : dueIso;
+    var m = new NoticeMail
+    {
+        Greeting = $"{toName} 您好，",
+        CardTitle = title == "" ? "（未填分類）" : title,
+        CardNid = cur.nid == "" ? "（未填）" : cur.nid!,
+        Steps = MailStepsOf(cur, today),
+        Status = cur.currentStatus,
+        Url = AppLink(appUrl, "view=mytodo"),
+        ManualUrl = ManualLink(appUrl),
+        // 不帶副本（使用者選的），頁尾仍寫另一邊是誰：有問題可以直接找他
+        Contact = otherName != "" ? $"{otherDept} 負責人 {otherName}" : "",
+        Time = "大約 1 分鐘",
+    };
+    if (days == 0)
+    {
+        m.Tone = "brand"; m.Label = "今天到期";
+        m.Headline = $"「{phaseLabel}」預計今天完成，做完了嗎？";
+        m.Paras.Add($"今天（{dueMd}）是「{phaseLabel}」的預計完成日，麻煩回到「我的待辦」確認一下這一關：");
+        m.Paras.Add("已經做完了就標記完成；還需要時間就改一個新的日期。");
+        m.Paras.Add("還沒處理的話，明天起每天早上會再提醒一次；標記完成或改好日期之後就不會再收到。");
+    }
+    else
+    {
+        m.Tone = "warn"; m.Label = "進度確認";
+        m.Headline = $"「{phaseLabel}」原訂 {dueMd}，已經過了 {days} 天";
+        m.Paras.Add("這筆需求可能已經有進展、只是系統還沒更新。");
+        m.Paras.Add("麻煩幫忙在下面選一個：已經做完了就標記完成，還需要時間就改日期。");
+        m.Paras.Add("標記完成或改好日期之後就不會再收到這封提醒（還沒處理的話，每天早上會再寄一次）。");
+    }
+    var phaseColor = stageNum is >= 1 and <= 4 ? MailColor.Stage(stageNum).Color : MailColor.Brand;
+    m.Rows.Add(("現在這關", $"{phaseLabel}（{side} 負責），{(days == 0 ? "預計" : "原訂")} {dueYmd}", days == 0 ? phaseColor : MailColor.Warn));
+    AddOwnerRows(m, cur, side);
+    m.Buttons.Add(("已經做完了 → 標記完成", true));
+    m.Buttons.Add(("還需要時間 → 改日期", false));
+    m.Tip = "改日期時要選一個原因並寫一句說明，主管看變更軌跡時就知道為什麼。";
+    var withDivider = banner.Length > 0;
+    var body = RenderNoticeMail(m, TestBannerHtml(banner, bannerTone, withDivider));
+    var head = new List<string>();
+    if (banner.Length > 0) { head.AddRange(banner); head.Add(""); head.Add(MailColor.TestDivider); head.Add(""); }
+    return (subject, string.Join("\r\n", head) + body.Text, body.Html);
+}
+
+// 一筆需求、一關。回傳 already／sent／uncertain／skipped／failed（給「這次檢查」的摘要）
+async Task<string> RunDueOneAsync(SqlConnection conn, string mode, string testTo, int id, Requirement cur,
+    (string Phase, string Label, string Side, string Date, int Days) t, string source)
+{
+    var test = mode == "test";
+    var logMode = test ? "test" : mode;
+    using (var chk = new SqlCommand(@"
+        SELECT COUNT(*) FROM dbo.NotifyLog
+        WHERE TriggerType = N'due' AND RequirementId = @R AND Phase = @P AND Mode = @M
+          AND CAST(SentAt AS DATE) = CAST(SYSDATETIME() AS DATE)", conn))
+    {
+        chk.Parameters.AddWithValue("@R", id);
+        chk.Parameters.AddWithValue("@P", t.Phase);
+        chk.Parameters.AddWithValue("@M", logMode);
+        if ((int)(await chk.ExecuteScalarAsync() ?? 0) > 0) return "already";
+    }
+    var by = "系統（" + source + "）";
+    var toName = ((t.Side == "MSD" ? cur.msdOwner : cur.emsOwner) ?? "").Trim();
+    var kind = t.Days == 0 ? $"「{t.Label}」今天到期" : $"「{t.Label}」已逾期 {t.Days} 天（原訂 {t.Date}）";
+    async Task<string> Log(string result, string? toEmail, string? detail)
+    {
+        await InsertNotifyLogAsync(conn, id, cur.nid, "due", logMode, t.Phase, toName, toEmail, "", result, detail, by);
+        return result;
+    }
+
+    string? problem = null, skip = null;
+    var toEmail = "";
+    if (toName == "") problem = $"「{t.Label}」的負責人（{t.Side}）還沒指派，不知道要寄給誰";
+    else
+    {
+        var to = await AssigneeInfoAsync(conn, t.Side, toName);
+        toEmail = to.Email;
+        if (to.Found && !to.Active)
+        {
+            if (!test) return await Log("skipped", "", $"{toName}（{t.Side} 負責人）在指派人員主檔裡已停用，沒有寄；請改負責人");
+            skip = $"{toName}（{t.Side} 負責人）在指派人員主檔裡已停用，正式時不寄（「最近 5 封」記一筆略過）";
+        }
+        else if (!to.Found) problem = $"指派人員主檔裡找不到「{toName}／{t.Side}」（負責人欄位的名字對不上），不知道信箱";
+        else if (to.Email == "") problem = $"指派人員主檔裡「{toName}／{t.Side}」沒有填 EMAIL（請在 SSMS 的 dbo.Assignee 補上）";
+        else if (!IsValidMailAddress(to.Email)) problem = $"指派人員主檔裡「{toName}／{t.Side}」的 EMAIL 格式不正確：{to.Email}";
+    }
+    if (problem != null && !test) return await Log("failed", "", problem);
+    if (!mailReady) return await Log("failed", "", "郵件伺服器還沒設定（appsettings.json 的 Mail:Host）");
+    if (mailFrom == "" || !IsValidMailAddress(mailFrom)) return await Log("failed", "", "寄件的系統信箱（appsettings.json 的 Mail:From）沒設定或格式不正確");
+    if (test && (testTo == "" || !IsValidMailAddress(testTo)))
+        return await Log("failed", "", "試寄收件人還沒設定或格式不正確，這一封沒有寄出（試寄期間不會寄給負責人）");
+
+    var banner = Array.Empty<string>();
+    var tone = "test";
+    var tags = new List<string>();
+    if (test)
+    {
+        tone = problem != null ? "fail" : skip != null ? "skip" : "test";
+        tags.Add("試寄");
+        if (problem != null) tags.Add("正式時寄不出去");
+        else if (skip != null) tags.Add("正式時不會寄");
+        var b = new List<string>
+        {
+            problem != null ? "【試寄】正式寄送時這封會寄不出去"
+            : skip != null ? "【試寄】正式時不會寄這封"
+            : "【試寄】這封是測試信，正式寄送時的對象如下",
+            $"種類：到期提醒（{kind}）",
+        };
+        if (problem != null) b.Add($"原因：{problem}");
+        if (skip != null) b.Add($"原因：{skip}");
+        b.Add("收件者：" + (toName == "" ? $"（{t.Side} 負責人還沒指派）"
+                          : problem == null && toEmail != "" ? $"{toName} <{toEmail}>（{t.Side} 負責人）" : $"{toName}（{t.Side} 負責人）"));
+        b.Add("副本：無（到期提醒不帶副本）");
+        b.Add($"誰觸發的：系統（{source}）　{DateTime.Now:yyyy/MM/dd HH:mm}");
+        b.Add(problem != null ? "以下是信件原文，補好資料後正式寄出的就是這封。"
+            : skip != null ? "以下是信件原文（正式時不會寄出）。"
+            : "試寄期間負責人收不到這封；以下是正式信件的原文。");
+        banner = b.ToArray();
+    }
+    var mail = ComposeDueMail(cur, t.Label, t.Side, t.Date, t.Days, toName == "" ? $"{t.Side} 負責人" : toName,
+                              banner, tone, tags.ToArray(), mailAppUrl, DateTime.Today);
+    var realTo = test ? testTo : toEmail;
+    var sent = await SendAutoMailAsync(conn, realTo, "", mail.Subject, mail.Text, mail.Html);
+    var result = sent.Error != null ? "failed" : sent.Uncertain ? "uncertain" : "sent";
+    await Log(result, realTo,
+        sent.Error != null ? "寄信失敗：" + sent.Error
+        : test ? $"試寄，原本要寄給 {toName} <{toEmail}>；{kind}"
+                 + (problem != null ? "；正式時會寄不出去：" + problem : skip != null ? "；正式時不會寄：" + skip : "")
+        : kind);
+    if (sent.Error != null || test) return result;
+
+    // 正式寄出 → 變更軌跡一列 `通知寄送`。⚠️ 「已逾期（原訂 …）」與單筆 ✉ 逾期提醒同一個格式（phaseNotifiedEntry 靠它），
+    //    「今天到期（原訂 …）」是這一種自己的；尾巴「；自動寄送（到期日／逾期提醒）」—— 前端靠「自動寄送」分自動／手動
+    var note = (t.Days == 0 ? $"通知「{t.Label}」今天到期（原訂 {t.Date}）" : $"通知「{t.Label}」已逾期（原訂 {t.Date}）")
+             + $" → 收件者 {toName} <{toEmail}>"
+             + $"；寄件者 {mailFromName} <{mailFrom}>（系統信箱）"
+             + sent.UncertainNote
+             + (t.Days == 0 ? "；自動寄送（到期日）" : "；自動寄送（逾期提醒）");
+    var empty = ((string?)null, (string?)null, (string?)null);
+    try { await InsertHistoryAsync(conn, id, cur.nid, t.Phase, "通知寄送", null, note, "系統", "system", empty, empty); }
+    catch (Exception ex) { AppDiag.Error("auto-notify", "到期提醒已寄出，但變更軌跡沒寫進去", ex, null, id); }
+    return result;
+}
+
+// 跑一輪：所有進行中的需求，目前那一關今天到期或已逾期 → 各寄一封（今天已經寄過的跳過）
+async Task<object> RunDueNotifyAsync(string source)
+{
+    // 同一個網站裡只跑一份；另一台／另一個工作者行程靠 sp_getapplock
+    if (!await dueGate.WaitAsync(0)) return new { ran = false, busy = true, message = "另一次檢查正在進行，這次略過" };
+    try
+    {
+        using var conn = new SqlConnection(connectionString);
+        await conn.OpenAsync();
+        var s = await ReadAutoNotifySettingsAsync(conn);
+        if (s.Mode == "off" || !s.Due)
+            return new { ran = false, mode = s.Mode, due = s.Due,
+                         message = s.Mode == "off" ? "自動寄信是關閉的，沒有檢查" : "「到期日提醒」沒有打開，沒有檢查" };
+        using (var lk = new SqlCommand(@"
+            DECLARE @r INT;
+            EXEC @r = sp_getapplock @Resource = N'Controltable.DueNotify', @LockMode = N'Exclusive', @LockOwner = N'Session', @LockTimeout = 0;
+            SELECT @r;", conn))
+            if (Convert.ToInt32(await lk.ExecuteScalarAsync()) < 0)
+                return new { ran = false, busy = true, message = "另一次檢查正在進行，這次略過" };
+        try
+        {
+            var ids = new List<int>();
+            using (var cmd = new SqlCommand("SELECT Id FROM dbo.Controltable WHERE IsDeleted = 0 ORDER BY Id", conn))
+            using (var r = await cmd.ExecuteReaderAsync())
+                while (await r.ReadAsync()) ids.Add(r.GetInt32(0));
+            var today = DateTime.Today;
+            int targets = 0, sent = 0, skipped = 0, failed = 0, already = 0;
+            foreach (var id in ids)
+            {
+                try
+                {
+                    var cur = await ReadReqForMailAsync(conn, id);
+                    if (cur == null) continue;
+                    var t = DuePhaseOf(cur, today);
+                    if (t == null) continue;
+                    targets++;
+                    switch (await RunDueOneAsync(conn, s.Mode, s.TestTo, id, cur, t.Value, source))
+                    {
+                        case "already": already++; break;
+                        case "skipped": skipped++; break;
+                        case "failed": failed++; break;
+                        default: sent++; break;      // sent／uncertain
+                    }
+                }
+                catch (Exception ex) { failed++; AppDiag.Error("auto-notify", "到期提醒：這一筆處理失敗（其他筆照常）", ex, null, id); }
+            }
+            var stamp = $"{DateTime.Now:yyyy-MM-dd HH:mm}｜{source}";
+            try
+            {
+                using var cmd = new SqlCommand(@"
+                    MERGE dbo.NotifySettings AS t USING (SELECT N'AutoDueLastRun' AS SettingKey) AS s ON t.SettingKey = s.SettingKey
+                    WHEN MATCHED THEN UPDATE SET Value = @V, UpdatedBy = @By, UpdatedAt = SYSDATETIME()
+                    WHEN NOT MATCHED THEN INSERT (SettingKey, Value, UpdatedBy) VALUES (N'AutoDueLastRun', @V, @By);", conn);
+                cmd.Parameters.AddWithValue("@V", stamp);
+                cmd.Parameters.AddWithValue("@By", "system");
+                await cmd.ExecuteNonQueryAsync();
+            }
+            catch (Exception ex) { AppDiag.Error("auto-notify", "到期提醒：最後檢查時間寫不進 dbo.NotifySettings", ex); }
+            var newly = sent + skipped + failed;
+            return new
+            {
+                ran = true, mode = s.Mode, targets, sent, skipped, failed, already,
+                message = targets == 0 ? "目前沒有今天到期或已逾期的需求"
+                        : newly == 0 ? $"{targets} 筆今天都已經處理過，這次沒有再寄"
+                        : $"這次寄出 {sent} 封" + (s.Mode == "test" ? "（試寄）" : "")
+                          + (skipped > 0 ? $"、略過 {skipped} 封" : "") + (failed > 0 ? $"、沒寄出 {failed} 封" : "")
+                          + (already > 0 ? $"；另 {already} 筆今天已經寄過" : "")
+            };
+        }
+        finally
+        {
+            try
+            {
+                using var rel = new SqlCommand("EXEC sp_releaseapplock @Resource = N'Controltable.DueNotify', @LockOwner = N'Session';", conn);
+                await rel.ExecuteNonQueryAsync();
+            }
+            catch { /* 連線關掉時鎖自己會放掉 */ }
+        }
+    }
+    finally { dueGate.Release(); }
+}
+
+// 給外部排程（SQL Agent 作業／Windows 工作排程器）與管理設定「現在檢查一次」呼叫。
+// ⚠️ 匿名：排程器用的服務帳號不一定是管理者；這一支能做的事只有「把今天本來就該寄、還沒寄的寄出去」，
+//    重複叫不會重複寄（一天一次的判斷在 RunDueOneAsync）。回應只有件數，不回任何人名或信箱。
+//    不看 AutoNotify:DueRunAt —— 排程器幾點叫就幾點寄。套跨站防護（別的網頁不能替你按）。
+app.MapPost("/api/auto-notify/due-run", async (HttpContext ctx) =>
+{
+    if (IsCrossSiteRequest(ctx)) return Results.Json(new { message = "拒絕跨站請求" }, statusCode: 403);
+    var source = ctx.Request.Query["from"].ToString() == "panel" ? "管理設定「現在檢查一次」" : "外部排程呼叫";
+    try { return Results.Ok(await RunDueNotifyAsync(source)); }
+    catch (Exception ex)
+    {
+        AppDiag.Error("auto-notify", "到期提醒檢查失敗", ex);
+        return ServerError("到期提醒檢查失敗：" + ex.Message);
+    }
+});
+
 // 前端「標記完成／退回重做」視窗那一行提示要知道模式與開關。匿名（與 /api/history 同等級）。
 // 試寄收件人也回傳：視窗要寫「試寄中：信會寄到 ○○」
 app.MapGet("/api/auto-notify/status", async () =>
@@ -6323,9 +6619,26 @@ app.MapGet("/api/auto-notify", async (HttpContext ctx) =>
         }
         var failures = failCount == 0 ? new List<object>()
             : await Rows(string.Format(cols, "TOP 10") + failWhere + " ORDER BY Id DESC", ackId);
+        // 第 241 批：到期日提醒今天（DB 主機的日期）在目前模式下寄了幾封
+        int dueSent = 0, dueSkipped = 0, dueFailed = 0;
+        using (var c = new SqlCommand(@"
+            SELECT Result, COUNT(*) FROM dbo.NotifyLog
+            WHERE TriggerType = N'due' AND Mode = @M AND CAST(SentAt AS DATE) = CAST(SYSDATETIME() AS DATE)
+            GROUP BY Result", conn))
+        {
+            c.Parameters.AddWithValue("@M", s.Mode == "test" ? "test" : "on");
+            using var r = await c.ExecuteReaderAsync();
+            while (await r.ReadAsync())
+            {
+                var n = r.GetInt32(1);
+                switch (r.GetString(0)) { case "skipped": dueSkipped += n; break; case "failed": dueFailed += n; break; default: dueSent += n; break; }
+            }
+        }
         return Results.Ok(new
         {
             mode = s.Mode, handoff = s.Handoff, rollback = s.Rollback, close = s.Close, testTo = s.TestTo,
+            due = s.Due, dueLastRun = s.DueLastRun, dueRunAt = dueRunAt.ToString(@"hh\:mm"),
+            dueToday = new { sent = dueSent, skipped = dueSkipped, failed = dueFailed },
             from = mailFrom, mailReady, fromOk = mailFrom != "" && IsValidMailAddress(mailFrom),
             recent, failCount, failures
         });
@@ -6369,6 +6682,7 @@ app.MapPut("/api/auto-notify", async (HttpContext ctx, AutoNotifyRequest body) =
         if (body?.handoff != null) sets.Add(("AutoHandoff", body.handoff.Value ? "true" : "false"));
         if (body?.rollback != null) sets.Add(("AutoRollback", body.rollback.Value ? "true" : "false"));
         if (body?.close != null) sets.Add(("AutoClose", body.close.Value ? "true" : "false"));
+        if (body?.due != null) sets.Add(("AutoDue", body.due.Value ? "true" : "false"));   // 第 241 批：到期日提醒（預設關）
         if (testTo != null) sets.Add(("AutoTestTo", testTo));
         foreach (var (k, v) in sets)
         {
@@ -6393,7 +6707,7 @@ app.MapPut("/api/auto-notify", async (HttpContext ctx, AutoNotifyRequest body) =
             await cmd.ExecuteNonQueryAsync();
         }
         var now = await ReadAutoNotifySettingsAsync(conn);
-        return Results.Ok(new { mode = now.Mode, handoff = now.Handoff, rollback = now.Rollback, close = now.Close, testTo = now.TestTo });
+        return Results.Ok(new { mode = now.Mode, handoff = now.Handoff, rollback = now.Rollback, close = now.Close, testTo = now.TestTo, due = now.Due });
     }
     catch (Exception ex)
     {
@@ -7443,6 +7757,28 @@ static async Task WriteAuditAsync(SqlConnection conn, int reqId, Requirement req
     }
 }
 
+// ─── 到期日提醒的定時檢查（第 241 批）───
+// 網站自己每 10 分鐘看一次，過了 AutoNotify:DueRunAt（預設 08:30）才動；一天只寄一次的判斷在 RunDueOneAsync。
+// ⚠️ IIS 閒置逾時會把網站關掉，關掉時這個迴圈也停了 —— 所以另外給 /api/auto-notify/due-run 讓 SQL Agent 作業或
+//    Windows 工作排程器每天叫一次（那一下也會把網站叫醒）。兩條都有也不會重複寄。
+// ⚠️ best-effort：任何例外只記 AppDiag，不可以讓網站起不來或停掉（與啟動 bootstrap 同一條原則）
+app.Lifetime.ApplicationStarted.Register(() => _ = Task.Run(async () =>
+{
+    try
+    {
+        await Task.Delay(TimeSpan.FromSeconds(30), app.Lifetime.ApplicationStopping);   // 讓啟動先跑完
+        using var timer = new PeriodicTimer(TimeSpan.FromMinutes(10));
+        do
+        {
+            if (DateTime.Now.TimeOfDay < dueRunAt) continue;
+            try { await RunDueNotifyAsync("每日定時檢查"); }
+            catch (Exception ex) { AppDiag.Error("auto-notify", "到期提醒定時檢查失敗（10 分鐘後再試）", ex); }
+        } while (await timer.WaitForNextTickAsync(app.Lifetime.ApplicationStopping));
+    }
+    catch (OperationCanceledException) { /* 網站關閉 */ }
+    catch (Exception ex) { AppDiag.Error("auto-notify", "到期提醒的定時檢查停止了", ex); }
+}));
+
 app.Run();
 // Models
 // ─── 頁面瀏覽權限（第 74 批）───
@@ -7639,6 +7975,7 @@ public class AutoNotifyRequest
     public bool? handoff { get; set; }
     public bool? rollback { get; set; }
     public bool? close { get; set; }         // 第 195 批：結案通知（預設關）
+    public bool? due { get; set; }           // 第 241 批：到期日提醒（預設關）
     public string? testTo { get; set; }
     public bool? ackFailures { get; set; }   // 第 189 批：「知道了」—— 之前的未寄出不再亮紅點
 }
@@ -7924,7 +8261,8 @@ static class MailColor
         3 => ("③", "MSD開發", "#2563EB"),
         _ => ("④", "EMS驗收", "#DB2777"),
     };
-    public const string TipQuickDate = "小技巧：在「我的待辦」卡片上按「下週一」「兩週後」這類日期，再按「存檔」就好，不用自己翻日曆。";
+    // 第 242 批：第 238 批起卡片上沒有「下週一」「兩週後」那幾顆了（改成一個日期框＋「存成 YYYY/MM/DD（一）」），提示跟著改
+    public const string TipQuickDate = "小技巧：在「我的待辦」卡片上點日期框選一天，再按「存成 …」那顆按鈕就好。";
     // 試寄框下面那條分隔線（第 211 批：自動信與單筆 ✉ 的試寄共用）
     public const string TestDivider = "──────── 以下為正式信件內容 ────────";
 }

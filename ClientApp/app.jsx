@@ -2567,6 +2567,17 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 finally { setSaving(false); await load(); }
             };
 
+            // 第 241 批：到期日提醒「現在檢查一次」—— 與外部排程同一支（一天一次的判斷在後端，重複按不會重複寄）
+            const runDue = async () => {
+                if (saving) return;
+                setSaving(true);
+                try {
+                    const j = await send('/api/auto-notify/due-run?from=panel', 'POST');
+                    showToast(j.message || '檢查完成', j.failed > 0 ? 'warn' : 'success');
+                } catch (e) { onError('到期提醒檢查失敗', e); }
+                finally { setSaving(false); await load(); }
+            };
+
             if (!loaded) return <div className="text-center text-sm py-6" style={{color:'var(--text-muted)'}}>載入中…</div>;
             if (loadError || !cfg) return (
                 <div className="rounded-lg border p-3 text-sm font-bold" style={{background:'var(--tone-alert-bg)', borderColor:'var(--tone-alert-border)', color:'var(--tone-alert)'}}>
@@ -2611,7 +2622,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 <div id="ct-mail-auto" className="rounded-xl border overflow-hidden scroll-mt-2" style={{borderColor:'var(--border-table)'}}>
                     <div className="px-3.5 py-2.5 flex items-center gap-2 flex-wrap border-b" style={{borderColor:'var(--border-table)'}}>
                         <span className="text-[13px] font-bold">⚡ 自動寄信</span>
-                        <span className="text-[12px]" style={{color:'var(--text-muted)'}}>標記完成、退回重做、結案之後自動寄信給負責人</span>
+                        <span className="text-[12px]" style={{color:'var(--text-muted)'}}>標記完成、退回重做、結案之後與到期日自動寄信給負責人</span>
                         <div className="ml-auto inline-flex rounded-lg border overflow-hidden text-[12px]" role="radiogroup" aria-label="自動寄信模式"
                              style={{borderColor:'var(--border-table)'}}>
                             {MODES.map(o => {
@@ -2659,7 +2670,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                         <div className="px-3.5 py-2.5 flex items-center gap-2 flex-wrap border-b text-[12px]"
                              style={{borderColor:'var(--border-table)', background:'var(--tone-alert-bg)', color:'var(--tone-alert)'}}>
                             {/* 第 229 批：前面接「這是「測試區」。」（正式區沒設定就沒有）；並補正：第 211／223 批起單筆 ✉ 與批次提醒也跟著模式走 */}
-                            <span className="font-bold">{ENV_LABEL ? `這是「${ENV_LABEL}」。` : ''}開啟之後，標記完成、退回重做（與有開的結案通知）會真的寄信給負責人，單筆 ✉ 與批次提醒也會照正式的名單寄。確定開啟？</span>
+                            <span className="font-bold">{ENV_LABEL ? `這是「${ENV_LABEL}」。` : ''}開啟之後，標記完成、退回重做（與有開的結案通知、到期提醒）會真的寄信給負責人，單筆 ✉ 與批次提醒也會照正式的名單寄。確定開啟？</span>
                             <span className="ml-auto flex gap-2">
                                 <button type="button" disabled={saving}
                                         onClick={async () => { if (await save({ mode:'on' }, '自動寄信已開啟')) setAskOn(false); }}
@@ -2717,13 +2728,43 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     {/* 第 190 批：兩行說明統一成「什麼時候 → 寄給誰」，共同的「副本」提到標題講一次；
                         模式關閉時開關看起來仍是開的，容易以為正在寄 → 標題後面講明暫不生效 */}
                     <div className="px-3.5 pt-2 pb-1 text-[12px]" style={{color:'var(--text-muted)'}}>
-                        什麼時候寄（副本給另一位負責人）
+                        什麼時候寄（副本給另一位負責人；到期提醒不帶副本）
                         {cfg.mode === 'off' && <span className="ml-2" style={{color:'var(--text-secondary)'}}>目前關閉，這些開關暫不生效</span>}
                     </div>
                     {toggleRow({ on: cfg.handoff, field: 'handoff', label: '交棒', desc: '標記完成、下一階段還沒壓日期 → 下一階段的負責人' })}
                     {toggleRow({ on: cfg.rollback, field: 'rollback', label: '退回重做', desc: '退回重做之後 → 被退回那一階段的負責人（附退回原因）' })}
                     {/* 第 195 批：預設關（後端沒有那一列＝關），只是知會、沒有要對方做的事 */}
                     {toggleRow({ on: !!cfg.close, field: 'close', label: '結案', desc: '④ 標記完成、需求結案 → MSD 負責人（知會，副本 EMS 負責人）' })}
+                    {/* 第 241 批：到期日提醒（定時寄、預設關）。目前這一關今天到期 → 寄一封；逾期後每天一封，直到標記完成或改日期。
+                        週末照寄、不帶副本（使用者選的）。開著的時候底下一行講今天寄了幾封、最後檢查時間，並給「現在檢查一次」 */}
+                    {toggleRow({ on: !!cfg.due, field: 'due', label: '到期提醒', desc: `目前這一關今天到期或已逾期 → 這一關的負責人；每天 ${cfg.dueRunAt || '08:30'} 以後寄一封，直到標記完成或改日期（不帶副本）` })}
+                    {cfg.due && (() => {
+                        const dt = cfg.dueToday || {};
+                        const n = (dt.sent || 0) + (dt.skipped || 0) + (dt.failed || 0);
+                        const last = (cfg.dueLastRun || '').split('｜');
+                        return (
+                            /* 左邊對齊上面那一行的說明字（開關 32 + 間距 10 + 名稱 64 + 間距 10） */
+                            <div className="pr-3.5 py-1.5 flex items-center gap-2 flex-wrap border-b text-[12px]"
+                                 style={{borderColor:'var(--border-table)', color:'var(--text-muted)', paddingLeft:'130px'}}>
+                                <span className="min-w-0">
+                                    {cfg.mode === 'off' ? '自動寄信關閉中，不會檢查'
+                                     : n === 0 ? '今天還沒有寄到期提醒'
+                                     : <>今天寄出 {dt.sent || 0} 封{cfg.mode === 'test' ? '（試寄）' : ''}
+                                         {dt.skipped > 0 && `、略過 ${dt.skipped} 封`}
+                                         {dt.failed > 0 && <span style={{color:'var(--tone-alert)'}}>、沒寄出 {dt.failed} 封</span>}</>}
+                                    {last[0] && <> · 最後檢查 {last[0].slice(5)}{last[1] ? `（${last[1]}）` : ''}</>}
+                                </span>
+                                {cfg.mode !== 'off' && (
+                                    <button type="button" onClick={() => runDue()} disabled={saving}
+                                            title="馬上檢查一次：今天到期或已逾期、今天還沒寄過的，現在就寄（已經寄過的不會重寄）"
+                                            className="ml-auto shrink-0 px-3 py-1 rounded-lg text-[12px] font-bold border disabled:opacity-40"
+                                            style={{background:'var(--bg-card)', color:'var(--brand)', borderColor:'var(--border-table)'}}>
+                                        {saving ? '處理中…' : '現在檢查一次'}
+                                    </button>
+                                )}
+                            </div>
+                        );
+                    })()}
                     <div className="px-3.5 pt-2 pb-1 flex items-center text-[12px]" style={{color:'var(--text-muted)'}}>
                         最近 5 封
                         <button type="button" onClick={load} disabled={saving} className="ml-2 underline disabled:opacity-40">重新整理</button>
@@ -5993,7 +6034,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                         {ck.diff !== null && <div>{ck.diff > 0 ? `比原訂的 ${fmtYmd(cur)} 晚 ${ck.diff} 天` : `比原訂的 ${fmtYmd(cur)} 早 ${-ck.diff} 天（提前）`}</div>}
                         {mode === 'delay' && ck.startMoved && <div>開始日 {fmtYmd(ck.oldStart)} 晚於新的日期，會一起改成 {fmtYmd(date)}。</div>}
                         {date < TODAY_ISO && <div style={{color:'var(--tone-warn)'}}>
-                            {mode === 'delay' ? '這一天已經過了，存了之後會顯示逾期。如果其實已經做完了，請改按「做完了」。' : '這一天已經過了，存了之後會馬上顯示逾期。'}
+                            {mode === 'delay' ? '這一天已經過了，存了之後會顯示逾期。如果其實已經做完了，請改按「做完了，選完成日」。' : '這一天已經過了，存了之後會馬上顯示逾期。'}
                         </div>}
                     </div>
                     )}
@@ -7311,6 +7352,38 @@ const { useState, useMemo, Fragment, useEffect } = React;
             //    前面幾則靜靜刪光。這一欄是 NVARCHAR(MAX)、沒有上限，前面那幾則是他自己打的字。
             const [myStatusEdit, setMyStatusEdit] = useState(null);
 
+            // ─── 卡片上「還沒存」就要離開時再攔一次（第 245 批，使用者看過示意圖：「改」）───
+            // 三種：未壓日期選了一天還沒按「存成 …」、「做完了」第二層開著還沒選完成日、「改日期」填了東西還沒存。
+            // ① 關分頁／重新整理：beforeunload（與編輯視窗第 84 批同一招；只在真的有東西時掛，常駐會變噪音）
+            // ② 在網頁裡切到需求列表／統計報表：跳一句黃色 toast 講哪一筆、回哪裡按（狀態留著，回來還在）
+            // ⚠️ 只是提醒、不擋；「改日期」那層只打開、什麼都沒填不算（沒有東西會掉）
+            const myPendingNote = (() => {
+                const nidOf = key => {
+                    const id = Number(String(key || '').split(':')[0]);
+                    const r = requirementsData.find(q => q.id === id);
+                    return r && r.nid ? `NID ${r.nid}` : '有一筆需求';
+                };
+                if (myPick && myPick.iso) return `${nidOf(myPick.key)} 選了 ${fmtYmd(myPick.iso)} 但還沒存。要存的話回「我的待辦」按藍色的「存成 …」。`;
+                if (myDoneAsk) return `${nidOf(myDoneAsk)} 按了「做完了」但還沒選完成日，還沒存。要存的話回「我的待辦」選一天。`;
+                if (myDelay && (myDelay.date || myDelay.cat || (myDelay.note || '').trim()))
+                    return `${nidOf(myDelay.key)} 改日期填到一半還沒存。要存的話回「我的待辦」填好後按「存成 …」。`;
+                return '';
+            })();
+            const myPendingRef = React.useRef('');
+            myPendingRef.current = myPendingNote;
+            useEffect(() => {
+                if (!myPendingNote) return;
+                const onBeforeUnload = (e) => { e.preventDefault(); e.returnValue = ''; };
+                window.addEventListener('beforeunload', onBeforeUnload);
+                return () => window.removeEventListener('beforeunload', onBeforeUnload);
+            }, [!!myPendingNote]);
+            const prevViewRef = React.useRef(activeView);
+            useEffect(() => {
+                const prev = prevViewRef.current;
+                prevViewRef.current = activeView;
+                if (prev === 'mytodo' && activeView !== 'mytodo' && myPendingRef.current) showToast(myPendingRef.current, 'warn');
+            }, [activeView]);
+
             // ─── 切回分頁時安靜重抓（第 178 批，2026-10-11 使用者同意）───
             // 在此之前只有打開網頁與按「重新整理」才抓。我的待辦是預設首頁、整天開著：MSD 做完一關，
             // EMS 那邊不會長出新卡片，拿舊畫面存檔就撞 409。
@@ -7575,6 +7648,8 @@ const { useState, useMemo, Fragment, useEffect } = React;
                     if (note.includes('未確認送出')) return false;
                     // 第 195 批：自動寄的結案通知只是知會，不算催過壓日期（字樣與後端 RunAutoNotifyAsync 鏡像）
                     if (note.includes('自動寄送（結案後）')) return false;
+                    // 第 241 批：到期日當天的自動提醒不算催過壓日期（字樣與後端 RunDueOneAsync 鏡像；逾期那種與單筆 ✉ 同格式，照常算）
+                    if (!dueEnd && note.includes('今天到期（原訂')) return false;
                     if (dueEnd ? !note.includes(`已逾期（原訂 ${dueEnd}）`) : note.includes('已逾期（原訂')) return false;
                     const m = note.match(NOTIFY_TO_RE);
                     return !!m && m[1].trim().toLowerCase() === want;
@@ -8974,7 +9049,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                       // 第 237 批 C：右邊灰字先講「要不要你動手」（原本只在 tooltip，不懂系統的人不會去停）
                                       sub: laterNext ? `也是你的，還不急 · 最近一筆 ${fmtYmd(laterNext)} 到期` : '也是你的，還不急',
                                       rows: myTodo.later, open: laterShown, toggle: ()=>setMyLaterOpen(!laterShown),
-                                      hint:'還有時間＝也是你的球，日期在 7 天後。\n這幾筆也是你負責的階段，只是排定的日期還在 7 天之後。提早做完了一樣可以在這裡按「做完了」' }
+                                      hint:'還有時間＝也是你的球，日期在 7 天後。\n這幾筆也是你負責的階段，只是排定的日期還在 7 天之後。提早做完了一樣可以在這裡按「做完了，選完成日」' }
                                 ];
                                 // 第 127 批：「你的球」分組標籤（與下面「參考」那張卡同一種小字），兩區包在同一層 space-y 裡
                                 return (<div>
@@ -9290,6 +9365,15 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                   卡片左邊紅色條與進度條上的紅字「未壓日期」已經在提醒。
                                                   ⚠️⚠️ 存檔鈕上直接寫會存成哪天（還沒選＝灰色「先選日期」）—— 取代原本旁邊那行灰字。
                                                   寫入仍然是同一支 quickSetDate（第 92 批）。 */}
+                                              {/* ─── 第 245 批（使用者看過兩版示意圖：「改」）───
+                                                  使用者：「上述兩個按鈕是不是很奇怪?? 感覺是同一件事」—— 沒選日期時存檔鈕寫「先選日期」、又沒變淡，
+                                                  跟日期框長得一樣；改成「存檔」＋明顯變淡。使用者再問「會不會有使用者以為選完日期就好了」——
+                                                  所以**選了日期之後**整排框起來（與 243／244 同一個樣子），黃底那條用一句話講「還要按藍色按鈕」，
+                                                  右邊「清除重選」。沒選日期時維持一排、不加框。離開前的提醒見 myPendingNote。
+                                                  ⚠️ 仍然是先選、再按存檔（第 136 批：選錯一天不會直接存進去），不可改成選了就存 */}
+                                              {(() => {
+                                                  const picked = !!(pick && pick.iso);
+                                                  const row = (
                                               <div className="flex items-center gap-2 flex-wrap">
                                                   <span className="text-[14px] font-bold" style={{color:'var(--text-primary)'}}>
                                                       預計哪天{x.ph.code === '2' ? '確認好' : '完成'}？
@@ -9300,18 +9384,43 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                   <button type="button" disabled={!setCk.ready || isSubmitting}
                                                           onClick={()=>{ const iso = pick.iso; setMyPick(null); quickSetDate(x.r, x.ph.key, iso); }}
                                                           className={'ctl px-5 text-[14px] font-bold disabled:cursor-not-allowed'
-                                                                     + (setCk.dateOk ? ' text-white hover:text-white disabled:opacity-40' : '')}
+                                                                     + (setCk.dateOk ? ' text-white hover:text-white disabled:opacity-40' : ' disabled:opacity-40')}
                                                           style={setCk.dateOk
                                                               ? {background:'var(--brand)', borderColor:'transparent', whiteSpace:'nowrap', boxShadow:'0 1px 2px rgba(15,23,42,0.12)'}
                                                               : {whiteSpace:'nowrap', color:'var(--text-muted)'}}
                                                           title={setCk.ready ? `把${phaseEndWord(x.ph)}壓成 ${pick.iso} 並存檔`
                                                                  : setCk.dateOk ? '這一天離今天超過一年，請先在下面按「是，就是這一天」'
                                                                  : '請先在左邊的日期框選一天'}>
-                                                      {setCk.dateOk ? `存成 ${ymdWeek(pick.iso)}` : '先選日期'}
+                                                      {setCk.dateOk ? `存成 ${ymdWeek(pick.iso)}` : '存檔'}
                                                   </button>
                                               </div>
-                                              {cardDateNotes(setCk, pick ? pick.iso : '', '', 'set',
-                                                             () => setMyPick(p => p ? { ...p, farOk: p.iso } : p))}
+                                                  );
+                                                  const notes = cardDateNotes(setCk, pick ? pick.iso : '', '', 'set',
+                                                                 () => setMyPick(p => p ? { ...p, farOk: p.iso } : p));
+                                                  if (!picked) return <>{row}{notes}</>;
+                                                  const block = !setCk.dateOk ? '這個日期不能用，看日期框下面的說明'
+                                                              : !setCk.ready ? '日期離今天超過一年，請先按下面「是，就是這一天」' : null;
+                                                  return (
+                                              <div className="rounded-lg p-3"
+                                                   style={{background:'var(--brand-soft)', border:'1px solid color-mix(in srgb, var(--brand) 35%, transparent)',
+                                                           borderLeft:'4px solid var(--brand)'}}>
+                                                  <div className="rounded-md px-3 py-2 mb-3 flex items-center gap-2 flex-wrap"
+                                                       style={{background:'color-mix(in srgb, var(--tone-warn) 18%, var(--bg-card))', border:'1px solid var(--tone-warn-border)'}}>
+                                                      <span className="text-[12px] font-bold px-2 py-0.5 rounded"
+                                                            style={{background:'var(--tone-warn)', color:'var(--bg-card)', whiteSpace:'nowrap'}}>還沒存</span>
+                                                      <span className="text-[14px] font-bold" style={{color:'var(--text-primary)'}}>
+                                                          {block ? <>還差一步：<span style={{color:'var(--tone-warn)'}}>{block}</span></>
+                                                                 : `還差一步：按下面藍色的「存成 ${ymdWeek(pick.iso)}」才會存進去`}
+                                                      </span>
+                                                      <button type="button" onClick={()=>setMyPick(null)}
+                                                              className="ml-auto text-[12px] hover:underline" style={{color:'var(--text-secondary)'}}
+                                                              title="把選的日期清掉（什麼都不會存）">清除重選</button>
+                                                  </div>
+                                                  {row}
+                                                  {notes}
+                                              </div>
+                                                  );
+                                              })()}
                                           </div>
                                           )}
 
@@ -9329,13 +9438,41 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                           {canDone && (
                                               <div className="mt-3">
                                                   {dl ? (<>
+                                                  <div className="rounded-lg p-3"
+                                                       style={{background:'var(--brand-soft)', border:'1px solid color-mix(in srgb, var(--brand) 35%, transparent)',
+                                                               borderLeft:'4px solid var(--brand)'}}>
                                                   {/* ─── 延後：日期 ＋ 分類 ＋ 文字說明，一次存檔（第 94 批）───
                                                       ⚠️⚠️ 三樣**同時**攤開、一顆「存檔」收尾 —— 不要做成第三層。
                                                          他按下「還沒，要延後」時腦子裡那兩件事（延到哪天、為什麼）
                                                          是同一個決定，拆成兩層只是多一次點擊與一次等待。
                                                       ⚠️ 上一層那句「做完了嗎？」在這裡**整段被取代**：他已經回答過
                                                          「沒有」了，把它留在上面會變成同一張卡上兩個同樣權重的問句。
-                                                         回頭的路是下面那顆「← 回上一步」。 */}
+                                                         回頭的路是黃底那條右邊的「← 回上一步」。 */}
+                                                  {/* ─── 第 244 批（使用者看過示意圖：「可以」）：與「做完了」第二層（243）同一個樣子 ───
+                                                      淡品牌色底＋左邊 4px 品牌色；最上面一條黃底（實心「還沒存」＋「改日期：填好下面三樣再按存檔」），
+                                                      右邊即時寫還缺什麼（還差：日期、原因、說明 → 都填好＝綠字「可以存了」；三樣都有、仍存不了時講卡在哪），
+                                                      存檔鈕原本為什麼是灰的只寫在 title，看不到。「← 回上一步」從存檔旁邊搬到黃底那條最右邊（只留一個出口） */}
+                                                  {(() => {
+                                                      const miss = [!dl.date && '日期', !dl.cat && '原因', !dl.note.trim() && '說明'].filter(Boolean);
+                                                      const block = miss.length ? null
+                                                          : dlCk.noteLong ? `說明超過 ${NOTE_MAX} 字，存不進去`
+                                                          : (dlCk.far && !dlCk.farConfirmed) ? '日期離今天超過一年，請先按下面「是，就是這一天」'
+                                                          : !dlCk.ready ? '這個日期不能用，看日期框下面的說明' : null;
+                                                      return (
+                                                  <div className="rounded-md px-3 py-2 mb-3 flex items-center gap-2 flex-wrap"
+                                                       style={{background:'color-mix(in srgb, var(--tone-warn) 18%, var(--bg-card))', border:'1px solid var(--tone-warn-border)'}}>
+                                                      <span className="text-[12px] font-bold px-2 py-0.5 rounded"
+                                                            style={{background:'var(--tone-warn)', color:'var(--bg-card)', whiteSpace:'nowrap'}}>還沒存</span>
+                                                      <span className="text-[14px] font-bold" style={{color:'var(--text-primary)'}}>改日期：填好下面三樣再按存檔</span>
+                                                      {miss.length ? <span className="text-[13px]" style={{color:'var(--tone-warn)'}}>還差：{miss.join('、')}</span>
+                                                       : block ? <span className="text-[13px]" style={{color:'var(--tone-warn)'}}>{block}</span>
+                                                       : <span className="text-[13px] font-bold" style={{color:'var(--tone-good)'}}>可以存了</span>}
+                                                      <button type="button" onClick={()=>setMyDelay(null)}
+                                                              className="ml-auto text-[12px] hover:underline" style={{color:'var(--text-secondary)'}}
+                                                              title={`收起來，回到「${x.ph.ask || '做完了嗎？'}」（什麼都不會存）`}>← 回上一步</button>
+                                                  </div>
+                                                      );
+                                                  })()}
                                                   <div className="text-[14px] font-bold mb-2" style={{color:'var(--text-primary)'}}>
                                                       {verb}改到哪天？
                                                   </div>
@@ -9395,15 +9532,13 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                                   : `把${phaseEndWord(x.ph)}改到 ${dl.date} 並直接存檔`}>
                                                           {dlCk.dateOk ? `存成 ${ymdWeek(dl.date)}` : '存檔'}
                                                       </button>
-                                                      <button type="button" onClick={()=>setMyDelay(null)}
-                                                              className="text-[12px] hover:underline" style={{color:'var(--text-muted)'}}
-                                                              title={`收起來，回到「${x.ph.ask || '做完了嗎？'}」`}>← 回上一步</button>
                                                   </div>
                                                   {/* ⚠️ 延後**刻意不給「復原」**（第 92 批）：那要靠再寫一筆「日期異動」改回去，
                                                       會污染 ⚠N 與第 69 批的「重新排程」判定。出路是再按一次「還沒，要改日期」。
                                                       ⚠️ 這行字與完成那排的「按錯可以按復原」講的是**不同的事**，不可以互抄 */}
                                                   <div className="text-[12px] mt-2" style={{color:'var(--text-muted)'}}>
                                                       這會記成一筆「日期異動」。之後要再改，可以再按一次「還沒，要改日期」。
+                                                  </div>
                                                   </div>
                                                   </>) : myDoneAsk !== doneAskKey ? (<>
                                                   {/* ⚠️ 第 95 批：問句與兩顆鈕同一行。「{verb}」拿掉 ——
@@ -9416,7 +9551,9 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                               style={{background:'var(--brand)', borderColor:'transparent', whiteSpace:'nowrap',
                                                                       boxShadow:'0 1px 2px rgba(15,23,42,0.12)'}}
                                                               title="按下去會再問一次「哪一天做完的」，不會直接記成今天">
-                                                          做完了
+                                                          {/* 第 243 批（使用者回報有人按了「做完了」就以為完成、沒看到第二層 → 選 A）：
+                                                              按鈕字講出後面還有一步。手冊裡寫「做完了，選完成日」，改字要一起改 */}
+                                                          做完了，選完成日 →
                                                       </button>
                                                       {/* ⚠️⚠️ 第 93 批這一顆原本直接開編輯視窗，理由是「改一個已經壓好的 End
                                                           算『日期異動』，而異動理由那一欄只有視窗裡有」。第 94 批把那一欄
@@ -9433,12 +9570,26 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                   </>) : (<>
                                                   {/* ─── 第二層：哪一天做完的（第 92 批 B 組那三顆，原封不動搬進來）───
                                                       ⚠️⚠️ 一定要問「哪一天完成的」，不可以預設今天就送出。 */}
-                                                  <div className="text-[14px] font-bold mb-2 flex items-center gap-2 flex-wrap" style={{color:'var(--text-primary)'}}>
-                                                      <span>哪一天做完的？</span>
+                                                  {/* ─── 第 243 批：第二層要看得出「還沒存、還差一步」───
+                                                      使用者回報：按了「做完了」就以為完成了，完全沒注意到這一層還要選日期。原因：第二層原地換掉第一層、
+                                                      沒有一句話講還沒存，三顆淡色晶片上又印著「2026/08/31 準時」，很像「已經記成準時」的結果。
+                                                      使用者選 A（保留兩層）＋「第二層的提示也可以更明顯，比如有底色突顯」：
+                                                      整塊淡品牌色底＋左邊品牌色粗線；最上面一條黃底提示（實心「還沒存」標籤＋「還差一步」）；
+                                                      晶片改品牌色框字、字首「記成」—— 讀起來是要按的動作。寫入路徑一行都沒動。
+                                                      ⚠️ 底色一律 color-mix() 或變數，不可字串拼接（全站鐵律） */}
+                                                  <div className="rounded-lg p-3"
+                                                       style={{background:'var(--brand-soft)', border:'1px solid color-mix(in srgb, var(--brand) 35%, transparent)',
+                                                               borderLeft:'4px solid var(--brand)'}}>
+                                                  <div className="rounded-md px-3 py-2 mb-3 flex items-center gap-2 flex-wrap"
+                                                       style={{background:'color-mix(in srgb, var(--tone-warn) 18%, var(--bg-card))', border:'1px solid var(--tone-warn-border)'}}>
+                                                      <span className="text-[12px] font-bold px-2 py-0.5 rounded"
+                                                            style={{background:'var(--tone-warn)', color:'var(--bg-card)', whiteSpace:'nowrap'}}>還沒存</span>
+                                                      <span className="text-[14px] font-bold" style={{color:'var(--text-primary)'}}>還差一步：哪一天做完的？</span>
+                                                      <span className="text-[13px]" style={{color:'var(--tone-warn)'}}>點下面其中一天，才會標記完成</span>
                                                       <button type="button" onClick={()=>setMyDoneAsk('')}
-                                                              className="text-[12px] font-normal hover:underline"
-                                                              style={{color:'var(--text-muted)'}}
-                                                              title={`收起來，回到「${x.ph.ask || '做完了嗎？'}」`}>← 返回</button>
+                                                              className="ml-auto text-[12px] hover:underline"
+                                                              style={{color:'var(--text-secondary)'}}
+                                                              title={`收起來，回到「${x.ph.ask || '做完了嗎？'}」（什麼都不會存）`}>← 返回</button>
                                                   </div>
                                                   {/* ─── 第 136 批：每一顆都直接寫出「會記成什麼」───
                                                       ⚠️ 原本只有 tooltip 講，而且「今天」那顆連 tooltip 都沒講後果：原訂 09/11、10/07 才來按，
@@ -9450,20 +9601,20 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                       {plannedPast && !sameDay && (
                                                       <button type="button" disabled={isSubmitting}
                                                               onClick={()=>{ setMyDoneAsk(''); handleDone(x.ph.key, {row:x.r, quick:'planned'}); }}
-                                                              className="ctl px-3 text-[14px] disabled:opacity-40"
+                                                              className="ctl ctl-pick px-3 text-[14px] disabled:opacity-40"
                                                               style={{whiteSpace:'nowrap'}}
                                                               title={`記成 ${x.end} 完成（＝原訂那一天，算準時，三個計數欄都不會動）`}>
-                                                          原訂那天
+                                                          記成原訂那天
                                                           <span className="font-mono ml-2 text-[13px]" style={{color:'var(--text-muted)'}}>{md}</span>
                                                           <span className="ml-2 text-[13px] font-bold" style={{color:'var(--tone-good)'}}>準時</span>
                                                       </button>
                                                       )}
                                                       <button type="button" disabled={isSubmitting}
                                                               onClick={()=>{ setMyDoneAsk(''); handleDone(x.ph.key, {row:x.r, quick:'today'}); }}
-                                                              className="ctl px-3 text-[14px] disabled:opacity-40"
+                                                              className="ctl ctl-pick px-3 text-[14px] disabled:opacity-40"
                                                               style={{whiteSpace:'nowrap'}}
                                                               title={`記成今天（${TODAY_ISO}）完成：${todayOutcome.long}`}>
-                                                          今天
+                                                          記成今天
                                                           <span className="font-mono ml-2 text-[13px]" style={{color:'var(--text-muted)'}}>
                                                               {fmtYmd(TODAY_ISO)}
                                                           </span>
@@ -9472,7 +9623,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                           )}
                                                       </button>
                                                       <button type="button" onClick={()=>{ setMyDoneAsk(''); handleDone(x.ph.key, {row:x.r}); }}
-                                                              className="ctl px-3 text-[14px]" style={{whiteSpace:'nowrap'}}
+                                                              className="ctl ctl-pick px-3 text-[14px]" style={{whiteSpace:'nowrap'}}
                                                               title="開啟完成視窗自己挑一天（那裡會即時顯示會被記成提早／準時／延期）">
                                                           🗓 其他日期…
                                                       </button>
@@ -9483,9 +9634,10 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                       （晶片上已經印「準時／延期 N 天」），復原在存檔後的提示框上照舊有。不要加回來。 */}
                                                   {todayOutcome.late && (
                                                   <div className="text-[12px] mt-2" style={{color:'var(--text-secondary)'}}>
-                                                      選「今天」會記成<b style={{color:'var(--tone-alert)'}}>延期 {todayOutcome.days} 天完成</b>（延期次數 +1）。
+                                                      選「記成今天」會記成<b style={{color:'var(--tone-alert)'}}>延期 {todayOutcome.days} 天完成</b>（延期次數 +1）。
                                                   </div>
                                                   )}
+                                                  </div>
                                                   </>)}
                                               </div>
                                           )}
@@ -9845,13 +9997,17 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                                     : null;
                                                 const sentAt = prev && (prev.changedAt || '').slice(0, 10) === TODAY_ISO
                                                     ? prev.changedAt.slice(11, 16) : '';
+                                                // 第 241 批：系統每天自動寄的逾期提醒（到期日提醒）沒有副本 —— 不可套用下面「副本 ○○」那句
+                                                const sentByDue = !!sentAt && (prev.note || '').includes('自動寄送（逾期提醒）');
                                                 return (
                                                 <button type="button" onClick={()=>askNotifyUnset(x.r)}
                                                         className="ctl px-3 text-[13px] flex-shrink-0"
                                                         style={sentAt ? {whiteSpace:'nowrap'}
                                                                       : {whiteSpace:'nowrap', color:ALERT_STYLES.unset.color,
                                                                          borderColor:ALERT_STYLES.unset.border}}
-                                                        title={sentAt
+                                                        title={sentByDue
+                                                            ? `今天 ${sentAt} 系統已自動寄過逾期提醒給 ${np.toName}（每天一封，沒有副本）。\n要再寄一封就按下去，還是會先問一次。`
+                                                            : sentAt
                                                             ? `今天 ${sentAt} 已寄過一次給 ${np.toName}${np.ccName ? `（副本 ${np.ccName}）` : ''}。\n要再寄一封就按下去，還是會先問一次。`
                                                             : x.unset
                                                             ? `寄信通知「${x.ph.label}」的負責人進系統壓定日期（副本會給另一邊的負責人）`
@@ -13280,7 +13436,7 @@ MSD＝${STAGE_CODES['2'].label} ${ongoingSides[2]}、${STAGE_CODES['3'].label} $
                                                 : (diff !== null && <div className="mt-1.5 text-[11px]" style={{color:'var(--text-tertiary)'}}>
                                                       {diff > 0 ? `比原訂的 ${m.cur} 晚 ${diff} 天` : `比原訂的 ${m.cur} 早 ${-diff} 天（提前）`}
                                                       {startMoved && <div className="mt-0.5">開始日 {oldStart} 晚於新的日期，會一起改成 <span className="font-bold tabular-nums">{m.date}</span>。</div>}
-                                                      {m.date < TODAY_ISO && <div className="mt-0.5" style={{color:'var(--tone-warn)'}}>這一天已經過了，存了之後會顯示逾期。如果其實已經做完了，請關掉這個視窗改按「做完了」。</div>}
+                                                      {m.date < TODAY_ISO && <div className="mt-0.5" style={{color:'var(--tone-warn)'}}>這一天已經過了，存了之後會顯示逾期。如果其實已經做完了，請關掉這個視窗改按「做完了，選完成日」。</div>}
                                                   </div>)}
                                             {/* 第 138 批：離今天超過一年 → 要按一下「是，就是這一天」才給存（防年份打錯） */}
                                             {far && (
