@@ -12,6 +12,17 @@ using Microsoft.AspNetCore.Authorization;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// ─── 這一台主機自己的設定檔（第 246 批，2026-11-10）───
+// appsettings.{環境}.local.json：.gitignore 已排除、不會跟著 git 到別台，也不會發佈出去（csproj 排除）。
+// 起因：開發機把「寄信主機蓋成空的」「頁首標開發機」寫在 git 追蹤的 appsettings.Development.json，
+//    公司桌機（測試區）也用 Development 跑，拉下來就被蓋掉 → 到期提醒「郵件伺服器還沒設定」、頁首標錯成開發機。
+//    只屬於某一台的設定一律寫這個 local 檔。
+// ⚠️ 加在預設來源後面會連環境變數、命令列參數都蓋掉 → 再把那兩個加回最後面，維持「環境變數／命令列最優先」。
+// ⚠️ optional：沒有這個檔＝跟原本一樣（IIS 正式區不需要這個檔）。
+builder.Configuration.AddJsonFile($"appsettings.{builder.Environment.EnvironmentName}.local.json", optional: true, reloadOnChange: false);
+builder.Configuration.AddEnvironmentVariables();
+builder.Configuration.AddCommandLine(args);
+
 // Windows 驗證 (Negotiate/NTLM)：只有 /api/whoami 要求驗證，其餘端點維持匿名。
 // 作法對齊 C:\Gantt 專案 —— Kestrel 由此套件處理；掛 IIS 時會自動交給 IIS 的
 // Windows 驗證（IIS 需啟用 Windows Authentication，匿名驗證也要保持啟用）。
@@ -125,8 +136,10 @@ try
     var envFile = Path.Combine(builder.Environment.ContentRootPath, $"appsettings.{envName}.json");
     var hasConn = !string.IsNullOrWhiteSpace(builder.Configuration.GetConnectionString("Controltable"));
     var csb = new SqlConnectionStringBuilder(connectionString);
+    var localFile = Path.Combine(builder.Environment.ContentRootPath, $"appsettings.{envName}.local.json");
     Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] startup: 環境 {envName}；appsettings.{envName}.json "
         + (File.Exists(envFile) ? "已找到" : "不存在")
+        + (File.Exists(localFile) ? $"；這台自己的 appsettings.{envName}.local.json 已找到" : "")
         + $"；資料庫 {csb.DataSource} / {csb.InitialCatalog}"
         + (hasConn ? "" : $"（⚠️ 沒有設定 ConnectionStrings:Controltable，正在用程式內建的預設值。請在 appsettings.json 設定）")
         + $"；寄信主機 {(string.IsNullOrWhiteSpace(builder.Configuration["Mail:Host"]) ? "（未設定）" : builder.Configuration["Mail:Host"])}");
@@ -6360,15 +6373,17 @@ static (string Subject, string Text, string Html) ComposeDueMail(Requirement cur
 
 // 一筆需求、一關。回傳 already／sent／uncertain／skipped／failed（給「這次檢查」的摘要）
 async Task<string> RunDueOneAsync(SqlConnection conn, string mode, string testTo, int id, Requirement cur,
-    (string Phase, string Label, string Side, string Date, int Days) t, string source)
+    (string Phase, string Label, string Side, string Date, int Days) t, string source, bool retryFailed = false)
 {
     var test = mode == "test";
     var logMode = test ? "test" : mode;
     using (var chk = new SqlCommand(@"
         SELECT COUNT(*) FROM dbo.NotifyLog
         WHERE TriggerType = N'due' AND RequirementId = @R AND Phase = @P AND Mode = @M
-          AND CAST(SentAt AS DATE) = CAST(SYSDATETIME() AS DATE)", conn))
+          AND CAST(SentAt AS DATE) = CAST(SYSDATETIME() AS DATE)
+          AND (@Retry = 0 OR Result <> N'failed')", conn))   // 第 246 批：管理者按「現在檢查一次」時，今天寄失敗的再試一次
     {
+        chk.Parameters.AddWithValue("@Retry", retryFailed ? 1 : 0);
         chk.Parameters.AddWithValue("@R", id);
         chk.Parameters.AddWithValue("@P", t.Phase);
         chk.Parameters.AddWithValue("@M", logMode);
@@ -6458,7 +6473,7 @@ async Task<string> RunDueOneAsync(SqlConnection conn, string mode, string testTo
 }
 
 // 跑一輪：所有進行中的需求，目前那一關今天到期或已逾期 → 各寄一封（今天已經寄過的跳過）
-async Task<object> RunDueNotifyAsync(string source)
+async Task<object> RunDueNotifyAsync(string source, bool retryFailed = false)
 {
     // 同一個網站裡只跑一份；另一台／另一個工作者行程靠 sp_getapplock
     if (!await dueGate.WaitAsync(0)) return new { ran = false, busy = true, message = "另一次檢查正在進行，這次略過" };
@@ -6493,7 +6508,7 @@ async Task<object> RunDueNotifyAsync(string source)
                     var t = DuePhaseOf(cur, today);
                     if (t == null) continue;
                     targets++;
-                    switch (await RunDueOneAsync(conn, s.Mode, s.TestTo, id, cur, t.Value, source))
+                    switch (await RunDueOneAsync(conn, s.Mode, s.TestTo, id, cur, t.Value, source, retryFailed))
                     {
                         case "already": already++; break;
                         case "skipped": skipped++; break;
@@ -6546,14 +6561,29 @@ async Task<object> RunDueNotifyAsync(string source)
 app.MapPost("/api/auto-notify/due-run", async (HttpContext ctx) =>
 {
     if (IsCrossSiteRequest(ctx)) return Results.Json(new { message = "拒絕跨站請求" }, statusCode: 403);
-    var source = ctx.Request.Query["from"].ToString() == "panel" ? "管理設定「現在檢查一次」" : "外部排程呼叫";
-    try { return Results.Ok(await RunDueNotifyAsync(source)); }
+    try { return Results.Ok(await RunDueNotifyAsync("外部排程呼叫")); }
     catch (Exception ex)
     {
         AppDiag.Error("auto-notify", "到期提醒檢查失敗", ex);
         return ServerError("到期提醒檢查失敗：" + ex.Message);
     }
 });
+
+// 管理設定的「現在檢查一次」（第 246 批）：與上面同一輪，**另外把今天寄失敗的再試一次**
+// （修好郵件主機／補好信箱之後馬上就能補寄，不用等明天）。每 10 分鐘的自動檢查與外部排程維持不重試 ——
+// 否則設定壞掉時每 10 分鐘就多記一筆失敗。只給管理者（重試會再記一筆，不讓匿名呼叫灌紀錄）
+app.MapPost("/api/auto-notify/due-run-now", async (HttpContext ctx) =>
+{
+    if (IsCrossSiteRequest(ctx)) return Results.Json(new { message = "拒絕跨站請求" }, statusCode: 403);
+    if (!await IsAccessAdminAsync(WindowsEmpId(ctx)))
+        return Results.Json(new { message = "只有管理者可以手動檢查到期提醒" }, statusCode: 403);
+    try { return Results.Ok(await RunDueNotifyAsync("管理設定「現在檢查一次」", retryFailed: true)); }
+    catch (Exception ex)
+    {
+        AppDiag.Error("auto-notify", "到期提醒檢查失敗", ex);
+        return ServerError("到期提醒檢查失敗：" + ex.Message);
+    }
+}).RequireAuthorization(new AuthorizeAttribute { AuthenticationSchemes = NegotiateDefaults.AuthenticationScheme });
 
 // 前端「標記完成／退回重做」視窗那一行提示要知道模式與開關。匿名（與 /api/history 同等級）。
 // 試寄收件人也回傳：視窗要寫「試寄中：信會寄到 ○○」
@@ -6622,9 +6652,11 @@ app.MapGet("/api/auto-notify", async (HttpContext ctx) =>
         // 第 241 批：到期日提醒今天（DB 主機的日期）在目前模式下寄了幾封
         int dueSent = 0, dueSkipped = 0, dueFailed = 0;
         using (var c = new SqlCommand(@"
-            SELECT Result, COUNT(*) FROM dbo.NotifyLog
-            WHERE TriggerType = N'due' AND Mode = @M AND CAST(SentAt AS DATE) = CAST(SYSDATETIME() AS DATE)
-            GROUP BY Result", conn))
+            WITH x AS (   -- 第 246 批：同一筆同一關今天重試過的只算最後一次（失敗後補寄成功＝寄出，不再算沒寄出）
+                SELECT Result, ROW_NUMBER() OVER (PARTITION BY RequirementId, Phase ORDER BY Id DESC) AS rn
+                FROM dbo.NotifyLog
+                WHERE TriggerType = N'due' AND Mode = @M AND CAST(SentAt AS DATE) = CAST(SYSDATETIME() AS DATE))
+            SELECT Result, COUNT(*) FROM x WHERE rn = 1 GROUP BY Result", conn))
         {
             c.Parameters.AddWithValue("@M", s.Mode == "test" ? "test" : "on");
             using var r = await c.ExecuteReaderAsync();

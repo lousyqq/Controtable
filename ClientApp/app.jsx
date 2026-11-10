@@ -2572,7 +2572,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                 if (saving) return;
                 setSaving(true);
                 try {
-                    const j = await send('/api/auto-notify/due-run?from=panel', 'POST');
+                    const j = await send('/api/auto-notify/due-run-now', 'POST');   // 第 246 批：管理者專用、今天寄失敗的會再試一次
                     showToast(j.message || '檢查完成', j.failed > 0 ? 'warn' : 'success');
                 } catch (e) { onError('到期提醒檢查失敗', e); }
                 finally { setSaving(false); await load(); }
@@ -2756,7 +2756,7 @@ const { useState, useMemo, Fragment, useEffect } = React;
                                 </span>
                                 {cfg.mode !== 'off' && (
                                     <button type="button" onClick={() => runDue()} disabled={saving}
-                                            title="馬上檢查一次：今天到期或已逾期、今天還沒寄過的，現在就寄（已經寄過的不會重寄）"
+                                            title="馬上檢查一次：今天到期或已逾期、今天還沒寄過的現在就寄；今天寄失敗的也會再試一次（已經寄出的不會重寄）"
                                             className="ml-auto shrink-0 px-3 py-1 rounded-lg text-[12px] font-bold border disabled:opacity-40"
                                             style={{background:'var(--bg-card)', color:'var(--brand)', borderColor:'var(--border-table)'}}>
                                         {saving ? '處理中…' : '現在檢查一次'}

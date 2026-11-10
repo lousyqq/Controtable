@@ -14,6 +14,9 @@
          ⚠️ ANCM 不會自己建這個資料夾，不存在時 log 是**靜靜不產生**的 ——
          所以要靠這個 .gitkeep 讓 dotnet publish 把 logs\ 一起帶出去。 -->
     <Content Include="logs\.gitkeep" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <!-- 第 246 批：每台主機自己的設定檔（appsettings.{環境}.local.json）不跟著發佈出去 ——
+         公司桌機的「測試區」標籤不可以被複製到 IIS 正式區 -->
+    <Content Update="appsettings.*.local.json" CopyToOutputDirectory="Never" CopyToPublishDirectory="Never" />
   </ItemGroup>
 
   <ItemGroup>
